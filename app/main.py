@@ -111,6 +111,7 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
 
 
 # ✅ NEW (Step 1): list messages for a session (history)
+# ✅ FIXED: stable message ordering with role priority
 @app.get("/v1/sessions/{session_id}/messages")
 def list_messages(session_id: uuid.UUID):
     with SessionLocal() as db:
@@ -124,29 +125,31 @@ def list_messages(session_id: uuid.UUID):
 
         rows = db.execute(
             text(
-                "SELECT role, content, created_at "
-                "FROM messages "
-                "WHERE session_id = :sid "
-                rows = db.execute(
-    text(
-        "SELECT role, content, created_at "
-        "FROM messages "
-        "WHERE session_id = :sid "
-        "ORDER BY created_at ASC, "
-        "CASE role "
-        "  WHEN 'user' THEN 0 "
-        "  WHEN 'assistant' THEN 1 "
-        "  ELSE 2 "
-        "END ASC, "
-        "id ASC"
-    ),
-    {"sid": str(session_id)},
-).fetchall()
+                """
+                SELECT role, content, created_at
+                FROM messages
+                WHERE session_id = :sid
+                ORDER BY
+                    created_at ASC,
+                    CASE role
+                        WHEN 'user' THEN 0
+                        WHEN 'assistant' THEN 1
+                        ELSE 2
+                    END ASC,
+                    id ASC
+                """
             ),
             {"sid": str(session_id)},
         ).fetchall()
 
     return [
+        {
+            "role": r[0],
+            "content": r[1],
+            "created_at": r[2].isoformat() if r[2] else None,
+        }
+        for r in rows
+    ]
         {
             "role": r[0],
             "content": r[1],
