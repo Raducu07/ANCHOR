@@ -8,18 +8,28 @@ from app.schemas import CreateSessionResponse, SendMessageRequest, SendMessageRe
 
 app = FastAPI(title="ANCHOR API")
 
+
 @app.on_event("startup")
 def on_startup():
     run_migrations()
+
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.get("/db-check")
 def db_check():
     db_ping()
     return {"db": "ok"}
+
+
+# ✅ NEW (Step 2): root endpoint so base URL isn't Not Found
+@app.get("/")
+def root():
+    return {"name": "ANCHOR API", "status": "live"}
+
 
 @app.post("/v1/sessions", response_model=CreateSessionResponse)
 def create_session():
@@ -45,6 +55,7 @@ def create_session():
         session_id=session_id,
         mode="witness",
     )
+
 
 @app.post(
     "/v1/sessions/{session_id}/messages",
@@ -97,3 +108,35 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
         role="assistant",
         content=reply,
     )
+
+
+# ✅ NEW (Step 1): list messages for a session (history)
+@app.get("/v1/sessions/{session_id}/messages")
+def list_messages(session_id: uuid.UUID):
+    with SessionLocal() as db:
+        row = db.execute(
+            text("SELECT id FROM sessions WHERE id = :sid"),
+            {"sid": str(session_id)},
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        rows = db.execute(
+            text(
+                "SELECT role, content, created_at "
+                "FROM messages "
+                "WHERE session_id = :sid "
+                "ORDER BY created_at ASC"
+            ),
+            {"sid": str(session_id)},
+        ).fetchall()
+
+    return [
+        {
+            "role": r[0],
+            "content": r[1],
+            "created_at": r[2].isoformat() if r[2] else None,
+        }
+        for r in rows
+    ]
