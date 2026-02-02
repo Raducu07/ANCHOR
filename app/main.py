@@ -127,7 +127,21 @@ def list_messages(session_id: uuid.UUID):
                 "SELECT role, content, created_at "
                 "FROM messages "
                 "WHERE session_id = :sid "
-                "ORDER BY created_at ASC, id ASC"
+                rows = db.execute(
+    text(
+        "SELECT role, content, created_at "
+        "FROM messages "
+        "WHERE session_id = :sid "
+        "ORDER BY created_at ASC, "
+        "CASE role "
+        "  WHEN 'user' THEN 0 "
+        "  WHEN 'assistant' THEN 1 "
+        "  ELSE 2 "
+        "END ASC, "
+        "id ASC"
+    ),
+    {"sid": str(session_id)},
+).fetchall()
             ),
             {"sid": str(session_id)},
         ).fetchall()
