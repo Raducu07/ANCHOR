@@ -1,6 +1,10 @@
-from fastapi import FastAPI
+import uuid
+from fastapi import FastAPI, HTTPException
+from sqlalchemy import text
+
+from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
-from app.db import db_ping
+from app.schemas import CreateSessionResponse, SendMessageRequest, SendMessageResponse
 
 app = FastAPI(title="ANCHOR API")
 
@@ -16,3 +20,80 @@ def health():
 def db_check():
     db_ping()
     return {"db": "ok"}
+
+@app.post("/v1/sessions", response_model=CreateSessionResponse)
+def create_session():
+    user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+
+    with SessionLocal() as db:
+        db.execute(
+            text("INSERT INTO users (id) VALUES (:id)"),
+            {"id": str(user_id)},
+        )
+        db.execute(
+            text(
+                "INSERT INTO sessions (id, user_id, mode, question_used) "
+                "VALUES (:sid, :uid, 'witness', false)"
+            ),
+            {"sid": str(session_id), "uid": str(user_id)},
+        )
+        db.commit()
+
+    return CreateSessionResponse(
+        user_id=user_id,
+        session_id=session_id,
+        mode="witness",
+    )
+
+@app.post(
+    "/v1/sessions/{session_id}/messages",
+    response_model=SendMessageResponse,
+)
+def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
+    with SessionLocal() as db:
+        row = db.execute(
+            text("SELECT id FROM sessions WHERE id = :sid"),
+            {"sid": str(session_id)},
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        db.execute(
+            text(
+                "INSERT INTO messages (id, session_id, role, content) "
+                "VALUES (:id, :sid, 'user', :content)"
+            ),
+            {
+                "id": str(uuid.uuid4()),
+                "sid": str(session_id),
+                "content": payload.content,
+            },
+        )
+
+        reply = (
+            "I’m here with you. I’m going to reflect back what I heard, briefly.\n\n"
+            f"**What you said:** {payload.content}\n\n"
+            "One question: what feels most important in this right now?"
+        )
+
+        db.execute(
+            text(
+                "INSERT INTO messages (id, session_id, role, content) "
+                "VALUES (:id, :sid, 'assistant', :content)"
+            ),
+            {
+                "id": str(uuid.uuid4()),
+                "sid": str(session_id),
+                "content": reply,
+            },
+        )
+
+        db.commit()
+
+    return SendMessageResponse(
+        session_id=session_id,
+        role="assistant",
+        content=reply,
+    )
