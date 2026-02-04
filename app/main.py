@@ -14,7 +14,38 @@ from app.schemas import (
 )
 
 app = FastAPI(title="ANCHOR API")
+def _ensure_user_exists(db, user_id: uuid.UUID):
+    row = db.execute(
+        text("SELECT id FROM users WHERE id = :uid"),
+        {"uid": str(user_id)},
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
 
+
+def _validate_memory_statement(statement: str):
+    s = (statement or "").strip()
+
+    # Keep memory short + single-line (presence, not essays)
+    if not s or "\n" in s or len(s) > 280:
+        raise HTTPException(status_code=400, detail="Invalid memory statement")
+
+    # Minimal neutrality guardrails (v1)
+    banned = [
+        "you should",
+        "try to",
+        "it might help",
+        "i recommend",
+        "diagnos",
+        "therapy",
+        "therapist",
+        "you need to",
+        "this will help",
+        "you will feel",
+    ]
+    low = s.lower()
+    if any(b in low for b in banned):
+        raise HTTPException(status_code=400, detail="Memory statement violates neutrality rules")
 
 @app.on_event("startup")
 def on_startup():
