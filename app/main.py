@@ -1,5 +1,6 @@
 import uuid
 import json
+
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
 
@@ -15,6 +16,8 @@ from app.schemas import (
 )
 
 app = FastAPI(title="ANCHOR API")
+
+
 def _ensure_user_exists(db, user_id: uuid.UUID):
     row = db.execute(
         text("SELECT id FROM users WHERE id = :uid"),
@@ -46,7 +49,11 @@ def _validate_memory_statement(statement: str):
     ]
     low = s.lower()
     if any(b in low for b in banned):
-        raise HTTPException(status_code=400, detail="Memory statement violates neutrality rules")
+        raise HTTPException(
+            status_code=400,
+            detail="Memory statement violates neutrality rules",
+        )
+
 
 @app.on_event("startup")
 def on_startup():
@@ -64,7 +71,16 @@ def db_check():
     return {"db": "ok"}
 
 
-# ✅ NEW (Step 2): root endpoint so base URL isn't Not Found
+@app.get("/db-memories-check")
+def db_memories_check():
+    with SessionLocal() as db:
+        try:
+            db.execute(text("SELECT 1 FROM memories LIMIT 1"))
+            return {"memories_table": "ok"}
+        except Exception as e:
+            return {"memories_table": "error", "detail": str(e)}
+
+
 @app.get("/")
 def root():
     return {"name": "ANCHOR API", "status": "live"}
@@ -110,6 +126,7 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
         if not row:
             raise HTTPException(status_code=404, detail="Session not found")
 
+        # store user message
         db.execute(
             text(
                 "INSERT INTO messages (id, session_id, role, content) "
@@ -122,12 +139,14 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
             },
         )
 
+        # v1 witness reply
         reply = (
             "I’m here with you. I’m going to reflect back what I heard, briefly.\n\n"
             f"**What you said:** {payload.content}\n\n"
             "One question: what feels most important in this right now?"
         )
 
+        # store assistant message
         db.execute(
             text(
                 "INSERT INTO messages (id, session_id, role, content) "
@@ -149,7 +168,6 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
     )
 
 
-# ✅ NEW (Step 1): list messages for a session (history)
 @app.get("/v1/sessions/{session_id}/messages")
 def list_messages(session_id: uuid.UUID):
     with SessionLocal() as db:
@@ -189,8 +207,9 @@ def list_messages(session_id: uuid.UUID):
                 "created_at": r[2].isoformat() if r[2] else None,
             }
         )
-
     return result
+
+
 @app.get("/v1/users/{user_id}/memories", response_model=list[MemoryItem])
 def list_memories(user_id: uuid.UUID, active: bool = True, kind: str | None = None):
     with SessionLocal() as db:
@@ -291,6 +310,7 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
 
         mem_id = uuid.uuid4()
         evidence_json = [str(x) for x in (payload.evidence_session_ids or [])]
+        evidence_str = json.dumps(evidence_json)
 
         row = db.execute(
             text(
@@ -305,9 +325,7 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
                 "uid": str(user_id),
                 "kind": payload.kind,
                 "statement": payload.statement.strip(),
-                "evidence": "[]"
-                if not evidence_json
-                else '["' + '","'.join(evidence_json) + '"]',
+                "evidence": evidence_str,
                 "confidence": payload.confidence,
             },
         ).fetchone()
@@ -352,13 +370,5 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
             raise HTTPException(status_code=404, detail="Memory not found")
 
         db.commit()
-@app.get("/db-memories-check")
-def db_memories_check():
-    with SessionLocal() as db:
-        try:
-            db.execute(text("SELECT 1 FROM memories LIMIT 1"))
-            return {"memories_table": "ok"}
-        except Exception as e:
-            return {"memories_table": "error", "detail": str(e)}
 
     return {"archived": True}
