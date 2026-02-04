@@ -190,3 +190,166 @@ def list_messages(session_id: uuid.UUID):
         )
 
     return result
+@app.get("/v1/users/{user_id}/memories", response_model=list[MemoryItem])
+def list_memories(user_id: uuid.UUID, active: bool = True, kind: str | None = None):
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+        if kind:
+            rows = db.execute(
+                text(
+                    "SELECT id, kind, statement, confidence, active, evidence_session_ids, created_at "
+                    "FROM memories "
+                    "WHERE user_id = :uid AND active = :active AND kind = :kind "
+                    "ORDER BY created_at DESC"
+                ),
+                {"uid": str(user_id), "active": active, "kind": kind},
+            ).fetchall()
+        else:
+            rows = db.execute(
+                text(
+                    "SELECT id, kind, statement, confidence, active, evidence_session_ids, created_at "
+                    "FROM memories "
+                    "WHERE user_id = :uid AND active = :active "
+                    "ORDER BY created_at DESC"
+                ),
+                {"uid": str(user_id), "active": active},
+            ).fetchall()
+
+    result = []
+    for r in rows:
+        evidence = r[5] or []
+        evidence_uuids = []
+        for x in evidence:
+            try:
+                evidence_uuids.append(uuid.UUID(str(x)))
+            except Exception:
+                pass
+
+        result.append(
+            MemoryItem(
+                id=uuid.UUID(str(r[0])),
+                kind=r[1],
+                statement=r[2],
+                confidence=r[3],
+                active=bool(r[4]),
+                evidence_session_ids=evidence_uuids,
+                created_at=r[6].isoformat() if r[6] else "",
+            )
+        )
+    return result
+
+
+@app.post("/v1/users/{user_id}/memory-offer", response_model=MemoryOfferResponse)
+def memory_offer(user_id: uuid.UUID):
+    """
+    v1: dummy offer (no computation yet).
+    Later: compute from last N sessions and propose ONE memory.
+    """
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+    return MemoryOfferResponse(
+        offer=CreateMemoryRequest(
+            kind="recurring_tension",
+            statement="You repeatedly describe conflicts where obligations grow faster than available time.",
+            confidence="tentative",
+            evidence_session_ids=[],
+        )
+    )
+
+
+@app.post("/v1/users/{user_id}/memories", response_model=MemoryItem)
+def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
+    _validate_memory_statement(payload.statement)
+
+    kind_allowed = {
+        "recurring_tension",
+        "unexpressed_axis",
+        "values_vs_emphasis",
+        "decision_posture",
+        "negative_space",
+    }
+    if payload.kind not in kind_allowed:
+        raise HTTPException(status_code=400, detail="Invalid memory kind")
+
+    conf_allowed = {"tentative", "emerging", "consistent"}
+    if payload.confidence not in conf_allowed:
+        raise HTTPException(status_code=400, detail="Invalid confidence")
+
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+        # Scarcity rule: max 5 active memories
+        count_row = db.execute(
+            text("SELECT COUNT(*) FROM memories WHERE user_id = :uid AND active = true"),
+            {"uid": str(user_id)},
+        ).fetchone()
+        if count_row and int(count_row[0]) >= 5:
+            raise HTTPException(status_code=400, detail="Max active memories reached (5)")
+
+        mem_id = uuid.uuid4()
+        evidence_json = [str(x) for x in (payload.evidence_session_ids or [])]
+
+        row = db.execute(
+            text(
+                """
+                INSERT INTO memories (id, user_id, kind, statement, evidence_session_ids, confidence, active)
+                VALUES (:id, :uid, :kind, :statement, :evidence::jsonb, :confidence, true)
+                RETURNING id, kind, statement, confidence, active, evidence_session_ids, created_at
+                """
+            ),
+            {
+                "id": str(mem_id),
+                "uid": str(user_id),
+                "kind": payload.kind,
+                "statement": payload.statement.strip(),
+                "evidence": "[]"
+                if not evidence_json
+                else '["' + '","'.join(evidence_json) + '"]',
+                "confidence": payload.confidence,
+            },
+        ).fetchone()
+        db.commit()
+
+    evidence_uuids = []
+    for x in (row[5] or []):
+        try:
+            evidence_uuids.append(uuid.UUID(str(x)))
+        except Exception:
+            pass
+
+    return MemoryItem(
+        id=uuid.UUID(str(row[0])),
+        kind=row[1],
+        statement=row[2],
+        confidence=row[3],
+        active=bool(row[4]),
+        evidence_session_ids=evidence_uuids,
+        created_at=row[6].isoformat() if row[6] else "",
+    )
+
+
+@app.post("/v1/users/{user_id}/memories/{memory_id}/archive")
+def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+        row = db.execute(
+            text(
+                """
+                UPDATE memories
+                SET active = false, updated_at = NOW()
+                WHERE id = :mid AND user_id = :uid
+                RETURNING id
+                """
+            ),
+            {"mid": str(memory_id), "uid": str(user_id)},
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Memory not found")
+
+        db.commit()
+
+    return {"archived": True}
