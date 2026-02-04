@@ -4,7 +4,14 @@ from sqlalchemy import text
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
-from app.schemas import CreateSessionResponse, SendMessageRequest, SendMessageResponse
+from app.schemas import (
+    CreateSessionResponse,
+    SendMessageRequest,
+    SendMessageResponse,
+    MemoryItem,
+    CreateMemoryRequest,
+    MemoryOfferResponse,
+)
 
 app = FastAPI(title="ANCHOR API")
 
