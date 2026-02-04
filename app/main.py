@@ -351,5 +351,13 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
             raise HTTPException(status_code=404, detail="Memory not found")
 
         db.commit()
+@app.get("/db-memories-check")
+def db_memories_check():
+    with SessionLocal() as db:
+        try:
+            db.execute(text("SELECT 1 FROM memories LIMIT 1"))
+            return {"memories_table": "ok"}
+        except Exception as e:
+            return {"memories_table": "error", "detail": str(e)}
 
     return {"archived": True}
