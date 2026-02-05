@@ -302,17 +302,20 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
 
         # Scarcity rule: max 5 active memories
         count_row = db.execute(
-            text("SELECT COUNT(*) FROM memories WHERE user_id = :uid AND active = true"),
+            text(
+                "SELECT COUNT(*) FROM memories "
+                "WHERE user_id = :uid AND active = true"
+            ),
             {"uid": str(user_id)},
         ).fetchone()
+
         if count_row and int(count_row[0]) >= 5:
-            raise HTTPException(status_code=400, detail="Max active memories reached (5)")
+            raise HTTPException(
+                status_code=400,
+                detail="Max active memories reached (5)",
+            )
 
         mem_id = uuid.uuid4()
-        evidence_json = [str(x) for x in (payload.evidence_session_ids or [])]
-        evidence_str = json.dumps(evidence_json)
-
-                mem_id = uuid.uuid4()
 
         evidence_json = [str(x) for x in (payload.evidence_session_ids or [])]
         evidence_str = json.dumps(evidence_json)
@@ -320,9 +323,32 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
         row = db.execute(
             text(
                 """
-                INSERT INTO memories (id, user_id, kind, statement, evidence_session_ids, confidence, active)
-                VALUES (:id, :uid, :kind, :statement, CAST(:evidence AS jsonb), :confidence, true)
-                RETURNING id, kind, statement, confidence, active, evidence_session_ids, created_at
+                INSERT INTO memories (
+                    id,
+                    user_id,
+                    kind,
+                    statement,
+                    evidence_session_ids,
+                    confidence,
+                    active
+                )
+                VALUES (
+                    :id,
+                    :uid,
+                    :kind,
+                    :statement,
+                    CAST(:evidence AS jsonb),
+                    :confidence,
+                    true
+                )
+                RETURNING
+                    id,
+                    kind,
+                    statement,
+                    confidence,
+                    active,
+                    evidence_session_ids,
+                    created_at
                 """
             ),
             {
@@ -353,7 +379,6 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
         evidence_session_ids=evidence_uuids,
         created_at=row[6].isoformat() if row[6] else "",
     )
-
 
 @app.post("/v1/users/{user_id}/memories/{memory_id}/archive")
 def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
