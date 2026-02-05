@@ -94,6 +94,28 @@ def root():
 
 @app.post("/v1/sessions", response_model=CreateSessionResponse)
 def create_session():
+    @app.post("/v1/users/{user_id}/sessions", response_model=CreateSessionResponse)
+def create_session_for_user(user_id: uuid.UUID):
+    session_id = uuid.uuid4()
+
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+        db.execute(
+            text(
+                "INSERT INTO sessions (id, user_id, mode, question_used) "
+                "VALUES (:sid, :uid, 'witness', false)"
+            ),
+            {"sid": str(session_id), "uid": str(user_id)},
+        )
+        db.commit()
+
+    return CreateSessionResponse(
+        user_id=user_id,
+        session_id=session_id,
+        mode="witness",
+    )
+
     user_id = uuid.uuid4()
     session_id = uuid.uuid4()
 
