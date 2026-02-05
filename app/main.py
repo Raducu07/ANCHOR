@@ -116,54 +116,6 @@ def create_session_for_user(user_id: uuid.UUID):
         mode="witness",
     )
 
-    user_id = uuid.uuid4()
-    session_id = uuid.uuid4()
-
-    with SessionLocal() as db:
-        db.execute(
-            text("INSERT INTO users (id) VALUES (:id)"),
-            {"id": str(user_id)},
-        )
-        db.execute(
-            text(
-                "INSERT INTO sessions (id, user_id, mode, question_used) "
-                "VALUES (:sid, :uid, 'witness', false)"
-            ),
-            {"sid": str(session_id), "uid": str(user_id)},
-        )
-        db.commit()
-
-    return CreateSessionResponse(
-        user_id=user_id,
-        session_id=session_id,
-        mode="witness",
-    )
-
-
-from app.schemas import CreateSessionForUserResponse  # add to imports at top
-
-@app.post("/v1/users/{user_id}/sessions", response_model=CreateSessionForUserResponse)
-def create_session_for_user(user_id: uuid.UUID):
-    session_id = uuid.uuid4()
-
-    with SessionLocal() as db:
-        _ensure_user_exists(db, user_id)
-
-        db.execute(
-            text(
-                "INSERT INTO sessions (id, user_id, mode, question_used) "
-                "VALUES (:sid, :uid, 'witness', false)"
-            ),
-            {"sid": str(session_id), "uid": str(user_id)},
-        )
-        db.commit()
-
-    return CreateSessionForUserResponse(
-        user_id=user_id,
-        session_id=session_id,
-        mode="witness",
-    )
-
 
 @app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
 def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
