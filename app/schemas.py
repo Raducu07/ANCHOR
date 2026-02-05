@@ -40,3 +40,27 @@ class CreateMemoryRequest(BaseModel):
 
 class MemoryOfferResponse(BaseModel):
     offer: Optional[CreateMemoryRequest] = None
+
+
+from typing import Any, Optional, List
+from pydantic import BaseModel, Field
+
+
+class NeutralityScoreRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=8000)
+
+
+class NeutralityFinding(BaseModel):
+    rule_id: str
+    label: str
+    severity: int
+    excerpt: str
+
+
+class NeutralityScoreResponse(BaseModel):
+    score: int
+    grade: str
+    witness_hits: int = 0
+    findings: List[NeutralityFinding] = []
+    # optional: allow extra debug later without breaking clients
+    debug: Optional[Any] = None
