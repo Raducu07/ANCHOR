@@ -7,6 +7,7 @@ from sqlalchemy import text
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
 from app.memory_shaping import propose_memory_offer, compute_offer_debug, fetch_recent_user_texts
+from app.neutrality import score_neutrality
 from app.schemas import (
     CreateSessionResponse,
     SendMessageRequest,
@@ -14,6 +15,8 @@ from app.schemas import (
     MemoryItem,
     CreateMemoryRequest,
     MemoryOfferResponse,
+    NeutralityScoreRequest,
+    NeutralityScoreResponse,
 )
 
 app = FastAPI(title="ANCHOR API")
@@ -102,6 +105,12 @@ def db_memories_check():
 @app.get("/")
 def root():
     return {"name": "ANCHOR API", "status": "live"}
+
+
+@app.post("/v1/neutrality/score", response_model=NeutralityScoreResponse)
+def neutrality_score(payload: NeutralityScoreRequest):
+    result = score_neutrality(payload.text)
+    return NeutralityScoreResponse(**result)
 
 
 # ---------------------------
