@@ -267,6 +267,9 @@ def memory_offer(user_id: uuid.UUID):
         _ensure_user_exists(db, user_id)
 
         offer = propose_memory_offer(db, user_id)
+                if offer:
+            _validate_memory_statement(offer["statement"])
+
         if not offer:
             # Return a safe default "no offer" (still a valid schema)
             return MemoryOfferResponse(
