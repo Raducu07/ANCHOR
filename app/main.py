@@ -312,11 +312,16 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
         evidence_json = [str(x) for x in (payload.evidence_session_ids or [])]
         evidence_str = json.dumps(evidence_json)
 
+                mem_id = uuid.uuid4()
+
+        evidence_json = [str(x) for x in (payload.evidence_session_ids or [])]
+        evidence_str = json.dumps(evidence_json)
+
         row = db.execute(
             text(
                 """
                 INSERT INTO memories (id, user_id, kind, statement, evidence_session_ids, confidence, active)
-                VALUES (:id, :uid, :kind, :statement, :evidence::jsonb, :confidence, true)
+                VALUES (:id, :uid, :kind, :statement, CAST(:evidence AS jsonb), :confidence, true)
                 RETURNING id, kind, statement, confidence, active, evidence_session_ids, created_at
                 """
             ),
@@ -329,6 +334,7 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
                 "confidence": payload.confidence,
             },
         ).fetchone()
+
         db.commit()
 
     evidence_uuids = []
