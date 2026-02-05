@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
-from app.memory_shaping import propose_memory_offer, fetch_recent_user_texts
+from app.memory_shaping import propose_memory_offer, compute_offer_debug, fetch_recent_user_texts
 from app.schemas import (
     CreateSessionResponse,
     SendMessageRequest,
@@ -285,6 +285,14 @@ def memory_debug(user_id: uuid.UUID, limit: int = 80):
                 "worried", "anxious"
             ],
         }
+        
+@app.get("/v1/users/{user_id}/memory-offer-debug")
+def memory_offer_debug(user_id: uuid.UUID):
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+        out = compute_offer_debug(db, user_id)
+        return out
 
         counts = {k: 0 for k in signals}
         evidence = {k: set() for k in signals}
