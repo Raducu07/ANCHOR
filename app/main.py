@@ -520,6 +520,12 @@ def memory_offer(user_id: uuid.UUID):
 def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
     stmt = _norm_stmt(payload.statement)
     _validate_memory_statement(stmt)
+    # Do not allow saving "negative_space" as a memory (it's a fallback offer, not a memory)
+    if payload.kind == "negative_space":
+        raise HTTPException(
+            status_code=400,
+            detail="negative_space is an offer fallback and cannot be saved as a memory",
+        )
 
     kind_allowed = {
         "recurring_tension",
