@@ -3,6 +3,7 @@ import json
 
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
+from app.memory_shaping import fetch_recent_user_texts
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
@@ -330,6 +331,54 @@ def evidence_check(user_id: uuid.UUID):
         "user_message_count": int(user_msgs),
         "last_sessions": [{"id": str(r[0]), "created_at": r[1].isoformat()} for r in last_sessions],
     }
+
+
+@app.get("/v1/users/{user_id}/memory-debug")
+def memory_debug(user_id: uuid.UUID, limit: int = 80):
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+        items = fetch_recent_user_texts(db, user_id, limit=limit)
+
+        signals = {
+            "overwhelm_load": [
+                "overwhelmed", "too much", "can't keep up", "cannot keep up",
+                "exhausted", "burnt out", "drained", "no time", "stressed", "pressure"
+            ],
+            "responsibility_conflict": [
+                "i have to", "i must", "obligation", "obligations", "responsible",
+                "expectations", "expects", "everyone", "depend on me", "duty"
+            ],
+            "control_uncertainty": [
+                "i don't know", "uncertain", "confused", "not sure", "what if",
+                "worried", "anxious"
+            ],
+        }
+
+        counts = {k: 0 for k in signals}
+        evidence = {k: set() for k in signals}
+
+        for session_id, txt in items:
+            low = (txt or "").strip().lower()
+            if not low:
+                continue
+            for k, needles in signals.items():
+                if any(n in low for n in needles):
+                    counts[k] += 1
+                    evidence[k].add(str(session_id))
+
+        best_key = max(counts, key=lambda k: counts[k]) if counts else None
+        best_count = counts[best_key] if best_key else 0
+
+        return {
+            "user_id": str(user_id),
+            "scanned_user_messages": len(items),
+            "counts": counts,
+            "best_key": best_key,
+            "best_count": best_count,
+            "evidence_session_ids": list(evidence[best_key])[:5] if best_key else [],
+            "sample_last_5_texts": [t for (_, t) in items[-5:]],
+        }
 
 
 @app.post("/v1/users/{user_id}/memory-offer", response_model=MemoryOfferResponse)
