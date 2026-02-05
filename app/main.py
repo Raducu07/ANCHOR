@@ -1,12 +1,12 @@
 import uuid
 import json
 
-from app.memory_shaping import propose_memory_offer
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
+from app.memory_shaping import propose_memory_offer
 from app.schemas import (
     CreateSessionResponse,
     SendMessageRequest,
@@ -54,6 +54,11 @@ def _validate_memory_statement(statement: str):
             status_code=400,
             detail="Memory statement violates neutrality rules",
         )
+
+
+def _norm_stmt(s: str) -> str:
+    # normalize whitespace to avoid invisible mismatches
+    return " ".join((s or "").strip().split())
 
 
 @app.on_event("startup")
@@ -113,10 +118,7 @@ def create_session():
     )
 
 
-@app.post(
-    "/v1/sessions/{session_id}/messages",
-    response_model=SendMessageResponse,
-)
+@app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
 def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
     with SessionLocal() as db:
         row = db.execute(
@@ -140,7 +142,7 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
             },
         )
 
-        # v1 witness reply
+        # v1 witness reply (presence, not advice)
         reply = (
             "I’m here with you. I’m going to reflect back what I heard, briefly.\n\n"
             f"**What you said:** {payload.content}\n\n"
@@ -279,8 +281,11 @@ def memory_offer(user_id: uuid.UUID):
                 )
             )
 
+        offer_kind = offer["kind"]
+        offer_stmt = _norm_stmt(offer["statement"])
+
         # ✅ Fix 1: Ensure offers obey neutrality guardrails
-        _validate_memory_statement(offer["statement"])
+        _validate_memory_statement(offer_stmt)
 
         # ✅ Fix 2: Prevent offering duplicates already saved as active
         dup = db.execute(
@@ -297,8 +302,8 @@ def memory_offer(user_id: uuid.UUID):
             ),
             {
                 "uid": str(user_id),
-                "kind": offer["kind"],
-                "statement": offer["statement"],
+                "kind": offer_kind,
+                "statement": offer_stmt,
             },
         ).fetchone()
 
@@ -312,31 +317,21 @@ def memory_offer(user_id: uuid.UUID):
                 )
             )
 
-        # Return the computed offer
+        # Return the computed offer (normalized)
         return MemoryOfferResponse(
             offer=CreateMemoryRequest(
-                kind=offer["kind"],
-                statement=offer["statement"],
+                kind=offer_kind,
+                statement=offer_stmt,
                 confidence=offer["confidence"],
                 evidence_session_ids=offer["evidence_session_ids"],
             )
         )
-
-
-        return MemoryOfferResponse(
-            offer=CreateMemoryRequest(
-                kind=offer["kind"],
-                statement=offer["statement"],
-                confidence=offer["confidence"],
-                evidence_session_ids=offer["evidence_session_ids"],
-            )
-        )
-
 
 
 @app.post("/v1/users/{user_id}/memories", response_model=MemoryItem)
 def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
-    _validate_memory_statement(payload.statement)
+    stmt = _norm_stmt(payload.statement)
+    _validate_memory_statement(stmt)
 
     kind_allowed = {
         "recurring_tension",
@@ -410,7 +405,7 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
                 "id": str(mem_id),
                 "uid": str(user_id),
                 "kind": payload.kind,
-                "statement": payload.statement.strip(),
+                "statement": stmt,
                 "evidence": evidence_str,
                 "confidence": payload.confidence,
             },
@@ -434,6 +429,7 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
         evidence_session_ids=evidence_uuids,
         created_at=row[6].isoformat() if row[6] else "",
     )
+
 
 @app.post("/v1/users/{user_id}/memories/{memory_id}/archive")
 def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
