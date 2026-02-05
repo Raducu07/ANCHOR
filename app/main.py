@@ -3,11 +3,10 @@ import json
 
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
-from app.memory_shaping import fetch_recent_user_texts
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
-from app.memory_shaping import propose_memory_offer
+from app.memory_shaping import propose_memory_offer, fetch_recent_user_texts
 from app.schemas import (
     CreateSessionResponse,
     SendMessageRequest,
@@ -19,6 +18,10 @@ from app.schemas import (
 
 app = FastAPI(title="ANCHOR API")
 
+
+# ---------------------------
+# Helpers
+# ---------------------------
 
 def _ensure_user_exists(db, user_id: uuid.UUID):
     row = db.execute(
@@ -62,10 +65,18 @@ def _norm_stmt(s: str) -> str:
     return " ".join((s or "").strip().split())
 
 
+# ---------------------------
+# Startup
+# ---------------------------
+
 @app.on_event("startup")
 def on_startup():
     run_migrations()
 
+
+# ---------------------------
+# Health / Root
+# ---------------------------
 
 @app.get("/health")
 def health():
@@ -93,6 +104,10 @@ def root():
     return {"name": "ANCHOR API", "status": "live"}
 
 
+# ---------------------------
+# Sessions (new user + session)
+# ---------------------------
+
 @app.post("/v1/sessions", response_model=CreateSessionResponse)
 def create_session():
     user_id = uuid.uuid4()
@@ -119,6 +134,10 @@ def create_session():
     )
 
 
+# ---------------------------
+# Sessions (existing user -> new session)
+# ---------------------------
+
 @app.post("/v1/users/{user_id}/sessions", response_model=CreateSessionResponse)
 def create_session_for_user(user_id: uuid.UUID):
     session_id = uuid.uuid4()
@@ -141,6 +160,10 @@ def create_session_for_user(user_id: uuid.UUID):
         mode="witness",
     )
 
+
+# ---------------------------
+# Messages
+# ---------------------------
 
 @app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
 def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
@@ -237,6 +260,108 @@ def list_messages(session_id: uuid.UUID):
     return result
 
 
+# ---------------------------
+# Memory debug (optional but useful)
+# ---------------------------
+
+@app.get("/v1/users/{user_id}/memory-debug")
+def memory_debug(user_id: uuid.UUID, limit: int = 80):
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+        items = fetch_recent_user_texts(db, user_id, limit=limit)
+
+        signals = {
+            "overwhelm_load": [
+                "overwhelmed", "too much", "can't keep up", "cannot keep up",
+                "exhausted", "burnt out", "drained", "no time", "stressed", "pressure"
+            ],
+            "responsibility_conflict": [
+                "i have to", "i must", "obligation", "obligations", "responsible",
+                "expectations", "expects", "everyone", "depend on me", "duty"
+            ],
+            "control_uncertainty": [
+                "i don't know", "uncertain", "confused", "not sure", "what if",
+                "worried", "anxious"
+            ],
+        }
+
+        counts = {k: 0 for k in signals}
+        evidence = {k: set() for k in signals}
+
+        for session_id, txt in items:
+            low = (txt or "").strip().lower()
+            if not low:
+                continue
+            for k, needles in signals.items():
+                if any(n in low for n in needles):
+                    counts[k] += 1
+                    evidence[k].add(str(session_id))
+
+        best_key = max(counts, key=lambda k: counts[k]) if counts else None
+        best_count = counts[best_key] if best_key else 0
+
+        return {
+            "user_id": str(user_id),
+            "scanned_user_messages": len(items),
+            "counts": counts,
+            "best_key": best_key,
+            "best_count": best_count,
+            "evidence_session_ids": list(evidence[best_key])[:5] if best_key else [],
+            "sample_last_5_texts": [t for (_, t) in items[-5:]],
+        }
+
+
+@app.get("/v1/users/{user_id}/evidence-check")
+def evidence_check(user_id: uuid.UUID):
+    """
+    Quick visibility: do we actually have sessions + user messages for THIS user_id?
+    """
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+        sessions_count = db.execute(
+            text("SELECT COUNT(*) FROM sessions WHERE user_id = :uid"),
+            {"uid": str(user_id)},
+        ).fetchone()[0]
+
+        user_msgs = db.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE s.user_id = :uid AND m.role = 'user'
+                """
+            ),
+            {"uid": str(user_id)},
+        ).fetchone()[0]
+
+        last_sessions = db.execute(
+            text(
+                """
+                SELECT id, created_at
+                FROM sessions
+                WHERE user_id = :uid
+                ORDER BY created_at DESC
+                LIMIT 5
+                """
+            ),
+            {"uid": str(user_id)},
+        ).fetchall()
+
+    return {
+        "user_id": str(user_id),
+        "sessions_count": int(sessions_count),
+        "user_message_count": int(user_msgs),
+        "last_sessions": [{"id": str(r[0]), "created_at": r[1].isoformat()} for r in last_sessions],
+    }
+
+
+# ---------------------------
+# Memories
+# ---------------------------
+
 @app.get("/v1/users/{user_id}/memories", response_model=list[MemoryItem])
 def list_memories(user_id: uuid.UUID, active: bool = True, kind: str | None = None):
     with SessionLocal() as db:
@@ -287,100 +412,6 @@ def list_memories(user_id: uuid.UUID, active: bool = True, kind: str | None = No
     return result
 
 
-@app.get("/v1/users/{user_id}/evidence-check")
-def evidence_check(user_id: uuid.UUID):
-    """
-    Quick visibility: do we actually have sessions + user messages for THIS user_id?
-    """
-    with SessionLocal() as db:
-        _ensure_user_exists(db, user_id)
-
-        sessions_count = db.execute(
-            text("SELECT COUNT(*) FROM sessions WHERE user_id = :uid"),
-            {"uid": str(user_id)},
-        ).fetchone()[0]
-
-        user_msgs = db.execute(
-            text(
-                """
-                SELECT COUNT(*)
-                FROM messages m
-                JOIN sessions s ON s.id = m.session_id
-                WHERE s.user_id = :uid AND m.role = 'user'
-                """
-            ),
-            {"uid": str(user_id)},
-        ).fetchone()[0]
-
-        last_sessions = db.execute(
-            text(
-                """
-                SELECT id, created_at
-                FROM sessions
-                WHERE user_id = :uid
-                ORDER BY created_at DESC
-                LIMIT 5
-                """
-            ),
-            {"uid": str(user_id)},
-        ).fetchall()
-
-    return {
-        "user_id": str(user_id),
-        "sessions_count": int(sessions_count),
-        "user_message_count": int(user_msgs),
-        "last_sessions": [{"id": str(r[0]), "created_at": r[1].isoformat()} for r in last_sessions],
-    }
-
-
-@app.get("/v1/users/{user_id}/memory-debug")
-def memory_debug(user_id: uuid.UUID, limit: int = 80):
-    with SessionLocal() as db:
-        _ensure_user_exists(db, user_id)
-
-        items = fetch_recent_user_texts(db, user_id, limit=limit)
-
-        signals = {
-            "overwhelm_load": [
-                "overwhelmed", "too much", "can't keep up", "cannot keep up",
-                "exhausted", "burnt out", "drained", "no time", "stressed", "pressure"
-            ],
-            "responsibility_conflict": [
-                "i have to", "i must", "obligation", "obligations", "responsible",
-                "expectations", "expects", "everyone", "depend on me", "duty"
-            ],
-            "control_uncertainty": [
-                "i don't know", "uncertain", "confused", "not sure", "what if",
-                "worried", "anxious"
-            ],
-        }
-
-        counts = {k: 0 for k in signals}
-        evidence = {k: set() for k in signals}
-
-        for session_id, txt in items:
-            low = (txt or "").strip().lower()
-            if not low:
-                continue
-            for k, needles in signals.items():
-                if any(n in low for n in needles):
-                    counts[k] += 1
-                    evidence[k].add(str(session_id))
-
-        best_key = max(counts, key=lambda k: counts[k]) if counts else None
-        best_count = counts[best_key] if best_key else 0
-
-        return {
-            "user_id": str(user_id),
-            "scanned_user_messages": len(items),
-            "counts": counts,
-            "best_key": best_key,
-            "best_count": best_count,
-            "evidence_session_ids": list(evidence[best_key])[:5] if best_key else [],
-            "sample_last_5_texts": [t for (_, t) in items[-5:]],
-        }
-
-
 @app.post("/v1/users/{user_id}/memory-offer", response_model=MemoryOfferResponse)
 def memory_offer(user_id: uuid.UUID):
     DEFAULT_KIND = "negative_space"
@@ -394,7 +425,6 @@ def memory_offer(user_id: uuid.UUID):
 
         # If no strong pattern, return safe default — but avoid repeating it if already saved
         if not offer:
-            # Check if the default is already saved as an active memory
             dup_default = db.execute(
                 text(
                     """
@@ -502,18 +532,12 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
 
         # Scarcity rule: max 5 active memories
         count_row = db.execute(
-            text(
-                "SELECT COUNT(*) FROM memories "
-                "WHERE user_id = :uid AND active = true"
-            ),
+            text("SELECT COUNT(*) FROM memories WHERE user_id = :uid AND active = true"),
             {"uid": str(user_id)},
         ).fetchone()
 
         if count_row and int(count_row[0]) >= 5:
-            raise HTTPException(
-                status_code=400,
-                detail="Max active memories reached (5)",
-            )
+            raise HTTPException(status_code=400, detail="Max active memories reached (5)")
 
         mem_id = uuid.uuid4()
 
