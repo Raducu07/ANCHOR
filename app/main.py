@@ -1,6 +1,7 @@
 import uuid
 import json
 
+from app.memory_shaping import propose_memory_offer
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
 
@@ -262,21 +263,30 @@ def list_memories(user_id: uuid.UUID, active: bool = True, kind: str | None = No
 
 @app.post("/v1/users/{user_id}/memory-offer", response_model=MemoryOfferResponse)
 def memory_offer(user_id: uuid.UUID):
-    """
-    v1: dummy offer (no computation yet).
-    Later: compute from last N sessions and propose ONE memory.
-    """
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
-    return MemoryOfferResponse(
-        offer=CreateMemoryRequest(
-            kind="recurring_tension",
-            statement="You repeatedly describe conflicts where obligations grow faster than available time.",
-            confidence="tentative",
-            evidence_session_ids=[],
+        offer = propose_memory_offer(db, user_id)
+        if not offer:
+            # Return a safe default "no offer" (still a valid schema)
+            return MemoryOfferResponse(
+                offer=CreateMemoryRequest(
+                    kind="negative_space",
+                    statement="No stable pattern is evident yet from recent entries.",
+                    confidence="tentative",
+                    evidence_session_ids=[],
+                )
+            )
+
+        return MemoryOfferResponse(
+            offer=CreateMemoryRequest(
+                kind=offer["kind"],
+                statement=offer["statement"],
+                confidence=offer["confidence"],
+                evidence_session_ids=offer["evidence_session_ids"],
+            )
         )
-    )
+
 
 
 @app.post("/v1/users/{user_id}/memories", response_model=MemoryItem)
