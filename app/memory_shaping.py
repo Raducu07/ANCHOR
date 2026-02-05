@@ -92,6 +92,7 @@ def propose_memory_offer(db, user_id: uuid.UUID):
             "obligations",
             "responsible",
             "expectations",
+            "expects",
             "everyone",
             "depend on me",
             "duty",
