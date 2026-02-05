@@ -25,6 +25,12 @@ class MemoryItem(BaseModel):
     created_at: str
 
 
+class CreateSessionForUserResponse(BaseModel):
+    user_id: uuid.UUID
+    session_id: uuid.UUID
+    mode: str = "witness"
+
+
 class CreateMemoryRequest(BaseModel):
     kind: str
     statement: str
