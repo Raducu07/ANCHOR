@@ -288,6 +288,52 @@ def list_memories(user_id: uuid.UUID, active: bool = True, kind: str | None = No
     return result
 
 
+@app.get("/v1/users/{user_id}/evidence-check")
+def evidence_check(user_id: uuid.UUID):
+    """
+    Quick visibility: do we actually have sessions + user messages for THIS user_id?
+    """
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+        sessions_count = db.execute(
+            text("SELECT COUNT(*) FROM sessions WHERE user_id = :uid"),
+            {"uid": str(user_id)},
+        ).fetchone()[0]
+
+        user_msgs = db.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE s.user_id = :uid AND m.role = 'user'
+                """
+            ),
+            {"uid": str(user_id)},
+        ).fetchone()[0]
+
+        last_sessions = db.execute(
+            text(
+                """
+                SELECT id, created_at
+                FROM sessions
+                WHERE user_id = :uid
+                ORDER BY created_at DESC
+                LIMIT 5
+                """
+            ),
+            {"uid": str(user_id)},
+        ).fetchall()
+
+    return {
+        "user_id": str(user_id),
+        "sessions_count": int(sessions_count),
+        "user_message_count": int(user_msgs),
+        "last_sessions": [{"id": str(r[0]), "created_at": r[1].isoformat()} for r in last_sessions],
+    }
+
+
 @app.post("/v1/users/{user_id}/memory-offer", response_model=MemoryOfferResponse)
 def memory_offer(user_id: uuid.UUID):
     DEFAULT_KIND = "negative_space"
