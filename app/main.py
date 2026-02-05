@@ -265,29 +265,62 @@ def list_memories(user_id: uuid.UUID, active: bool = True, kind: str | None = No
 
 @app.post("/v1/users/{user_id}/memory-offer", response_model=MemoryOfferResponse)
 def memory_offer(user_id: uuid.UUID):
+    DEFAULT_KIND = "negative_space"
+    DEFAULT_STATEMENT = "No stable pattern is evident yet from recent entries."
+    DEFAULT_STATEMENT_DUP = "No new stable pattern stands out beyond what is already saved."
+
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
         offer = propose_memory_offer(db, user_id)
 
-        # If no strong pattern, return a safe default "no offer"
+        # If no strong pattern, return safe default — but avoid repeating it if already saved
         if not offer:
+            # Check if the default is already saved as an active memory
+            dup_default = db.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM memories
+                    WHERE user_id = :uid
+                      AND active = true
+                      AND kind = :kind
+                      AND statement = :statement
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "uid": str(user_id),
+                    "kind": DEFAULT_KIND,
+                    "statement": DEFAULT_STATEMENT,
+                },
+            ).fetchone()
+
+            if dup_default:
+                return MemoryOfferResponse(
+                    offer=CreateMemoryRequest(
+                        kind=DEFAULT_KIND,
+                        statement=DEFAULT_STATEMENT_DUP,
+                        confidence="tentative",
+                        evidence_session_ids=[],
+                    )
+                )
+
             return MemoryOfferResponse(
                 offer=CreateMemoryRequest(
-                    kind="negative_space",
-                    statement="No stable pattern is evident yet from recent entries.",
+                    kind=DEFAULT_KIND,
+                    statement=DEFAULT_STATEMENT,
                     confidence="tentative",
                     evidence_session_ids=[],
                 )
             )
 
+        # Normal computed-offer flow
         offer_kind = offer["kind"]
         offer_stmt = _norm_stmt(offer["statement"])
 
-        # ✅ Fix 1: Ensure offers obey neutrality guardrails
         _validate_memory_statement(offer_stmt)
 
-        # ✅ Fix 2: Prevent offering duplicates already saved as active
         dup = db.execute(
             text(
                 """
@@ -310,14 +343,13 @@ def memory_offer(user_id: uuid.UUID):
         if dup:
             return MemoryOfferResponse(
                 offer=CreateMemoryRequest(
-                    kind="negative_space",
-                    statement="No new stable pattern stands out beyond what is already saved.",
+                    kind=DEFAULT_KIND,
+                    statement=DEFAULT_STATEMENT_DUP,
                     confidence="tentative",
                     evidence_session_ids=[],
                 )
             )
 
-        # Return the computed offer (normalized)
         return MemoryOfferResponse(
             offer=CreateMemoryRequest(
                 kind=offer_kind,
