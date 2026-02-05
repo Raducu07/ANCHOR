@@ -26,93 +26,52 @@ def fetch_recent_user_texts(db, user_id: uuid.UUID, limit: int = MAX_LOOKBACK_ME
         {"uid": str(user_id), "limit": int(limit)},
     ).fetchall()
 
-    # Reverse to chronological-ish for nicer scanning (optional)
+    # reverse to chronological-ish for nicer scanning
     rows = list(reversed(rows))
     return [(uuid.UUID(str(r[0])), (r[1] or "")) for r in rows]
 
 
 def _contains_any(text_lower: str, needles: list[str]) -> bool:
-    # Simple substring matching (v1). Deterministic and fast.
     return any(n in text_lower for n in needles)
 
 
-def _is_duplicate_active_memory(db, user_id: uuid.UUID, kind: str, statement: str) -> bool:
-    row = db.execute(
-        text(
-            """
-            SELECT 1
-            FROM memories
-            WHERE user_id = :uid
-              AND active = true
-              AND kind = :kind
-              AND statement = :statement
-            LIMIT 1
-            """
-        ),
-        {"uid": str(user_id), "kind": kind, "statement": statement},
-    ).fetchone()
-    return bool(row)
-
-
-def propose_memory_offer(db, user_id: uuid.UUID):
+def compute_offer_debug(db, user_id: uuid.UUID, limit: int = MAX_LOOKBACK_MESSAGES):
     """
-    Returns a dict shaped like CreateMemoryRequest, plus evidence_session_ids.
-    Or returns None if no strong pattern.
+    Returns a dict with:
+    - offer (or None)
+    - debug: counts, evidence, best_key, best_count, sampled texts
     """
+    items = fetch_recent_user_texts(db, user_id, limit=limit)
 
-    items = fetch_recent_user_texts(db, user_id, limit=MAX_LOOKBACK_MESSAGES)
+    debug = {
+        "user_id": str(user_id),
+        "scanned_user_messages": len(items),
+        "counts": {"overwhelm_load": 0, "responsibility_conflict": 0, "control_uncertainty": 0},
+        "best_key": None,
+        "best_count": 0,
+        "evidence_session_ids": [],
+        "sample_last_5_texts": [t for (_, t) in items[-5:]],
+    }
+
     if not items:
-        return None
+        return {"offer": None, "debug": debug}
 
-    # Lexical signals (v1).
-    # Keep these simple & neutral. Expand later, but keep determinism.
     signals = {
         "overwhelm_load": [
-            "overwhelmed",
-            "too much",
-            "can't keep up",
-            "cannot keep up",
-            "exhausted",
-            "burnt out",
-            "burned out",
-            "drained",
-            "no time",
-            "not enough time",
-            "stressed",
-            "pressure",
-            "workload",
-            "load",
-            "time is fixed",
-            "responsibilities expand",
+            "overwhelmed", "too much", "can't keep up", "cannot keep up",
+            "exhausted", "burnt out", "drained", "no time", "stressed", "pressure"
         ],
         "responsibility_conflict": [
-            "i have to",
-            "i must",
-            "obligation",
-            "obligations",
-            "responsible",
-            "expectations",
-            "expects",
-            "everyone",
-            "depend on me",
-            "duty",
-            "i keep saying yes",
+            "i have to", "i must", "obligation", "obligations", "responsible",
+            "expectations", "expects", "everyone", "depend on me", "duty"
         ],
         "control_uncertainty": [
-            "i don't know",
-            "i do not know",
-            "uncertain",
-            "confused",
-            "not sure",
-            "what if",
-            "worried",
-            "anxious",
+            "i don't know", "uncertain", "confused", "not sure", "what if",
+            "worried", "anxious"
         ],
     }
 
-    # We want evidence from DIFFERENT sessions, not just repeated lines in one session.
-    counts = {k: 0 for k in signals}
-    evidence_sessions = {k: set() for k in signals}
+    evidence = {k: set() for k in signals}
 
     for session_id, txt in items:
         low = (txt or "").strip().lower()
@@ -121,57 +80,52 @@ def propose_memory_offer(db, user_id: uuid.UUID):
 
         for k, needles in signals.items():
             if _contains_any(low, needles):
-                counts[k] += 1
-                evidence_sessions[k].add(session_id)
+                debug["counts"][k] += 1
+                evidence[k].add(session_id)
 
-    # Pick the best supported pattern
-    best_key = max(counts, key=lambda k: counts[k])
-    best_count = counts[best_key]
-    best_sessions = evidence_sessions[best_key]
+    best_key = max(debug["counts"], key=lambda k: debug["counts"][k])
+    best_count = debug["counts"][best_key]
 
-    # Thresholds (tune later):
-    # Require at least 2 hits AND at least 2 distinct sessions
-    if best_count < 2 or len(best_sessions) < 2:
-        return None
+    debug["best_key"] = best_key
+    debug["best_count"] = best_count
+    debug["evidence_session_ids"] = [str(x) for x in list(evidence[best_key])[:5]]
 
-    # Map signal -> memory offer (neutral, non-advice)
+    # Threshold
+    if best_count < 2:
+        return {"offer": None, "debug": debug}
+
+    # Map signal -> offer (neutral, non-advice)
     if best_key == "overwhelm_load":
         kind = "recurring_tension"
         statement = "Across multiple moments, you describe your load exceeding your available time."
     elif best_key == "responsibility_conflict":
         kind = "values_vs_emphasis"
         statement = "You repeatedly describe prioritising obligations even when it conflicts with personal bandwidth."
-    else:  # control_uncertainty
+    else:
         kind = "decision_posture"
         statement = "You repeatedly describe uncertainty and a desire for firmer footing before acting."
 
     # Confidence from frequency
+    confidence = "tentative"
     if best_count >= 4:
         confidence = "consistent"
     elif best_count >= 3:
         confidence = "emerging"
-    else:
-        confidence = "tentative"
 
-    # ✅ Deterministic evidence ordering: preserve the order sessions first appeared
-    # We scan items chronologically; collect first-seen session IDs.
-    ordered_unique = []
-    seen = set()
-    for session_id, txt in items:
-        if session_id in best_sessions and session_id not in seen:
-            ordered_unique.append(session_id)
-            seen.add(session_id)
-
-    evidence_session_ids = ordered_unique[:5]
-
-    # ✅ Dedupe: if already saved as an active memory, do NOT re-offer it
-    if _is_duplicate_active_memory(db, user_id, kind, statement):
-        return None
-
-    return {
+    offer = {
         "kind": kind,
         "statement": statement,
         "confidence": confidence,
-        "evidence_session_ids": evidence_session_ids,
+        "evidence_session_ids": [uuid.UUID(x) for x in debug["evidence_session_ids"]],
     }
 
+    return {"offer": offer, "debug": debug}
+
+
+def propose_memory_offer(db, user_id: uuid.UUID):
+    """
+    Returns a dict shaped like CreateMemoryRequest, plus evidence_session_ids.
+    Or returns None if no strong pattern.
+    """
+    out = compute_offer_debug(db, user_id, limit=MAX_LOOKBACK_MESSAGES)
+    return out["offer"]
