@@ -267,11 +267,9 @@ def memory_offer(user_id: uuid.UUID):
         _ensure_user_exists(db, user_id)
 
         offer = propose_memory_offer(db, user_id)
-                if offer:
-            _validate_memory_statement(offer["statement"])
 
+        # If no strong pattern, return a safe default "no offer"
         if not offer:
-            # Return a safe default "no offer" (still a valid schema)
             return MemoryOfferResponse(
                 offer=CreateMemoryRequest(
                     kind="negative_space",
@@ -280,6 +278,50 @@ def memory_offer(user_id: uuid.UUID):
                     evidence_session_ids=[],
                 )
             )
+
+        # ✅ Fix 1: Ensure offers obey neutrality guardrails
+        _validate_memory_statement(offer["statement"])
+
+        # ✅ Fix 2: Prevent offering duplicates already saved as active
+        dup = db.execute(
+            text(
+                """
+                SELECT 1
+                FROM memories
+                WHERE user_id = :uid
+                  AND active = true
+                  AND kind = :kind
+                  AND statement = :statement
+                LIMIT 1
+                """
+            ),
+            {
+                "uid": str(user_id),
+                "kind": offer["kind"],
+                "statement": offer["statement"],
+            },
+        ).fetchone()
+
+        if dup:
+            return MemoryOfferResponse(
+                offer=CreateMemoryRequest(
+                    kind="negative_space",
+                    statement="No new stable pattern stands out beyond what is already saved.",
+                    confidence="tentative",
+                    evidence_session_ids=[],
+                )
+            )
+
+        # Return the computed offer
+        return MemoryOfferResponse(
+            offer=CreateMemoryRequest(
+                kind=offer["kind"],
+                statement=offer["statement"],
+                confidence=offer["confidence"],
+                evidence_session_ids=offer["evidence_session_ids"],
+            )
+        )
+
 
         return MemoryOfferResponse(
             offer=CreateMemoryRequest(
