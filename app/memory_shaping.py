@@ -1,89 +1,176 @@
-import re
 import uuid
 from sqlalchemy import text
 
-# Memory kinds allowed by your API
-KIND_RECURRING_TENSION = "recurring_tension"
+# Rule-based, no LLM. Produces at most ONE memory offer.
+
+MAX_LOOKBACK_MESSAGES = 80  # safe default
 
 
-def propose_memory_offer(db, user_id: uuid.UUID):
+def fetch_recent_user_texts(db, user_id: uuid.UUID, limit: int = MAX_LOOKBACK_MESSAGES):
     """
-    Rule-based memory shaping V1.
-    - Reads recent USER messages for this user across recent sessions.
-    - Detects "load > time" / overwhelm / obligation expansion pattern.
-    - Returns ONE offer dict or None.
+    Returns a list of tuples: (session_id, content)
+    Only user role messages.
     """
-
-    # 1) Pull recent user messages (last 60 user messages is plenty for v1)
     rows = db.execute(
         text(
             """
-            SELECT
-                m.content,
-                s.id AS session_id,
-                m.created_at
+            SELECT m.session_id, m.content
             FROM messages m
             JOIN sessions s ON s.id = m.session_id
             WHERE s.user_id = :uid
               AND m.role = 'user'
-            ORDER BY m.created_at DESC
-            LIMIT 60
+            ORDER BY m.created_at DESC, m.id DESC
+            LIMIT :limit
             """
         ),
-        {"uid": str(user_id)},
+        {"uid": str(user_id), "limit": int(limit)},
     ).fetchall()
 
-    if not rows:
+    # Reverse to chronological-ish for nicer scanning (optional)
+    rows = list(reversed(rows))
+    return [(uuid.UUID(str(r[0])), (r[1] or "")) for r in rows]
+
+
+def _contains_any(text_lower: str, needles: list[str]) -> bool:
+    # Simple substring matching (v1). Deterministic and fast.
+    return any(n in text_lower for n in needles)
+
+
+def _is_duplicate_active_memory(db, user_id: uuid.UUID, kind: str, statement: str) -> bool:
+    row = db.execute(
+        text(
+            """
+            SELECT 1
+            FROM memories
+            WHERE user_id = :uid
+              AND active = true
+              AND kind = :kind
+              AND statement = :statement
+            LIMIT 1
+            """
+        ),
+        {"uid": str(user_id), "kind": kind, "statement": statement},
+    ).fetchone()
+    return bool(row)
+
+
+def propose_memory_offer(db, user_id: uuid.UUID):
+    """
+    Returns a dict shaped like CreateMemoryRequest, plus evidence_session_ids.
+    Or returns None if no strong pattern.
+    """
+
+    items = fetch_recent_user_texts(db, user_id, limit=MAX_LOOKBACK_MESSAGES)
+    if not items:
         return None
 
-    # 2) Define simple lexical signals (neutral, non-clinical)
-    # We want to detect: time scarcity + load growth + overwhelmed/pressure/obligations
-    patterns = [
-        r"\boverwhelm(ed|ing)?\b",
-        r"\btoo much\b",
-        r"\b(can'?t|cannot)\s+cope\b",
-        r"\bno time\b",
-        r"\bnot enough time\b",
-        r"\btime\b.*\b(run|running)\s+out\b",
-        r"\bbehind\b",
-        r"\bpressure\b",
-        r"\bobligations?\b",
-        r"\bload\b",
-        r"\bworkload\b",
-        r"\btoo many\b",
-        r"\bkeeps?\s+(growing|increasing|expanding)\b",
-        r"\bmore and more\b",
-        r"\bexceed(s|ing)?\b.*\btime\b",
-        r"\btime\b.*\bexceed(s|ing)?\b",
-        r"\bsqueez(e|ing)\s+out\b",
-        r"\bcrowd(s|ing)\s+out\b",
-    ]
-    rx = re.compile("|".join(patterns), re.IGNORECASE)
+    # Lexical signals (v1).
+    # Keep these simple & neutral. Expand later, but keep determinism.
+    signals = {
+        "overwhelm_load": [
+            "overwhelmed",
+            "too much",
+            "can't keep up",
+            "cannot keep up",
+            "exhausted",
+            "burnt out",
+            "burned out",
+            "drained",
+            "no time",
+            "not enough time",
+            "stressed",
+            "pressure",
+            "workload",
+            "load",
+            "time is fixed",
+            "responsibilities expand",
+        ],
+        "responsibility_conflict": [
+            "i have to",
+            "i must",
+            "obligation",
+            "obligations",
+            "responsible",
+            "expectations",
+            "everyone",
+            "depend on me",
+            "duty",
+            "i keep saying yes",
+        ],
+        "control_uncertainty": [
+            "i don't know",
+            "i do not know",
+            "uncertain",
+            "confused",
+            "not sure",
+            "what if",
+            "worried",
+            "anxious",
+        ],
+    }
 
-    # 3) Score messages + collect evidence sessions
-    hit_sessions = []
-    hits = 0
+    # We want evidence from DIFFERENT sessions, not just repeated lines in one session.
+    counts = {k: 0 for k in signals}
+    evidence_sessions = {k: set() for k in signals}
 
-    for content, session_id, _created_at in rows:
-        if not content:
+    for session_id, txt in items:
+        low = (txt or "").strip().lower()
+        if not low:
             continue
-        if rx.search(content):
-            hits += 1
-            hit_sessions.append(str(session_id))
 
-    # Need at least 2 hits across at least 2 different sessions
-    unique_sessions = list(dict.fromkeys(hit_sessions))  # preserve order, unique
-    if hits < 2 or len(unique_sessions) < 2:
+        for k, needles in signals.items():
+            if _contains_any(low, needles):
+                counts[k] += 1
+                evidence_sessions[k].add(session_id)
+
+    # Pick the best supported pattern
+    best_key = max(counts, key=lambda k: counts[k])
+    best_count = counts[best_key]
+    best_sessions = evidence_sessions[best_key]
+
+    # Thresholds (tune later):
+    # Require at least 2 hits AND at least 2 distinct sessions
+    if best_count < 2 or len(best_sessions) < 2:
         return None
 
-    evidence = unique_sessions[:3]  # keep small
+    # Map signal -> memory offer (neutral, non-advice)
+    if best_key == "overwhelm_load":
+        kind = "recurring_tension"
+        statement = "Across multiple moments, you describe your load exceeding your available time."
+    elif best_key == "responsibility_conflict":
+        kind = "values_vs_emphasis"
+        statement = "You repeatedly describe prioritising obligations even when it conflicts with personal bandwidth."
+    else:  # control_uncertainty
+        kind = "decision_posture"
+        statement = "You repeatedly describe uncertainty and a desire for firmer footing before acting."
 
-    # 4) Return a single neutral statement (no advice, no promises, no therapy)
-    statement = "Across multiple moments, you describe your load exceeding your available time."
+    # Confidence from frequency
+    if best_count >= 4:
+        confidence = "consistent"
+    elif best_count >= 3:
+        confidence = "emerging"
+    else:
+        confidence = "tentative"
+
+    # ✅ Deterministic evidence ordering: preserve the order sessions first appeared
+    # We scan items chronologically; collect first-seen session IDs.
+    ordered_unique = []
+    seen = set()
+    for session_id, txt in items:
+        if session_id in best_sessions and session_id not in seen:
+            ordered_unique.append(session_id)
+            seen.add(session_id)
+
+    evidence_session_ids = ordered_unique[:5]
+
+    # ✅ Dedupe: if already saved as an active memory, do NOT re-offer it
+    if _is_duplicate_active_memory(db, user_id, kind, statement):
+        return None
 
     return {
-        "kind": KIND_RECURRING_TENSION,
+        "kind": kind,
         "statement": statement,
-        "confidence": "emerging" if hits < 4 else "consistent",
-        "evidence_session_ids": [uuid.UUID(x) for x in evidence],
+        "confidence": confidence,
+        "evidence_session_ids": evidence_session_ids,
     }
+
