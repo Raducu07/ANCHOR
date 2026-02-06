@@ -134,6 +134,20 @@ def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
     findings += promise_findings
     findings += coercion_findings
 
+        # ---------------------------
+    # Dedupe findings (avoid double-penalising same hit)
+    # Keyed by (rule_id, excerpt) — simple + auditable.
+    # ---------------------------
+    deduped: List[Finding] = []
+    seen = set()
+    for f in findings:
+        key = (f.rule_id, f.excerpt)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(f)
+    findings = deduped
+
     # positive markers: witness tone (bonus, not required)
     witness_hits = 0
     for p in WITNESS_POSITIVE:
