@@ -59,13 +59,13 @@ COERCION_PATTERNS = [
 
 # Jailbreak / instruction override attempts (we detect)
 JAILBREAK_PATTERNS = [
-    r"ignore (all|previous) (rules|instructions)",
-    r"ignore your rules",
-    r"act as (a|an) (therapist|doctor|psychiatrist)",
-    r"developer mode",
-    r"do anything now",
-    r"jailbreak",
-    r"system prompt",
+    r"\bignore your rules\b",
+    r"\bignore (all|previous) (rules|instructions)\b",
+    r"\bact as (a|an) (therapist|doctor|psychiatrist)\b",
+    r"\bdeveloper mode\b",
+    r"\bdo anything now\b",
+    r"\bjailbreak\b",
+    r"\bsystem prompt\b",
 ]
 
 # “Witness style” requirements (what we *want*)
