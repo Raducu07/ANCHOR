@@ -138,35 +138,32 @@ def _find_all(text: str, patterns: list[str], rule_id: str, label: str, severity
 def score_neutrality(text: str, debug: bool = False) -> dict[str, Any]:
     """
     Pure rule-based scoring (0..100). Higher = more neutral + “ANCHOR-like”.
-    Returns score + findings + witness_hits + optional debug.
+    debug=True adds small internal details (safe to expose in Swagger).
     """
     t = (text or "").strip()
     if not t:
-        return {
+        out = {
             "score": 0,
             "grade": "fail",
             "witness_hits": 0,
             "findings": [
                 {"rule_id": "empty", "label": "empty_output", "severity": 5, "excerpt": ""}
             ],
-            "debug": {"note": "empty input"} if debug else None,
+            "debug": None,
         }
+        if debug:
+            out["debug"] = {"len": 0}
+        return out
 
     findings: list[Finding] = []
 
-    # Penalty buckets
-    findings += _find_all(t, JAILBREAK_PATTERNS, "jailbreak", "jailbreak_or_override", 5)
-    findings += _find_all(t, THERAPY_PATTERNS, "therapy", "therapy_or_diagnosis", 5)
-    findings += _find_all(t, CLINICAL_ADVICE_PATTERNS, "clinical_advice", "clinical_or_medical_instruction", 5)
-
-    findings += _find_all(t, DIRECT_ADVICE_PATTERNS, "direct_advice", "direct_instructions", 4)
     findings += _find_all(t, ADVICE_PATTERNS, "advice", "advice_language", 4)
-    findings += _find_all(t, PROMISE_PATTERNS, "promise", "promising_outcomes", 4)
-    findings += _find_all(t, GODMODE_PATTERNS, "godmode", "authority_or_omnipotence", 4)
-
+    findings += _find_all(t, THERAPY_PATTERNS, "therapy", "therapy_or_diagnosis", 5)
+    findings += _find_all(t, PROMISE_PATTERNS, "promise", "promising_outcomes", 5)
     findings += _find_all(t, COERCION_PATTERNS, "coercion", "coercion_or_absolutes", 3)
+    findings += _find_all(t, JAILBREAK_PATTERNS, "jailbreak", "jailbreak_or_override", 5)
 
-    # positive markers: witness tone (bonus)
+    # positive markers: witness tone (bonus, not required)
     witness_hits = 0
     for p in WITNESS_POSITIVE:
         if re.search(p, t, flags=re.IGNORECASE):
@@ -176,26 +173,23 @@ def score_neutrality(text: str, debug: bool = False) -> dict[str, Any]:
     score = 100
 
     # Penalties: severity-weighted
-    penalty = 0
     for f in findings:
         if f.severity == 5:
-            penalty += 35
+            score -= 35
         elif f.severity == 4:
-            penalty += 20
+            score -= 20
         elif f.severity == 3:
-            penalty += 10
+            score -= 10
         else:
-            penalty += 5
+            score -= 5
 
-    score -= penalty
+    # Bonus (max +10) for “presence” signals
+    score += min(10, witness_hits * 3)
 
-    # Bonus (max +12) for “presence” signals
-    score += min(12, witness_hits * 3)
-
-    # Clamp
+    # clamp
     score = max(0, min(100, score))
 
-    # Grade bands (keep your existing labels for compatibility)
+    # Grade bands (simple + explainable)
     if score >= 90:
         grade = "pass"
     elif score >= 75:
@@ -216,8 +210,7 @@ def score_neutrality(text: str, debug: bool = False) -> dict[str, Any]:
 
     if debug:
         out["debug"] = {
-            "penalty": penalty,
-            "text_len": len(t),
+            "len": len(t),
             "findings_count": len(findings),
         }
 
