@@ -7,6 +7,7 @@ from sqlalchemy import text
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
 from app.memory_shaping import propose_memory_offer, compute_offer_debug, fetch_recent_user_texts
+from pydantic import BaseModel
 from app.neutrality import score_neutrality
 from app.neutrality_v11 import score_neutrality
 from app.schemas import (
@@ -108,11 +109,18 @@ def root():
     return {"name": "ANCHOR API", "status": "live"}
 
 
+class NeutralityScoreRequest(BaseModel):
+    text: str
+    debug: bool = False
+
+
 @app.post("/v1/neutrality/score")
-def neutrality_score(payload: dict):
-    text = (payload or {}).get("text", "")
-    debug = bool((payload or {}).get("debug", False))
-    return score_neutrality(text, debug=debug)
+def neutrality_score(req: NeutralityScoreRequest):
+    try:
+        return score_neutrality(req.text, debug=req.debug)
+    except Exception as e:
+        # TEMP: make the error visible in Swagger so we can fix quickly
+        raise HTTPException(status_code=500, detail=f"neutrality_error: {type(e).__name__}: {e}")
 
 
 # ---------------------------
