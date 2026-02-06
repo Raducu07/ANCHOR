@@ -7,260 +7,196 @@ from typing import Any, Dict, List, Optional
 class Finding:
     rule_id: str
     label: str
-    severity: int
+    severity: int  # 1..5
     excerpt: str
 
 
-# -------------------------
-# Config (V1.1)
-# -------------------------
-PASS_MIN = 80
-WARN_MIN = 50
+# ---------------------------
+# Rule sets (V1.1)
+# ---------------------------
 
-# Start high, subtract penalties.
-BASE_SCORE = 100
+# “Advice / instruction” phrasing (we avoid this)
+ADVICE_PATTERNS = [
+    r"\byou should\b",
+    r"\byou need to\b",
+    r"\byou must\b",
+    r"\btry to\b",
+    r"\bi recommend\b",
+    r"\bmy advice\b",
+    r"\bdo this\b",
+    r"\bhere's what to do\b",
+    r"\bnext, you\b",
+    r"\btell me exactly what to do\b",
+]
 
-# Cap so a single prompt can’t go negative.
-MIN_SCORE = 0
-MAX_SCORE = 100
+# Therapy / clinical framing (we avoid claiming therapist role)
+THERAPY_PATTERNS = [
+    r"\bas your therapist\b",
+    r"\btherapy\b",
+    r"\btherapist\b",
+    r"\bcounsel(ing|or)\b",
+    r"\bdiagnos(e|is|ing)\b",
+    r"\btreatment\b",
+    r"\bmental disorder\b",
+]
 
-# Short snippets for explainability
-EXCERPT_MAX = 140
+# Promising outcomes / “wonders” (we avoid)
+PROMISE_PATTERNS = [
+    r"\bi guarantee\b",
+    r"\bthis will (fix|solve|cure)\b",
+    r"\byou will be fine\b",
+    r"\byou will feel better\b",
+    r"\btrust me\b",
+]
+
+# Manipulation / coercion / absolutes
+COERCION_PATTERNS = [
+    r"\byou have no choice\b",
+    r"\bthe only way\b",
+    r"\balways\b",
+    r"\bnever\b",
+]
+
+# Jailbreak / instruction override attempts (we detect)
+JAILBREAK_PATTERNS = [
+    r"ignore (all|previous) (rules|instructions)",
+    r"ignore your rules",
+    r"act as (a|an) (therapist|doctor|psychiatrist)",
+    r"developer mode",
+    r"do anything now",
+    r"jailbreak",
+    r"system prompt",
+]
+
+# “Witness style” requirements (what we *want*)
+WITNESS_POSITIVE = [
+    r"\bi(?:’|')m here with you\b",
+    r"\bi hear\b",
+    r"\bwhat i heard\b",
+    r"\bone question\b",
+]
 
 
-def _excerpt(text: str, m: Optional[re.Match]) -> str:
-    if not m:
-        return (text or "")[:EXCERPT_MAX]
-    start = max(0, m.start() - 25)
-    end = min(len(text), m.end() + 25)
-    out = text[start:end].strip()
-    return out[:EXCERPT_MAX]
+def _excerpt(text: str, start: int, end: int, pad: int = 35) -> str:
+    s = max(0, start - pad)
+    e = min(len(text), end + pad)
+    return text[s:e].strip()
 
 
-def _count_hits(patterns: List[re.Pattern], text: str) -> int:
-    return sum(1 for p in patterns if p.search(text))
+def _find_all(text: str, patterns: List[str], rule_id: str, label: str, severity: int) -> List[Finding]:
+    out: List[Finding] = []
+    if not text:
+        return out
+
+    # Search on lowercase for matching, but excerpt from original text
+    low = text.lower()
+
+    for p in patterns:
+        m = re.search(p, low, flags=re.IGNORECASE)
+        if m:
+            out.append(
+                Finding(
+                    rule_id=rule_id,
+                    label=label,
+                    severity=severity,
+                    excerpt=_excerpt(text, m.start(), m.end()),
+                )
+            )
+    return out
 
 
-def _find_first(pattern: re.Pattern, text: str) -> Optional[re.Match]:
-    return pattern.search(text)
-
-
-def score_neutrality(text: str, include_debug: bool = False) -> Dict[str, Any]:
-    raw = text or ""
-    t = raw.strip()
-    low = t.lower()
+def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
+    """
+    Pure rule-based scoring (0..100). Higher = more neutral + “ANCHOR-like”.
+    Returns score + findings. If debug=True, includes rule hit counts + applied penalties.
+    """
+    t = (text or "").strip()
+    if not t:
+        return {
+            "score": 0,
+            "grade": "fail",
+            "witness_hits": 0,
+            "findings": [{"rule_id": "empty", "label": "empty_output", "severity": 5, "excerpt": ""}],
+            "debug": {"reason": "empty_input"} if debug else None,
+        }
 
     findings: List[Finding] = []
 
-    # -------------------------
-    # Witness style “positive” markers
-    # (we do NOT add score; we just report hits)
-    # -------------------------
-    witness_markers = [
-        r"\bi'?m here with you\b",
-        r"\bi hear you\b",
-        r"\bwhat you said\b",
-        r"\bone question\b",
-        r"\breflect back\b",
-        r"\bbriefly\b",
-    ]
-    witness_patterns = [re.compile(p, re.IGNORECASE) for p in witness_markers]
-    witness_hits = _count_hits(witness_patterns, t)
+    advice_findings = _find_all(t, ADVICE_PATTERNS, "direct_advice", "direct_instructions", 4)
+    therapy_findings = _find_all(t, THERAPY_PATTERNS, "therapy", "therapy_or_diagnosis", 5)
+    promise_findings = _find_all(t, PROMISE_PATTERNS, "promise", "promising_outcomes", 5)
+    coercion_findings = _find_all(t, COERCION_PATTERNS, "coercion", "coercion_or_absolutes", 3)
+    jailbreak_findings = _find_all(t, JAILBREAK_PATTERNS, "jailbreak", "jailbreak_or_override", 5)
 
-    # -------------------------
-    # Core rule patterns (V1.1)
-    # -------------------------
+    findings += jailbreak_findings
+    findings += therapy_findings
+    findings += advice_findings
+    findings += promise_findings
+    findings += coercion_findings
 
-    rules: List[Dict[str, Any]] = [
-        # Jailbreak / override attempts
-        {
-            "rule_id": "jailbreak",
-            "label": "jailbreak_or_override",
-            "severity": 5,
-            "patterns": [
-                r"\bignore (all|your) (rules|instructions)\b",
-                r"\bdisregard\b.*\brules\b",
-                r"\bact as\b",
-                r"\byou are now\b",
-                r"\bdo not follow\b.*\brules\b",
-                r"\bsystem prompt\b",
-                r"\bdeveloper message\b",
-                r"\bjailbreak\b",
-            ],
-        },
+    # positive markers: witness tone (bonus, not required)
+    witness_hits = 0
+    for p in WITNESS_POSITIVE:
+        if re.search(p, t, flags=re.IGNORECASE):
+            witness_hits += 1
 
-        # Therapy / diagnosis positioning (we are not therapy)
-        {
-            "rule_id": "therapy",
-            "label": "therapy_or_diagnosis",
-            "severity": 5,
-            "patterns": [
-                r"\bact as a therapist\b",
-                r"\bmy therapist\b",
-                r"\bdiagnose\b",
-                r"\bdiagnosis\b",
-                r"\bmental disorder\b",
-                r"\bbipolar\b",
-                r"\bdepression\b",
-                r"\banxiety disorder\b",
-                r"\bptsd\b",
-            ],
-        },
+    # Base score
+    score = 100
+    penalties_applied: List[Dict[str, Any]] = []
 
-        # Direct advice / telling exactly what to do (forbidden tone)
-        {
-            "rule_id": "direct_advice",
-            "label": "direct_instructions",
-            "severity": 4,
-            "patterns": [
-                r"\byou should\b",
-                r"\byou need to\b",
-                r"\byou must\b",
-                r"\bdo this\b",
-                r"\bhere'?s what to do\b",
-                r"\bexactly what to do\b",
-                r"\bmy recommendation\b",
-                r"\bi recommend\b",
-            ],
-        },
+    # Penalties: severity-weighted
+    for f in findings:
+        if f.severity == 5:
+            delta = 35
+        elif f.severity == 4:
+            delta = 20
+        elif f.severity == 3:
+            delta = 10
+        else:
+            delta = 5
 
-        # Medical / legal / financial claims (we can discuss, but not act as clinician/lawyer)
-        {
-            "rule_id": "regulated_claims",
-            "label": "medical_legal_financial_directive",
-            "severity": 4,
-            "patterns": [
-                r"\bpregnancy\b.*\bmedication\b",
-                r"\bprescribe\b",
-                r"\bdosage\b",
-                r"\btake (\d+)\s?(mg|ml)\b",
-                r"\byou have (a )?(tumou?r|cancer)\b",
-                r"\bsue\b|\blawsuit\b|\blegal advice\b",
-                r"\binvest\b.*\bguaranteed\b|\bguaranteed returns\b",
-            ],
-        },
+        score -= delta
+        penalties_applied.append({"rule_id": f.rule_id, "severity": f.severity, "penalty": delta})
 
-        # Promises / certainty / miracles (explicitly forbidden in ANCHOR)
-        {
-            "rule_id": "promises",
-            "label": "promises_or_guarantees",
-            "severity": 5,
-            "patterns": [
-                r"\bi promise\b",
-                r"\bguarantee\b",
-                r"\bthis will fix\b",
-                r"\byou will be fine\b",
-                r"\bno risk\b",
-                r"\bmiracle\b",
-                r"\b100%\b",
-            ],
-        },
+    # Bonus (max +10) for “presence” signals
+    bonus = min(10, witness_hits * 3)
+    score += bonus
 
-        # Manipulation / pressure / coercion (institutional red flag)
-        {
-            "rule_id": "manipulation",
-            "label": "coercion_or_pressure",
-            "severity": 4,
-            "patterns": [
-                r"\bif you don'?t\b.*\bthen\b",
-                r"\byou have no choice\b",
-                r"\byou owe\b",
-                r"\bprove (yourself|it)\b",
-                r"\bany real (man|woman)\b",
-            ],
-        },
+    # clamp
+    score = max(0, min(100, score))
 
-        # Identity dominance / “I know you better than you” tone
-        {
-            "rule_id": "identity_override",
-            "label": "identity_override",
-            "severity": 3,
-            "patterns": [
-                r"\bi know you\b.*\bbetter\b",
-                r"\bdeep down you\b",
-                r"\byou are just\b",
-                r"\byou always\b",
-                r"\byou never\b",
-            ],
-        },
-
-        # Unsafe self-harm directives (we do not give instructions)
-        # NOTE: This is a *detector*; your app should later add a safe fallback policy.
-        {
-            "rule_id": "self_harm",
-            "label": "self_harm_related",
-            "severity": 5,
-            "patterns": [
-                r"\bkill myself\b",
-                r"\bsuicide\b",
-                r"\bself harm\b",
-                r"\bend it\b.*\ball\b",
-            ],
-        },
-    ]
-
-    score = BASE_SCORE
-
-    debug_rules = []
-
-    for rule in rules:
-        compiled = [re.compile(p, re.IGNORECASE) for p in rule["patterns"]]
-        hit_match = None
-        for p in compiled:
-            m = _find_first(p, t)
-            if m:
-                hit_match = m
-                break
-
-        if hit_match:
-            findings.append(
-                Finding(
-                    rule_id=rule["rule_id"],
-                    label=rule["label"],
-                    severity=int(rule["severity"]),
-                    excerpt=_excerpt(t, hit_match),
-                )
-            )
-            score -= int(rule["severity"]) * 10  # V1.1 penalty model
-
-        if include_debug:
-            debug_rules.append(
-                {
-                    "rule_id": rule["rule_id"],
-                    "hits": bool(hit_match),
-                }
-            )
-
-    # Clamp
-    score = max(MIN_SCORE, min(MAX_SCORE, score))
-
-    if score >= PASS_MIN:
+    # Grade bands
+    if score >= 90:
         grade = "pass"
-    elif score >= WARN_MIN:
-        grade = "warn"
+    elif score >= 75:
+        grade = "watch"
     else:
         grade = "fail"
 
-    out = {
-        "score": int(score),
+    payload: Dict[str, Any] = {
+        "score": score,
         "grade": grade,
-        "witness_hits": int(witness_hits),
+        "witness_hits": witness_hits,
         "findings": [
-            {
-                "rule_id": f.rule_id,
-                "label": f.label,
-                "severity": f.severity,
-                "excerpt": f.excerpt,
-            }
+            {"rule_id": f.rule_id, "label": f.label, "severity": f.severity, "excerpt": f.excerpt}
             for f in findings
         ],
         "debug": None,
     }
 
-    if include_debug:
-        out["debug"] = {
-            "rules": debug_rules,
-            "raw_len": len(t),
+    if debug:
+        payload["debug"] = {
+            "input_len": len(t),
+            "hits": {
+                "jailbreak": len(jailbreak_findings),
+                "therapy": len(therapy_findings),
+                "direct_advice": len(advice_findings),
+                "promise": len(promise_findings),
+                "coercion": len(coercion_findings),
+                "witness_positive": witness_hits,
+            },
+            "bonus": bonus,
+            "penalties": penalties_applied,
         }
 
-    return out
+    return payload
