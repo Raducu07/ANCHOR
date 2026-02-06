@@ -108,10 +108,11 @@ def root():
     return {"name": "ANCHOR API", "status": "live"}
 
 
-@app.post("/v1/neutrality/score", response_model=NeutralityScoreResponse)
-def neutrality_score(payload: NeutralityScoreRequest):
-    result = score_neutrality(payload.text)
-    return NeutralityScoreResponse(**result)
+@app.post("/v1/neutrality/score")
+def neutrality_score(payload: dict):
+    text = (payload or {}).get("text", "")
+    debug = bool((payload or {}).get("debug", False))
+    return score_neutrality(text, debug=debug)
 
 
 # ---------------------------
