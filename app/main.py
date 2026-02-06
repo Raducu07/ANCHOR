@@ -8,6 +8,7 @@ from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
 from app.memory_shaping import propose_memory_offer, compute_offer_debug, fetch_recent_user_texts
 from app.neutrality import score_neutrality
+from app.neutrality_v11 import score_neutrality
 from app.schemas import (
     CreateSessionResponse,
     SendMessageRequest,
