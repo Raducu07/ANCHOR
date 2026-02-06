@@ -1,15 +1,18 @@
 import uuid
 import json
+from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import text
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
-from app.memory_shaping import propose_memory_offer, compute_offer_debug, fetch_recent_user_texts
-from pydantic import BaseModel
-from app.neutrality import score_neutrality
-from app.neutrality_v11 import score_neutrality
+from app.memory_shaping import (
+    propose_memory_offer,
+    compute_offer_debug,
+    fetch_recent_user_texts,
+)
 from app.schemas import (
     CreateSessionResponse,
     SendMessageRequest,
@@ -17,9 +20,11 @@ from app.schemas import (
     MemoryItem,
     CreateMemoryRequest,
     MemoryOfferResponse,
-    NeutralityScoreRequest,
-    NeutralityScoreResponse,
 )
+
+# Pick ONE neutrality implementation.
+# If you want V1.1, keep neutrality_v11. If not, swap to app.neutrality.
+from app.neutrality_v11 import score_neutrality  # <-- chosen source of truth
 
 app = FastAPI(title="ANCHOR API")
 
@@ -70,6 +75,25 @@ def _norm_stmt(s: str) -> str:
     return " ".join((s or "").strip().split())
 
 
+def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
+    """
+    Calls score_neutrality in a way that is compatible with both:
+      - score_neutrality(text)
+      - score_neutrality(text, debug=True)
+
+    Prevents the 'unexpected keyword argument debug' 500.
+    """
+    try:
+        # Try the newer signature first
+        return score_neutrality(text_value, debug=debug)  # type: ignore
+    except TypeError:
+        # Fall back to older signature
+        base = score_neutrality(text_value)  # type: ignore
+        if debug and isinstance(base, dict):
+            base["debug"] = {"note": "scorer does not support debug=True; returned base scoring only"}
+        return base
+
+
 # ---------------------------
 # Startup
 # ---------------------------
@@ -109,17 +133,21 @@ def root():
     return {"name": "ANCHOR API", "status": "live"}
 
 
-class NeutralityScoreRequest(BaseModel):
+# ---------------------------
+# Neutrality scoring
+# ---------------------------
+
+class NeutralityScoreRequestLocal(BaseModel):
     text: str
     debug: bool = False
 
 
 @app.post("/v1/neutrality/score")
-def neutrality_score(req: NeutralityScoreRequest):
+def neutrality_score(req: NeutralityScoreRequestLocal):
     try:
-        return score_neutrality(req.text, debug=req.debug)
+        return _score_neutrality_safe(req.text, debug=req.debug)
     except Exception as e:
-        # TEMP: make the error visible in Swagger so we can fix quickly
+        # Keep errors visible in Swagger for now (dev phase)
         raise HTTPException(status_code=500, detail=f"neutrality_error: {type(e).__name__}: {e}")
 
 
@@ -304,14 +332,6 @@ def memory_debug(user_id: uuid.UUID, limit: int = 80):
                 "worried", "anxious"
             ],
         }
-        
-@app.get("/v1/users/{user_id}/memory-offer-debug")
-def memory_offer_debug(user_id: uuid.UUID):
-    with SessionLocal() as db:
-        _ensure_user_exists(db, user_id)
-
-        out = compute_offer_debug(db, user_id)
-        return out
 
         counts = {k: 0 for k in signals}
         evidence = {k: set() for k in signals}
@@ -339,11 +359,15 @@ def memory_offer_debug(user_id: uuid.UUID):
         }
 
 
+@app.get("/v1/users/{user_id}/memory-offer-debug")
+def memory_offer_debug(user_id: uuid.UUID):
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+        return compute_offer_debug(db, user_id)
+
+
 @app.get("/v1/users/{user_id}/evidence-check")
 def evidence_check(user_id: uuid.UUID):
-    """
-    Quick visibility: do we actually have sessions + user messages for THIS user_id?
-    """
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
@@ -450,7 +474,6 @@ def memory_offer(user_id: uuid.UUID):
 
         offer = propose_memory_offer(db, user_id)
 
-        # If no strong pattern, return safe default — but avoid repeating it if already saved
         if not offer:
             dup_default = db.execute(
                 text(
@@ -464,11 +487,7 @@ def memory_offer(user_id: uuid.UUID):
                     LIMIT 1
                     """
                 ),
-                {
-                    "uid": str(user_id),
-                    "kind": DEFAULT_KIND,
-                    "statement": DEFAULT_STATEMENT,
-                },
+                {"uid": str(user_id), "kind": DEFAULT_KIND, "statement": DEFAULT_STATEMENT},
             ).fetchone()
 
             if dup_default:
@@ -490,10 +509,8 @@ def memory_offer(user_id: uuid.UUID):
                 )
             )
 
-        # Normal computed-offer flow
         offer_kind = offer["kind"]
         offer_stmt = _norm_stmt(offer["statement"])
-
         _validate_memory_statement(offer_stmt)
 
         dup = db.execute(
@@ -508,11 +525,7 @@ def memory_offer(user_id: uuid.UUID):
                 LIMIT 1
                 """
             ),
-            {
-                "uid": str(user_id),
-                "kind": offer_kind,
-                "statement": offer_stmt,
-            },
+            {"uid": str(user_id), "kind": offer_kind, "statement": offer_stmt},
         ).fetchone()
 
         if dup:
@@ -539,7 +552,8 @@ def memory_offer(user_id: uuid.UUID):
 def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
     stmt = _norm_stmt(payload.statement)
     _validate_memory_statement(stmt)
-    # Do not allow saving "negative_space" as a memory (it's a fallback offer, not a memory)
+
+    # Do not allow saving "negative_space" as a memory (fallback offer only)
     if payload.kind == "negative_space":
         raise HTTPException(
             status_code=400,
@@ -563,7 +577,6 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
-        # Scarcity rule: max 5 active memories
         count_row = db.execute(
             text("SELECT COUNT(*) FROM memories WHERE user_id = :uid AND active = true"),
             {"uid": str(user_id)},
@@ -573,7 +586,6 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
             raise HTTPException(status_code=400, detail="Max active memories reached (5)")
 
         mem_id = uuid.uuid4()
-
         evidence_json = [str(x) for x in (payload.evidence_session_ids or [])]
         evidence_str = json.dumps(evidence_json)
 
