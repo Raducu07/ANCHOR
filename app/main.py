@@ -3,9 +3,11 @@ import os
 import hmac
 import uuid
 import json
-from typing import Any, Dict, List, Optional
+import time
+import logging
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -41,7 +43,49 @@ from app.schemas import (
     NeutralityScoreResponse,
 )
 
+# ---------------------------
+# Logging (A6.4) — structured, safe-by-default
+# ---------------------------
+
+logger = logging.getLogger("anchor")
+if not logger.handlers:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+
+
 app = FastAPI(title="ANCHOR API")
+
+
+# ---------------------------
+# A6.4 — Request ID + structured request logs
+# ---------------------------
+
+@app.middleware("http")
+async def request_id_and_logs(request: Request, call_next):
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = req_id
+
+    start = time.time()
+    status_code = 500
+    try:
+        response: Response = await call_next(request)
+        status_code = response.status_code
+        response.headers["X-Request-ID"] = req_id
+        return response
+    finally:
+        dur_ms = int((time.time() - start) * 1000)
+        # Do NOT log request bodies or message content.
+        logger.info(
+            json.dumps(
+                {
+                    "event": "http_request",
+                    "request_id": req_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": status_code,
+                    "duration_ms": dur_ms,
+                }
+            )
+        )
 
 
 # ---------------------------
@@ -211,6 +255,29 @@ def _time_window_where(days: int) -> str:
     """
     _ = _days_to_interval(days)
     return "created_at >= (NOW() - (:days || ' days')::interval)"
+
+
+def _parse_cursor(cursor: Optional[str]) -> Optional[Tuple[str, str]]:
+    """
+    Cursor format: "<iso_timestamp>|<uuid>"
+    Example: "2026-02-07T20:55:12.123456+00:00|2b3d...-...."
+    """
+    if not cursor:
+        return None
+    cur = cursor.strip()
+    if "|" not in cur:
+        return None
+    ts, eid = cur.split("|", 1)
+    ts = ts.strip()
+    eid = eid.strip()
+    if not ts or not eid:
+        return None
+    # Validate UUID format
+    try:
+        _ = uuid.UUID(eid)
+    except Exception:
+        return None
+    return (ts, eid)
 
 
 def _insert_governance_event(
@@ -641,19 +708,40 @@ def list_messages(session_id: uuid.UUID):
 
 # ---------------------------
 # A3/A4 — Governance audit endpoints (A5: default last 30 days)
+# A6.2 — Cursor pagination + mode filter
 # ---------------------------
 
 @app.get("/v1/users/{user_id}/governance-events")
-def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50, days: int = 30):
+def list_governance_events_for_user(
+    user_id: uuid.UUID,
+    limit: int = 50,
+    days: int = 30,
+    mode: Optional[str] = None,
+    cursor: Optional[str] = None,
+):
     limit = max(1, min(500, int(limit)))
     d = _days_to_interval(days)
+
+    cursor_parsed = _parse_cursor(cursor)
 
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
         has_a4 = _gov_has_a4_cols(db)
 
-        where_sql = f"user_id = :uid AND {_time_window_where(d)}"
-        params = {"uid": str(user_id), "limit": limit, "days": d}
+        clauses = [f"user_id = :uid", _time_window_where(d)]
+        params: Dict[str, Any] = {"uid": str(user_id), "limit": limit, "days": d}
+
+        if mode:
+            clauses.append("mode = :mode")
+            params["mode"] = mode
+
+        # Desc pagination: (created_at, id) < (cursor_ts, cursor_id)
+        if cursor_parsed:
+            clauses.append("(created_at, id) < (:cursor_ts::timestamptz, :cursor_id::uuid)")
+            params["cursor_ts"] = cursor_parsed[0]
+            params["cursor_id"] = cursor_parsed[1]
+
+        where_sql = " AND ".join(clauses)
 
         if has_a4:
             rows = db.execute(
@@ -667,17 +755,27 @@ def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50, days: i
                       created_at
                     FROM governance_events
                     WHERE {where_sql}
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, id DESC
                     LIMIT :limit
                     """
                 ),
                 params,
             ).fetchall()
 
+            next_cursor = None
+            if rows:
+                last = rows[-1]
+                # created_at is last[14], id is last[0]
+                if last[14] and last[0]:
+                    next_cursor = f"{last[14].isoformat()}|{str(last[0])}"
+
             return {
                 "user_id": str(user_id),
                 "window_days": d,
                 "has_a4_cols": True,
+                "mode": mode,
+                "cursor": cursor,
+                "next_cursor": next_cursor,
                 "events": [
                     {
                         "id": str(r[0]),
@@ -711,17 +809,26 @@ def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50, days: i
                   created_at
                 FROM governance_events
                 WHERE {where_sql}
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT :limit
                 """
             ),
             params,
         ).fetchall()
 
+        next_cursor = None
+        if rows:
+            last = rows[-1]
+            if last[11] and last[0]:
+                next_cursor = f"{last[11].isoformat()}|{str(last[0])}"
+
         return {
             "user_id": str(user_id),
             "window_days": d,
             "has_a4_cols": False,
+            "mode": mode,
+            "cursor": cursor,
+            "next_cursor": next_cursor,
             "events": [
                 {
                     "id": str(r[0]),
@@ -743,16 +850,35 @@ def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50, days: i
 
 
 @app.get("/v1/sessions/{session_id}/governance-events")
-def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50, days: int = 30):
+def list_governance_events_for_session(
+    session_id: uuid.UUID,
+    limit: int = 50,
+    days: int = 30,
+    mode: Optional[str] = None,
+    cursor: Optional[str] = None,
+):
     limit = max(1, min(500, int(limit)))
     d = _days_to_interval(days)
+
+    cursor_parsed = _parse_cursor(cursor)
 
     with SessionLocal() as db:
         _ensure_session_exists(db, session_id)
         has_a4 = _gov_has_a4_cols(db)
 
-        where_sql = f"session_id = :sid AND {_time_window_where(d)}"
-        params = {"sid": str(session_id), "limit": limit, "days": d}
+        clauses = [f"session_id = :sid", _time_window_where(d)]
+        params: Dict[str, Any] = {"sid": str(session_id), "limit": limit, "days": d}
+
+        if mode:
+            clauses.append("mode = :mode")
+            params["mode"] = mode
+
+        if cursor_parsed:
+            clauses.append("(created_at, id) < (:cursor_ts::timestamptz, :cursor_id::uuid)")
+            params["cursor_ts"] = cursor_parsed[0]
+            params["cursor_id"] = cursor_parsed[1]
+
+        where_sql = " AND ".join(clauses)
 
         if has_a4:
             rows = db.execute(
@@ -766,17 +892,26 @@ def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50, d
                       created_at
                     FROM governance_events
                     WHERE {where_sql}
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, id DESC
                     LIMIT :limit
                     """
                 ),
                 params,
             ).fetchall()
 
+            next_cursor = None
+            if rows:
+                last = rows[-1]
+                if last[14] and last[0]:
+                    next_cursor = f"{last[14].isoformat()}|{str(last[0])}"
+
             return {
                 "session_id": str(session_id),
                 "window_days": d,
                 "has_a4_cols": True,
+                "mode": mode,
+                "cursor": cursor,
+                "next_cursor": next_cursor,
                 "events": [
                     {
                         "id": str(r[0]),
@@ -810,17 +945,26 @@ def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50, d
                   created_at
                 FROM governance_events
                 WHERE {where_sql}
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT :limit
                 """
             ),
             params,
         ).fetchall()
 
+        next_cursor = None
+        if rows:
+            last = rows[-1]
+            if last[11] and last[0]:
+                next_cursor = f"{last[11].isoformat()}|{str(last[0])}"
+
         return {
             "session_id": str(session_id),
             "window_days": d,
             "has_a4_cols": False,
+            "mode": mode,
+            "cursor": cursor,
+            "next_cursor": next_cursor,
             "events": [
                 {
                     "id": str(r[0]),
