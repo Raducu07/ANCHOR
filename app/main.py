@@ -3,8 +3,9 @@ import json
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 from sqlalchemy import text
+from app.neutrality import score_neutrality
+
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
@@ -21,10 +22,6 @@ from app.schemas import (
     CreateMemoryRequest,
     MemoryOfferResponse,
 )
-
-# Pick ONE neutrality implementation.
-# If you want V1.1, keep neutrality_v11. If not, swap to app.neutrality.
-from app.neutrality_v11 import score_neutrality  # <-- chosen source of truth
 
 app = FastAPI(title="ANCHOR API")
 
@@ -137,18 +134,16 @@ def root():
 # Neutrality scoring
 # ---------------------------
 
-class NeutralityScoreRequestLocal(BaseModel):
-    text: str
-    debug: bool = False
 
-
-@app.post("/v1/neutrality/score")
-def neutrality_score(req: NeutralityScoreRequestLocal):
+@app.post("/v1/neutrality/score", response_model=NeutralityScoreResponse)
+def neutrality_score(req: NeutralityScoreRequest):
     try:
-        return _score_neutrality_safe(req.text, debug=req.debug)
+        return score_neutrality(req.text, debug=req.debug)
     except Exception as e:
-        # Keep errors visible in Swagger for now (dev phase)
-        raise HTTPException(status_code=500, detail=f"neutrality_error: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"neutrality_error: {type(e).__name__}: {e}",
+        )
 
 
 # ---------------------------
