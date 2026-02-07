@@ -3,6 +3,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 
+# ===========================
+# Data structures
+# ===========================
+
 @dataclass(frozen=True)
 class Finding:
     rule_id: str
@@ -11,9 +15,9 @@ class Finding:
     excerpt: str
 
 
-# ---------------------------
+# ===========================
 # Rule sets (V1.1)
-# ---------------------------
+# ===========================
 
 ADVICE_PATTERNS = [
     r"\byou should\b",
@@ -71,6 +75,10 @@ WITNESS_POSITIVE = [
 ]
 
 
+# ===========================
+# Helpers
+# ===========================
+
 def _excerpt(text: str, start: int, end: int, pad: int = 35) -> str:
     s = max(0, start - pad)
     e = min(len(text), end + pad)
@@ -82,12 +90,8 @@ def _find_all(
     patterns: List[str],
     rule_id: str,
     label: str,
-    severity: int
+    severity: int,
 ) -> List[Finding]:
-    """
-    Uses finditer (not search) so multiple hits are captured.
-    Excerpts are taken from the original text.
-    """
     out: List[Finding] = []
     if not text:
         return out
@@ -107,10 +111,10 @@ def _find_all(
 
 def _dedupe_findings(findings: List[Finding]) -> List[Finding]:
     """
-    Better dedupe key:
-    - rule_id
-    - normalized excerpt (lower + collapsed whitespace)
-    This prevents triple-penalizing the same phrase with slightly different slicing.
+    De-duplicate findings using:
+    (rule_id, normalized excerpt)
+
+    Prevents triple-penalties for the same phrase.
     """
     deduped: List[Finding] = []
     seen = set()
@@ -126,45 +130,54 @@ def _dedupe_findings(findings: List[Finding]) -> List[Finding]:
     return deduped
 
 
+# ===========================
+# Scorer
+# ===========================
+
 def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
     """
-    Rule-based scoring (0..100). Higher = more neutral + “ANCHOR-like”.
-    If debug=True, includes counts + penalties used.
+    Rule-based neutrality scoring (0–100).
+    Higher = more neutral, witness-style compliant.
     """
     t = (text or "").strip()
+
     if not t:
         return {
             "score": 0,
             "grade": "fail",
             "witness_hits": 0,
             "findings": [
-                {"rule_id": "empty", "label": "empty_output", "severity": 5, "excerpt": ""}
+                {
+                    "rule_id": "empty",
+                    "label": "empty_output",
+                    "severity": 5,
+                    "excerpt": "",
+                }
             ],
             "debug": {"reason": "empty_input"} if debug else None,
         }
 
-    advice_findings = _find_all(t, ADVICE_PATTERNS, "direct_advice", "direct_instructions", 4)
-    therapy_findings = _find_all(t, THERAPY_PATTERNS, "therapy", "therapy_or_diagnosis", 5)
-    promise_findings = _find_all(t, PROMISE_PATTERNS, "promise", "promising_outcomes", 5)
-    coercion_findings = _find_all(t, COERCION_PATTERNS, "coercion", "coercion_or_absolutes", 3)
-    jailbreak_findings = _find_all(t, JAILBREAK_PATTERNS, "jailbreak", "jailbreak_or_override", 5)
+    advice = _find_all(t, ADVICE_PATTERNS, "direct_advice", "direct_instructions", 4)
+    therapy = _find_all(t, THERAPY_PATTERNS, "therapy", "therapy_or_diagnosis", 5)
+    promise = _find_all(t, PROMISE_PATTERNS, "promise", "promising_outcomes", 5)
+    coercion = _find_all(t, COERCION_PATTERNS, "coercion", "coercion_or_absolutes", 3)
+    jailbreak = _find_all(t, JAILBREAK_PATTERNS, "jailbreak", "jailbreak_or_override", 5)
 
     findings = []
-    findings += jailbreak_findings
-    findings += therapy_findings
-    findings += advice_findings
-    findings += promise_findings
-    findings += coercion_findings
+    findings.extend(jailbreak)
+    findings.extend(therapy)
+    findings.extend(advice)
+    findings.extend(promise)
+    findings.extend(coercion)
 
     findings = _dedupe_findings(findings)
 
-    witness_hits = 0
-    for p in WITNESS_POSITIVE:
-        if re.search(p, t, flags=re.IGNORECASE):
-            witness_hits += 1
+    witness_hits = sum(
+        1 for p in WITNESS_POSITIVE if re.search(p, t, flags=re.IGNORECASE)
+    )
 
     score = 100
-    penalties_applied: List[Dict[str, Any]] = []
+    penalties = []
 
     for f in findings:
         if f.severity == 5:
@@ -177,7 +190,9 @@ def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
             delta = 5
 
         score -= delta
-        penalties_applied.append({"rule_id": f.rule_id, "severity": f.severity, "penalty": delta})
+        penalties.append(
+            {"rule_id": f.rule_id, "severity": f.severity, "penalty": delta}
+        )
 
     bonus = min(10, witness_hits * 3)
     score += bonus
@@ -195,7 +210,12 @@ def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
         "grade": grade,
         "witness_hits": witness_hits,
         "findings": [
-            {"rule_id": f.rule_id, "label": f.label, "severity": f.severity, "excerpt": f.excerpt}
+            {
+                "rule_id": f.rule_id,
+                "label": f.label,
+                "severity": f.severity,
+                "excerpt": f.excerpt,
+            }
             for f in findings
         ],
         "debug": None,
@@ -205,16 +225,16 @@ def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
         payload["debug"] = {
             "input_len": len(t),
             "hits": {
-                "jailbreak": len(jailbreak_findings),
-                "therapy": len(therapy_findings),
-                "direct_advice": len(advice_findings),
-                "promise": len(promise_findings),
-                "coercion": len(coercion_findings),
+                "jailbreak": len(jailbreak),
+                "therapy": len(therapy),
+                "direct_advice": len(advice),
+                "promise": len(promise),
+                "coercion": len(coercion),
                 "witness_positive": witness_hits,
             },
             "bonus": bonus,
-            "penalties": penalties_applied,
+            "penalties": penalties,
         }
 
     return payload
- out
+
