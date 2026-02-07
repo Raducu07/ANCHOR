@@ -106,6 +106,10 @@ def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
         return base
 
 
+# Module-level cache (top of file, near imports)
+_GOV_EVENTS_HAS_A4_COLS: Optional[bool] = None
+
+
 def _insert_governance_event(
     db,
     *,
@@ -123,15 +127,25 @@ def _insert_governance_event(
 
     Safe by design: never raises upward.
     """
+    global _GOV_EVENTS_HAS_A4_COLS
+
     try:
         if not user_id:
             return
 
-        # Your governance.py emits:
-        # audit = { "decision": {...}, "findings": [...], "notes": {...}, ... }
-        decision = audit.get("decision") or {}
-        findings = audit.get("findings") or []
-        notes = audit.get("notes") or {}
+        a = audit or {}
+
+        decision = a.get("decision")
+        if not isinstance(decision, dict):
+            decision = {}
+
+        findings = a.get("findings")
+        if not isinstance(findings, list):
+            findings = []
+
+        notes = a.get("notes")
+        if not isinstance(notes, dict):
+            notes = {}
 
         allowed = bool(decision.get("allowed", True))
         replaced = bool(decision.get("replaced", False))
@@ -139,46 +153,57 @@ def _insert_governance_event(
         grade = str(decision.get("grade", "unknown") or "unknown")
         reason = str(decision.get("reason", "") or "")
 
-        # Compact deterministic decision trace (A4)
-        triggered_rule_ids = []
-        try:
-            for f in findings:
-                rid = (f.get("rule_id") or "").strip()
-                if rid:
-                    triggered_rule_ids.append(rid)
-        except Exception:
-            triggered_rule_ids = []
+        # Stable + compact decision trace (A4)
+        triggered_rule_ids: List[str] = []
+        for f in findings:
+            if isinstance(f, dict):
+                rid = f.get("rule_id")
+                if isinstance(rid, str):
+                    rid = rid.strip()
+                    if rid:
+                        triggered_rule_ids.append(rid)
+
+        # unique + stable ordering
+        triggered_rule_ids = sorted(set(triggered_rule_ids))[:25]
 
         decision_trace = {
             "min_score_allow": notes.get("min_score_allow"),
             "hard_block_rules": notes.get("hard_block_rules"),
             "soft_rules": notes.get("soft_rules"),
-            "triggered_rule_ids": triggered_rule_ids[:25],
+            "triggered_rule_ids": triggered_rule_ids,
             "score": score,
             "grade": grade,
             "replaced": replaced,
             "reason": reason,
         }
 
-        # Versions (A4). Keep stable strings now; later you can read from governance_config.
+        # Versions (A4)
         policy_version = "gov-v1.0"
         neutrality_version = "n-v1.1"
 
-        # Detect whether A4 columns exist (so we don't crash on older DBs)
-        cols = db.execute(
-            text(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name = 'governance_events'
-                """
-            )
-        ).fetchall()
-        colset = {str(r[0]) for r in cols}
+        # Detect A4 columns ONCE (cached) to avoid per-request information_schema hits
+        if _GOV_EVENTS_HAS_A4_COLS is None:
+            try:
+                rows = db.execute(
+                    text(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'governance_events'
+                        """
+                    )
+                ).fetchall()
+                colset = {str(r[0]) for r in rows}
+                _GOV_EVENTS_HAS_A4_COLS = {
+                    "policy_version",
+                    "neutrality_version",
+                    "decision_trace",
+                }.issubset(colset)
+            except Exception:
+                _GOV_EVENTS_HAS_A4_COLS = False
 
-        has_a4 = {"policy_version", "neutrality_version", "decision_trace"}.issubset(colset)
-
-        if has_a4:
+        if _GOV_EVENTS_HAS_A4_COLS:
             db.execute(
                 text(
                     """
@@ -209,14 +234,14 @@ def _insert_governance_event(
                     "grade": grade,
                     "reason": reason,
                     "findings": json.dumps(findings),
-                    "audit": json.dumps(audit),
+                    "audit": json.dumps(a),
                     "policy_version": policy_version,
                     "neutrality_version": neutrality_version,
                     "decision_trace": json.dumps(decision_trace),
                 },
             )
         else:
-            # A3-only schema (your latest posted schema.sql)
+            # A3-only schema
             db.execute(
                 text(
                     """
@@ -244,7 +269,7 @@ def _insert_governance_event(
                     "grade": grade,
                     "reason": reason,
                     "findings": json.dumps(findings),
-                    "audit": json.dumps(audit),
+                    "audit": json.dumps(a),
                 },
             )
 
