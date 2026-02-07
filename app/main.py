@@ -1,9 +1,11 @@
 # app/main.py
+import os
+import hmac
 import uuid
 import json
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -58,6 +60,37 @@ class GovernancePolicyUpdateRequest(BaseModel):
 # ---------------------------
 # Helpers
 # ---------------------------
+
+def require_admin(authorization: str = Header(default="")) -> None:
+    """
+    Admin gate using a static bearer token.
+
+    Set env:
+      ANCHOR_ADMIN_TOKEN="some-long-random-string"
+
+    Client must send:
+      Authorization: Bearer <token>
+    """
+    token = os.getenv("ANCHOR_ADMIN_TOKEN", "").strip()
+
+    # Fail closed if misconfigured (safer).
+    if not token:
+        raise HTTPException(
+            status_code=500,
+            detail="server_misconfig: ANCHOR_ADMIN_TOKEN is not set",
+        )
+
+    auth = (authorization or "").strip()
+    prefix = "Bearer "
+    if not auth.startswith(prefix):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    provided = auth[len(prefix):].strip()
+
+    # Constant-time compare.
+    if not hmac.compare_digest(provided, token):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
 
 def _ensure_user_exists(db, user_id: uuid.UUID) -> None:
     row = db.execute(
@@ -176,7 +209,7 @@ def _time_window_where(days: int) -> str:
     Standard time window predicate for governance_events.
     Uses a parameter :days.
     """
-    _ = _days_to_interval(days)  # validate/clamp upstream; keep here for readability
+    _ = _days_to_interval(days)
     return "created_at >= (NOW() - (:days || ' days')::interval)"
 
 
@@ -414,7 +447,10 @@ def governance_policy_history(limit: int = 50):
 
 
 @app.post("/v1/governance/policy")
-def governance_policy_create(payload: GovernancePolicyUpdateRequest):
+def governance_policy_create(
+    payload: GovernancePolicyUpdateRequest,
+    _: None = Depends(require_admin),
+):
     with SessionLocal() as db:
         try:
             created = create_new_policy(
