@@ -115,63 +115,139 @@ def _insert_governance_event(
     audit: Dict[str, Any],
 ) -> None:
     """
-    A3 — writes one audit row into governance_events.
+    A3/A4 — writes one audit row into governance_events.
 
-    IMPORTANT:
-    - This assumes your governance_events table has columns:
-        (id, user_id, session_id, mode, allowed, replaced, score, grade, reason,
-         findings jsonb, decision jsonb, notes jsonb, created_at)
-      If your schema differs, adjust this insert to match.
+    Compatible with:
+    - A3 schema: findings JSONB, audit JSONB
+    - A4 upgrades (optional): policy_version, neutrality_version, decision_trace
 
     Safe by design: never raises upward.
     """
     try:
         if not user_id:
-            # If we can't associate to a user, don't hard-fail the flow.
             return
 
-        allowed = bool(audit.get("allowed", True))
-        replaced = bool(audit.get("replaced", False))
-        score = int(audit.get("score", 0) or 0)
-        grade = str(audit.get("grade", "unknown") or "unknown")
-        reason = str(audit.get("reason", "") or "")
+        # Your governance.py emits:
+        # audit = { "decision": {...}, "findings": [...], "notes": {...}, ... }
+        decision = audit.get("decision") or {}
+        findings = audit.get("findings") or []
+        notes = audit.get("notes") or {}
 
-        findings = audit.get("findings", [])
-        decision = audit.get("decision", {})
-        notes = audit.get("notes", {})
+        allowed = bool(decision.get("allowed", True))
+        replaced = bool(decision.get("replaced", False))
+        score = int(decision.get("score", 0) or 0)
+        grade = str(decision.get("grade", "unknown") or "unknown")
+        reason = str(decision.get("reason", "") or "")
 
-        db.execute(
+        # Compact deterministic decision trace (A4)
+        triggered_rule_ids = []
+        try:
+            for f in findings:
+                rid = (f.get("rule_id") or "").strip()
+                if rid:
+                    triggered_rule_ids.append(rid)
+        except Exception:
+            triggered_rule_ids = []
+
+        decision_trace = {
+            "min_score_allow": notes.get("min_score_allow"),
+            "hard_block_rules": notes.get("hard_block_rules"),
+            "soft_rules": notes.get("soft_rules"),
+            "triggered_rule_ids": triggered_rule_ids[:25],
+            "score": score,
+            "grade": grade,
+            "replaced": replaced,
+            "reason": reason,
+        }
+
+        # Versions (A4). Keep stable strings now; later you can read from governance_config.
+        policy_version = "gov-v1.0"
+        neutrality_version = "n-v1.1"
+
+        # Detect whether A4 columns exist (so we don't crash on older DBs)
+        cols = db.execute(
             text(
                 """
-                INSERT INTO governance_events (
-                  id, user_id, session_id, mode,
-                  allowed, replaced, score, grade, reason,
-                  findings, decision, notes
-                )
-                VALUES (
-                  :id, :user_id, :session_id, :mode,
-                  :allowed, :replaced, :score, :grade, :reason,
-                  CAST(:findings AS jsonb),
-                  CAST(:decision AS jsonb),
-                  CAST(:notes AS jsonb)
-                )
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'governance_events'
                 """
-            ),
-            {
-                "id": str(uuid.uuid4()),
-                "user_id": str(user_id),
-                "session_id": str(session_id) if session_id else None,
-                "mode": mode,
-                "allowed": allowed,
-                "replaced": replaced,
-                "score": score,
-                "grade": grade,
-                "reason": reason,
-                "findings": json.dumps(findings),
-                "decision": json.dumps(decision),
-                "notes": json.dumps(notes),
-            },
-        )
+            )
+        ).fetchall()
+        colset = {str(r[0]) for r in cols}
+
+        has_a4 = {"policy_version", "neutrality_version", "decision_trace"}.issubset(colset)
+
+        if has_a4:
+            db.execute(
+                text(
+                    """
+                    INSERT INTO governance_events (
+                      id, user_id, session_id, mode,
+                      allowed, replaced, score, grade, reason,
+                      findings, audit,
+                      policy_version, neutrality_version, decision_trace
+                    )
+                    VALUES (
+                      :id, :user_id, :session_id, :mode,
+                      :allowed, :replaced, :score, :grade, :reason,
+                      CAST(:findings AS jsonb),
+                      CAST(:audit AS jsonb),
+                      :policy_version, :neutrality_version,
+                      CAST(:decision_trace AS jsonb)
+                    )
+                    """
+                ),
+                {
+                    "id": str(uuid.uuid4()),
+                    "user_id": str(user_id),
+                    "session_id": str(session_id) if session_id else None,
+                    "mode": mode,
+                    "allowed": allowed,
+                    "replaced": replaced,
+                    "score": score,
+                    "grade": grade,
+                    "reason": reason,
+                    "findings": json.dumps(findings),
+                    "audit": json.dumps(audit),
+                    "policy_version": policy_version,
+                    "neutrality_version": neutrality_version,
+                    "decision_trace": json.dumps(decision_trace),
+                },
+            )
+        else:
+            # A3-only schema (your latest posted schema.sql)
+            db.execute(
+                text(
+                    """
+                    INSERT INTO governance_events (
+                      id, user_id, session_id, mode,
+                      allowed, replaced, score, grade, reason,
+                      findings, audit
+                    )
+                    VALUES (
+                      :id, :user_id, :session_id, :mode,
+                      :allowed, :replaced, :score, :grade, :reason,
+                      CAST(:findings AS jsonb),
+                      CAST(:audit AS jsonb)
+                    )
+                    """
+                ),
+                {
+                    "id": str(uuid.uuid4()),
+                    "user_id": str(user_id),
+                    "session_id": str(session_id) if session_id else None,
+                    "mode": mode,
+                    "allowed": allowed,
+                    "replaced": replaced,
+                    "score": score,
+                    "grade": grade,
+                    "reason": reason,
+                    "findings": json.dumps(findings),
+                    "audit": json.dumps(audit),
+                },
+            )
+
     except Exception:
         # Never break runtime due to audit persistence failure
         pass
