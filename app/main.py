@@ -1,19 +1,15 @@
 import uuid
 import json
-from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
-from app.neutrality import score_neutrality
-
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
-from app.memory_shaping import (
-    propose_memory_offer,
-    compute_offer_debug,
-    fetch_recent_user_texts,
-)
+from app.memory_shaping import propose_memory_offer, compute_offer_debug, fetch_recent_user_texts
+
+from app.neutrality_v11 import score_neutrality  # <-- ONLY ONE neutrality import
+
 from app.schemas import (
     CreateSessionResponse,
     SendMessageRequest,
@@ -21,6 +17,8 @@ from app.schemas import (
     MemoryItem,
     CreateMemoryRequest,
     MemoryOfferResponse,
+    NeutralityScoreRequest,
+    NeutralityScoreResponse,
 )
 
 app = FastAPI(title="ANCHOR API")
@@ -138,12 +136,9 @@ def root():
 @app.post("/v1/neutrality/score", response_model=NeutralityScoreResponse)
 def neutrality_score(req: NeutralityScoreRequest):
     try:
-        return score_neutrality(req.text, debug=req.debug)
+        return score_neutrality(req.text, debug=getattr(req, "debug", False))
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"neutrality_error: {type(e).__name__}: {e}",
-        )
+        raise HTTPException(status_code=500, detail=f"neutrality_error: {type(e).__name__}: {e}")
 
 
 # ---------------------------
