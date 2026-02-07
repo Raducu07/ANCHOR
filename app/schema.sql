@@ -23,12 +23,6 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_session_created
-  ON messages(session_id, created_at ASC);
-
-CREATE INDEX IF NOT EXISTS idx_messages_session_role_created
-  ON messages(session_id, role, created_at ASC);
-
 -- =========================
 -- ANCHOR v1: memories table
 -- =========================
@@ -55,39 +49,35 @@ CREATE TABLE IF NOT EXISTS memories (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_memories_user_active
-  ON memories(user_id, active);
+CREATE INDEX IF NOT EXISTS idx_memories_user_active ON memories(user_id, active);
+CREATE INDEX IF NOT EXISTS idx_memories_user_kind ON memories(user_id, kind);
 
-CREATE INDEX IF NOT EXISTS idx_memories_user_kind
-  ON memories(user_id, kind);
-
-CREATE INDEX IF NOT EXISTS idx_memories_user_created
-  ON memories(user_id, created_at DESC);
-
--- ==================================
--- A3: governance audit events table
--- ==================================
+-- =========================
+-- ANCHOR A3: governance audit table
+-- =========================
 
 CREATE TABLE IF NOT EXISTS governance_events (
   id UUID PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
   session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
 
   mode TEXT NOT NULL DEFAULT 'witness',
 
+  -- Flattened decision fields (easy queries)
   allowed BOOLEAN NOT NULL,
   replaced BOOLEAN NOT NULL,
-
-  score INTEGER NOT NULL,
+  score INT NOT NULL,
   grade TEXT NOT NULL,
   reason TEXT NOT NULL,
 
+  -- Scorer findings (small, structured)
   findings JSONB NOT NULL DEFAULT '[]'::jsonb,
-  decision JSONB NOT NULL DEFAULT '{}'::jsonb,
-  notes JSONB NOT NULL DEFAULT '{}'::jsonb,
 
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  -- Full audit payload (optional, but useful for forensics)
+  audit JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_governance_events_user_created
@@ -98,4 +88,3 @@ CREATE INDEX IF NOT EXISTS idx_governance_events_session_created
 
 CREATE INDEX IF NOT EXISTS idx_governance_events_created
   ON governance_events(created_at DESC);
-;
