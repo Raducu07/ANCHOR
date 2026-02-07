@@ -5,9 +5,16 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
+from pydantic import BaseModel, Field
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
+
+from app.governance_config import (
+    get_current_policy,
+    list_policy_history,
+    create_new_policy,
+)
 
 from app.memory_shaping import (
     propose_memory_offer,
@@ -18,7 +25,7 @@ from app.memory_shaping import (
 # ✅ ONE scorer module (V1.1)
 from app.neutrality_v11 import score_neutrality
 
-# ✅ Governance layer (A2/A3)
+# ✅ Governance layer (A2/A3/A4)
 from app.governance import govern_output
 
 from app.schemas import (
@@ -33,6 +40,19 @@ from app.schemas import (
 )
 
 app = FastAPI(title="ANCHOR API")
+
+
+# ---------------------------
+# A4: Policy update request model
+# ---------------------------
+
+class GovernancePolicyUpdateRequest(BaseModel):
+    policy_version: str = Field(..., min_length=3, max_length=64)
+    neutrality_version: str = Field(default="n-v1.1", min_length=3, max_length=64)
+    min_score_allow: int = Field(default=75, ge=0, le=100)
+    hard_block_rules: List[str] = Field(default_factory=lambda: ["jailbreak", "therapy", "promise"])
+    soft_rules: List[str] = Field(default_factory=lambda: ["direct_advice", "coercion"])
+    max_findings: int = Field(default=10, ge=1, le=50)
 
 
 # ---------------------------
@@ -106,8 +126,41 @@ def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
         return base
 
 
-# Module-level cache (top of file, near imports)
+# Module-level cache to avoid repeated information_schema hits
 _GOV_EVENTS_HAS_A4_COLS: Optional[bool] = None
+
+
+def _detect_governance_events_a4_cols(db) -> bool:
+    """
+    Detect whether governance_events has A4 columns:
+      policy_version, neutrality_version, decision_trace
+    Cached at module level.
+    """
+    global _GOV_EVENTS_HAS_A4_COLS
+    if _GOV_EVENTS_HAS_A4_COLS is not None:
+        return _GOV_EVENTS_HAS_A4_COLS
+
+    try:
+        rows = db.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'governance_events'
+                """
+            )
+        ).fetchall()
+        colset = {str(r[0]) for r in rows}
+        _GOV_EVENTS_HAS_A4_COLS = {
+            "policy_version",
+            "neutrality_version",
+            "decision_trace",
+        }.issubset(colset)
+    except Exception:
+        _GOV_EVENTS_HAS_A4_COLS = False
+
+    return bool(_GOV_EVENTS_HAS_A4_COLS)
 
 
 def _insert_governance_event(
@@ -123,7 +176,7 @@ def _insert_governance_event(
 
     Compatible with:
     - A3 schema: findings JSONB, audit JSONB
-    - A4 upgrades (optional): policy_version, neutrality_version, decision_trace
+    - A4: + policy_version, neutrality_version, decision_trace
 
     Safe by design: never raises upward.
     """
@@ -163,7 +216,6 @@ def _insert_governance_event(
                     if rid:
                         triggered_rule_ids.append(rid)
 
-        # unique + stable ordering
         triggered_rule_ids = sorted(set(triggered_rule_ids))[:25]
 
         decision_trace = {
@@ -177,33 +229,15 @@ def _insert_governance_event(
             "reason": reason,
         }
 
-        # Versions (A4)
+        # Default versions (A4). If your govern_output populates these into audit later,
+        # you can pull from audit["notes"] or audit["decision"] instead.
         policy_version = "gov-v1.0"
         neutrality_version = "n-v1.1"
 
-        # Detect A4 columns ONCE (cached) to avoid per-request information_schema hits
-        if _GOV_EVENTS_HAS_A4_COLS is None:
-            try:
-                rows = db.execute(
-                    text(
-                        """
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_schema = 'public'
-                          AND table_name = 'governance_events'
-                        """
-                    )
-                ).fetchall()
-                colset = {str(r[0]) for r in rows}
-                _GOV_EVENTS_HAS_A4_COLS = {
-                    "policy_version",
-                    "neutrality_version",
-                    "decision_trace",
-                }.issubset(colset)
-            except Exception:
-                _GOV_EVENTS_HAS_A4_COLS = False
+        # Detect A4 columns once
+        has_a4 = _detect_governance_events_a4_cols(db)
 
-        if _GOV_EVENTS_HAS_A4_COLS:
+        if has_a4:
             db.execute(
                 text(
                     """
@@ -334,6 +368,95 @@ def neutrality_score(req: NeutralityScoreRequest):
 
 
 # ---------------------------
+# A4 — Governance Policy Endpoints (4.1–4.4)
+# ---------------------------
+
+@app.get("/v1/governance/policy")
+def get_governance_policy():
+    """
+    4.1 — Get current active governance policy (latest row).
+    """
+    with SessionLocal() as db:
+        p = get_current_policy(db)
+        # try to return a plain dict safely
+        try:
+            return dict(p.__dict__)
+        except Exception:
+            return {
+                "policy_version": getattr(p, "policy_version", None),
+                "neutrality_version": getattr(p, "neutrality_version", None),
+                "min_score_allow": getattr(p, "min_score_allow", 75),
+                "hard_block_rules": getattr(p, "hard_block_rules", ["jailbreak", "therapy", "promise"]),
+                "soft_rules": getattr(p, "soft_rules", ["direct_advice", "coercion"]),
+                "max_findings": getattr(p, "max_findings", 10),
+            }
+
+
+@app.get("/v1/governance/policy/history")
+def governance_policy_history(limit: int = 50):
+    """
+    4.2 — List governance policy history (most recent first).
+    """
+    with SessionLocal() as db:
+        items = list_policy_history(db, int(limit))
+        out = []
+        for p in items:
+            try:
+                out.append(dict(p.__dict__))
+            except Exception:
+                out.append(
+                    {
+                        "policy_version": getattr(p, "policy_version", None),
+                        "neutrality_version": getattr(p, "neutrality_version", None),
+                        "min_score_allow": getattr(p, "min_score_allow", None),
+                        "hard_block_rules": getattr(p, "hard_block_rules", None),
+                        "soft_rules": getattr(p, "soft_rules", None),
+                        "max_findings": getattr(p, "max_findings", None),
+                        "created_at": getattr(p, "created_at", None),
+                        "updated_at": getattr(p, "updated_at", None),
+                    }
+                )
+        return out
+
+
+@app.post("/v1/governance/policy")
+def update_governance_policy(req: GovernancePolicyUpdateRequest):
+    """
+    4.3 — Create a new policy row (becomes active as latest).
+    4.4 — Activation is by convention: newest row is current policy.
+    """
+    with SessionLocal() as db:
+        pol = create_new_policy(
+            db,
+            policy_version=req.policy_version,
+            neutrality_version=req.neutrality_version,
+            min_score_allow=req.min_score_allow,
+            hard_block_rules=req.hard_block_rules,
+            soft_rules=req.soft_rules,
+            max_findings=req.max_findings,
+        )
+        # safe commit regardless of whether create_new_policy commits internally
+        try:
+            db.commit()
+        except Exception:
+            pass
+
+        try:
+            return {"active_policy": dict(pol.__dict__)}
+        except Exception:
+            return {
+                "active_policy": {
+                    "policy_version": getattr(pol, "policy_version", None),
+                    "neutrality_version": getattr(pol, "neutrality_version", None),
+                    "min_score_allow": getattr(pol, "min_score_allow", None),
+                    "hard_block_rules": getattr(pol, "hard_block_rules", None),
+                    "soft_rules": getattr(pol, "soft_rules", None),
+                    "max_findings": getattr(pol, "max_findings", None),
+                }
+            }
+
+
+# ---------------------------
 # Sessions
 # ---------------------------
 
@@ -375,7 +498,7 @@ def create_session_for_user(user_id: uuid.UUID):
 
 
 # ---------------------------
-# Messages (with governance)
+# Messages (with governance + policy injection)
 # ---------------------------
 
 @app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
@@ -410,15 +533,50 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
             "One question: what feels most important in this right now?"
         )
 
-        # A2 governance gate
-        final_reply, decision, audit = govern_output(
-            user_text=payload.content,
-            assistant_text=draft_reply,
-            user_id=user_id,
-            session_id=session_id,
-            mode="witness",
-            debug=False,
-        )
+        # A4: pull current governance policy (DB-backed)
+        policy_dict: Dict[str, Any] = {
+            "policy_version": "gov-v1.0",
+            "neutrality_version": "n-v1.1",
+            "min_score_allow": 75,
+            "hard_block_rules": ["jailbreak", "therapy", "promise"],
+            "soft_rules": ["direct_advice", "coercion"],
+            "max_findings": 10,
+        }
+        try:
+            p = get_current_policy(db)
+            policy_dict = {
+                "policy_version": getattr(p, "policy_version", policy_dict["policy_version"]),
+                "neutrality_version": getattr(p, "neutrality_version", policy_dict["neutrality_version"]),
+                "min_score_allow": getattr(p, "min_score_allow", policy_dict["min_score_allow"]),
+                "hard_block_rules": getattr(p, "hard_block_rules", policy_dict["hard_block_rules"]),
+                "soft_rules": getattr(p, "soft_rules", policy_dict["soft_rules"]),
+                "max_findings": getattr(p, "max_findings", policy_dict["max_findings"]),
+            }
+        except Exception:
+            # keep safe defaults
+            pass
+
+        # A2 governance gate (+ A4 policy injection if supported by governance.py)
+        try:
+            final_reply, decision, audit = govern_output(
+                user_text=payload.content,
+                assistant_text=draft_reply,
+                user_id=user_id,
+                session_id=session_id,
+                mode="witness",
+                policy=policy_dict,  # <-- A4 (safe; wrapped)
+                debug=False,
+            )
+        except TypeError:
+            # governance.py doesn't yet accept policy=
+            final_reply, decision, audit = govern_output(
+                user_text=payload.content,
+                assistant_text=draft_reply,
+                user_id=user_id,
+                session_id=session_id,
+                mode="witness",
+                debug=False,
+            )
 
         # store governed assistant message ONCE ✅
         db.execute(
@@ -433,7 +591,7 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
             },
         )
 
-        # A3 persist audit event (same transaction)
+        # A3/A4 persist audit event (same transaction)
         _insert_governance_event(
             db,
             user_id=user_id,
@@ -482,7 +640,7 @@ def list_messages(session_id: uuid.UUID):
 
 
 # ---------------------------
-# A3 — Governance audit endpoints
+# A3/A4 — Governance audit endpoints (schema-correct)
 # ---------------------------
 
 @app.get("/v1/users/{user_id}/governance-events")
@@ -490,13 +648,56 @@ def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50):
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
+        has_a4 = _detect_governance_events_a4_cols(db)
+
+        if has_a4:
+            rows = db.execute(
+                text(
+                    """
+                    SELECT
+                      id, user_id, session_id, mode,
+                      allowed, replaced, score, grade, reason,
+                      findings, audit,
+                      policy_version, neutrality_version, decision_trace,
+                      created_at
+                    FROM governance_events
+                    WHERE user_id = :uid
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"uid": str(user_id), "limit": int(limit)},
+            ).fetchall()
+
+            return [
+                {
+                    "id": str(r[0]),
+                    "user_id": str(r[1]) if r[1] else None,
+                    "session_id": str(r[2]) if r[2] else None,
+                    "mode": r[3],
+                    "allowed": bool(r[4]),
+                    "replaced": bool(r[5]),
+                    "score": int(r[6]),
+                    "grade": r[7],
+                    "reason": r[8],
+                    "findings": r[9] or [],
+                    "audit": r[10] or {},
+                    "policy_version": r[11],
+                    "neutrality_version": r[12],
+                    "decision_trace": r[13] or {},
+                    "created_at": r[14].isoformat() if r[14] else None,
+                }
+                for r in rows
+            ]
+
+        # A3-only
         rows = db.execute(
             text(
                 """
                 SELECT
                   id, user_id, session_id, mode,
                   allowed, replaced, score, grade, reason,
-                  findings, decision, notes,
+                  findings, audit,
                   created_at
                 FROM governance_events
                 WHERE user_id = :uid
@@ -510,7 +711,7 @@ def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50):
     return [
         {
             "id": str(r[0]),
-            "user_id": str(r[1]),
+            "user_id": str(r[1]) if r[1] else None,
             "session_id": str(r[2]) if r[2] else None,
             "mode": r[3],
             "allowed": bool(r[4]),
@@ -519,9 +720,8 @@ def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50):
             "grade": r[7],
             "reason": r[8],
             "findings": r[9] or [],
-            "decision": r[10] or {},
-            "notes": r[11] or {},
-            "created_at": r[12].isoformat() if r[12] else None,
+            "audit": r[10] or {},
+            "created_at": r[11].isoformat() if r[11] else None,
         }
         for r in rows
     ]
@@ -532,13 +732,56 @@ def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50):
     with SessionLocal() as db:
         _ensure_session_exists(db, session_id)
 
+        has_a4 = _detect_governance_events_a4_cols(db)
+
+        if has_a4:
+            rows = db.execute(
+                text(
+                    """
+                    SELECT
+                      id, user_id, session_id, mode,
+                      allowed, replaced, score, grade, reason,
+                      findings, audit,
+                      policy_version, neutrality_version, decision_trace,
+                      created_at
+                    FROM governance_events
+                    WHERE session_id = :sid
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"sid": str(session_id), "limit": int(limit)},
+            ).fetchall()
+
+            return [
+                {
+                    "id": str(r[0]),
+                    "user_id": str(r[1]) if r[1] else None,
+                    "session_id": str(r[2]) if r[2] else None,
+                    "mode": r[3],
+                    "allowed": bool(r[4]),
+                    "replaced": bool(r[5]),
+                    "score": int(r[6]),
+                    "grade": r[7],
+                    "reason": r[8],
+                    "findings": r[9] or [],
+                    "audit": r[10] or {},
+                    "policy_version": r[11],
+                    "neutrality_version": r[12],
+                    "decision_trace": r[13] or {},
+                    "created_at": r[14].isoformat() if r[14] else None,
+                }
+                for r in rows
+            ]
+
+        # A3-only
         rows = db.execute(
             text(
                 """
                 SELECT
                   id, user_id, session_id, mode,
                   allowed, replaced, score, grade, reason,
-                  findings, decision, notes,
+                  findings, audit,
                   created_at
                 FROM governance_events
                 WHERE session_id = :sid
@@ -552,7 +795,7 @@ def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50):
     return [
         {
             "id": str(r[0]),
-            "user_id": str(r[1]),
+            "user_id": str(r[1]) if r[1] else None,
             "session_id": str(r[2]) if r[2] else None,
             "mode": r[3],
             "allowed": bool(r[4]),
@@ -561,9 +804,8 @@ def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50):
             "grade": r[7],
             "reason": r[8],
             "findings": r[9] or [],
-            "decision": r[10] or {},
-            "notes": r[11] or {},
-            "created_at": r[12].isoformat() if r[12] else None,
+            "audit": r[10] or {},
+            "created_at": r[11].isoformat() if r[11] else None,
         }
         for r in rows
     ]
@@ -920,3 +1162,4 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
         db.commit()
 
     return {"archived": True}
+
