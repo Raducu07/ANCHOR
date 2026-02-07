@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -15,7 +15,6 @@ class Finding:
 # Rule sets (V1.1)
 # ---------------------------
 
-# “Advice / instruction” phrasing (we avoid this)
 ADVICE_PATTERNS = [
     r"\byou should\b",
     r"\byou need to\b",
@@ -25,11 +24,10 @@ ADVICE_PATTERNS = [
     r"\bmy advice\b",
     r"\bdo this\b",
     r"\bhere's what to do\b",
-    r"\bnext, you\b",
+    r"\bnext,\s*you\b",
     r"\btell me exactly what to do\b",
 ]
 
-# Therapy / clinical framing (we avoid claiming therapist role)
 THERAPY_PATTERNS = [
     r"\bas your therapist\b",
     r"\btherapy\b",
@@ -40,7 +38,6 @@ THERAPY_PATTERNS = [
     r"\bmental disorder\b",
 ]
 
-# Promising outcomes / “wonders” (we avoid)
 PROMISE_PATTERNS = [
     r"\bi guarantee\b",
     r"\bthis will (fix|solve|cure)\b",
@@ -49,7 +46,6 @@ PROMISE_PATTERNS = [
     r"\btrust me\b",
 ]
 
-# Manipulation / coercion / absolutes
 COERCION_PATTERNS = [
     r"\byou have no choice\b",
     r"\bthe only way\b",
@@ -57,7 +53,6 @@ COERCION_PATTERNS = [
     r"\bnever\b",
 ]
 
-# Jailbreak / instruction override attempts (we detect)
 JAILBREAK_PATTERNS = [
     r"\bignore your rules\b",
     r"\bignore (all|previous) (rules|instructions)\b",
@@ -68,7 +63,6 @@ JAILBREAK_PATTERNS = [
     r"\bsystem prompt\b",
 ]
 
-# “Witness style” requirements (what we *want*)
 WITNESS_POSITIVE = [
     r"\bi(?:’|')m here with you\b",
     r"\bi hear\b",
@@ -77,23 +71,41 @@ WITNESS_POSITIVE = [
 ]
 
 
+# ---------------------------
+# Helpers
+# ---------------------------
+
 def _excerpt(text: str, start: int, end: int, pad: int = 35) -> str:
     s = max(0, start - pad)
     e = min(len(text), end + pad)
     return text[s:e].strip()
 
 
-def _find_all(text: str, patterns: List[str], rule_id: str, label: str, severity: int) -> List[Finding]:
+def _norm(s: str) -> str:
+    return " ".join((s or "").lower().strip().split())
+
+
+def _add_findings(
+    text: str,
+    patterns: List[str],
+    rule_id: str,
+    label: str,
+    severity: int,
+) -> Tuple[List[Finding], List[Tuple[str, int, int, str]]]:
+    """
+    Returns:
+      - findings (with excerpts)
+      - raw_hits: (rule_id, start, end, matched_text)
+    """
     out: List[Finding] = []
+    raw_hits: List[Tuple[str, int, int, str]] = []
     if not text:
-        return out
+        return out, raw_hits
 
-    # Search on lowercase for matching, but excerpt from original text
-    low = text.lower()
-
+    # Find ALL occurrences; more robust than re.search.
     for p in patterns:
-        m = re.search(p, low, flags=re.IGNORECASE)
-        if m:
+        for m in re.finditer(p, text, flags=re.IGNORECASE):
+            matched = text[m.start():m.end()]
             out.append(
                 Finding(
                     rule_id=rule_id,
@@ -102,13 +114,49 @@ def _find_all(text: str, patterns: List[str], rule_id: str, label: str, severity
                     excerpt=_excerpt(text, m.start(), m.end()),
                 )
             )
-    return out
+            raw_hits.append((rule_id, m.start(), m.end(), matched))
+    return out, raw_hits
 
+
+def _dedupe_findings(
+    findings: List[Finding],
+    raw_hits: List[Tuple[str, int, int, str]],
+    bucket: int = 10,
+) -> List[Finding]:
+    """
+    Dedupe strategy (auditable + stable):
+    - Use raw match spans, not excerpts.
+    - Bucket the start index to collapse near-overlapping hits.
+    - Key = (rule_id, start_bucket, normalized_matched_text)
+    """
+    if not findings or not raw_hits:
+        return findings
+
+    # Pair findings with their raw hits in order added.
+    paired = list(zip(findings, raw_hits))
+
+    deduped: List[Finding] = []
+    seen = set()
+
+    for f, (rid, start, end, matched) in paired:
+        start_bucket = start // bucket
+        key = (rid, start_bucket, _norm(matched))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(f)
+
+    return deduped
+
+
+# ---------------------------
+# Scorer
+# ---------------------------
 
 def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
     """
     Pure rule-based scoring (0..100). Higher = more neutral + “ANCHOR-like”.
-    Returns score + findings. If debug=True, includes rule hit counts + applied penalties.
+    Returns score + findings. If debug=True, includes hit counts + applied penalties.
     """
     t = (text or "").strip()
     if not t:
@@ -121,34 +169,35 @@ def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
         }
 
     findings: List[Finding] = []
+    raw_hits: List[Tuple[str, int, int, str]] = []
 
-    advice_findings = _find_all(t, ADVICE_PATTERNS, "direct_advice", "direct_instructions", 4)
-    therapy_findings = _find_all(t, THERAPY_PATTERNS, "therapy", "therapy_or_diagnosis", 5)
-    promise_findings = _find_all(t, PROMISE_PATTERNS, "promise", "promising_outcomes", 5)
-    coercion_findings = _find_all(t, COERCION_PATTERNS, "coercion", "coercion_or_absolutes", 3)
-    jailbreak_findings = _find_all(t, JAILBREAK_PATTERNS, "jailbreak", "jailbreak_or_override", 5)
+    # Collect all hits
+    jailbreak_findings, jailbreak_hits = _add_findings(t, JAILBREAK_PATTERNS, "jailbreak", "jailbreak_or_override", 5)
+    therapy_findings, therapy_hits = _add_findings(t, THERAPY_PATTERNS, "therapy", "therapy_or_diagnosis", 5)
+    advice_findings, advice_hits = _add_findings(t, ADVICE_PATTERNS, "direct_advice", "direct_instructions", 4)
+    promise_findings, promise_hits = _add_findings(t, PROMISE_PATTERNS, "promise", "promising_outcomes", 5)
+    coercion_findings, coercion_hits = _add_findings(t, COERCION_PATTERNS, "coercion", "coercion_or_absolutes", 3)
 
+    # Severity ordering: show the most “institutional risk” first
     findings += jailbreak_findings
+    raw_hits += jailbreak_hits
+
     findings += therapy_findings
+    raw_hits += therapy_hits
+
     findings += advice_findings
+    raw_hits += advice_hits
+
     findings += promise_findings
+    raw_hits += promise_hits
+
     findings += coercion_findings
+    raw_hits += coercion_hits
 
-        # ---------------------------
-    # Dedupe findings (avoid double-penalising same hit)
-    # Keyed by (rule_id, excerpt) — simple + auditable.
-    # ---------------------------
-    deduped: List[Finding] = []
-    seen = set()
-    for f in findings:
-        key = (f.rule_id, f.excerpt)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(f)
-    findings = deduped
+    # Dedupe to prevent double-penalising overlapping matches
+    findings = _dedupe_findings(findings, raw_hits, bucket=10)
 
-    # positive markers: witness tone (bonus, not required)
+    # Witness positive markers (bonus)
     witness_hits = 0
     for p in WITNESS_POSITIVE:
         if re.search(p, t, flags=re.IGNORECASE):
@@ -158,7 +207,7 @@ def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
     score = 100
     penalties_applied: List[Dict[str, Any]] = []
 
-    # Penalties: severity-weighted
+    # Penalties
     for f in findings:
         if f.severity == 5:
             delta = 35
@@ -172,7 +221,7 @@ def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
         score -= delta
         penalties_applied.append({"rule_id": f.rule_id, "severity": f.severity, "penalty": delta})
 
-    # Bonus (max +10) for “presence” signals
+    # Bonus (max +10)
     bonus = min(10, witness_hits * 3)
     score += bonus
 
@@ -186,6 +235,14 @@ def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
         grade = "watch"
     else:
         grade = "fail"
+
+    # ---------------------------
+    # Clinician-friendly softening (future-proof but safe):
+    # If ONLY direct_advice appears and it's a single hit, don't fail hard.
+    # ---------------------------
+    rule_set = {f.rule_id for f in findings}
+    if rule_set == {"direct_advice"} and len(findings) == 1 and grade == "fail":
+        grade = "watch"
 
     payload: Dict[str, Any] = {
         "score": score,
@@ -202,15 +259,19 @@ def score_neutrality(text: str, debug: bool = False) -> Dict[str, Any]:
         payload["debug"] = {
             "input_len": len(t),
             "hits": {
-                "jailbreak": len(jailbreak_findings),
-                "therapy": len(therapy_findings),
-                "direct_advice": len(advice_findings),
-                "promise": len(promise_findings),
-                "coercion": len(coercion_findings),
+                "jailbreak": len(jailbreak_hits),
+                "therapy": len(therapy_hits),
+                "direct_advice": len(advice_hits),
+                "promise": len(promise_hits),
+                "coercion": len(coercion_hits),
                 "witness_positive": witness_hits,
             },
             "bonus": bonus,
             "penalties": penalties_applied,
+            "dedupe": {
+                "bucket": 10,
+                "notes": "dedupe uses (rule_id, start_bucket, normalized_matched_text)",
+            },
         }
 
     return payload
