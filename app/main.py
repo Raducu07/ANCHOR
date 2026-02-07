@@ -48,8 +48,21 @@ from app.schemas import (
 # ---------------------------
 
 logger = logging.getLogger("anchor")
+
+def _coerce_log_level(value: str) -> int:
+    """
+    Accepts: 'info', 'INFO', '20', etc. Returns a valid logging level int.
+    Defaults to INFO if unknown.
+    """
+    v = (value or "INFO").strip()
+    if v.isdigit():
+        return int(v)
+    lvl = getattr(logging, v.upper(), None)
+    return int(lvl) if isinstance(lvl, int) else logging.INFO
+
 if not logger.handlers:
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+    level = _coerce_log_level(os.getenv("LOG_LEVEL", "INFO"))
+    logging.basicConfig(level=level)
 
 
 app = FastAPI(title="ANCHOR API")
