@@ -2,22 +2,24 @@
 import uuid
 import json
 from typing import Any, Dict, List, Optional
-from app.governance import govern_output, emit_audit_log
-
 
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
+
 from app.memory_shaping import (
     propose_memory_offer,
     compute_offer_debug,
     fetch_recent_user_texts,
 )
 
-# ✅ Use ONLY ONE scorer module (V1.1)
+# ✅ ONE scorer module (V1.1)
 from app.neutrality_v11 import score_neutrality
+
+# ✅ Governance layer (A2/A3)
+from app.governance import govern_output
 
 from app.schemas import (
     CreateSessionResponse,
@@ -44,6 +46,15 @@ def _ensure_user_exists(db, user_id: uuid.UUID) -> None:
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
+
+
+def _ensure_session_exists(db, session_id: uuid.UUID) -> None:
+    row = db.execute(
+        text("SELECT id FROM sessions WHERE id = :sid"),
+        {"sid": str(session_id)},
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 
 def _validate_memory_statement(statement: str) -> None:
@@ -75,16 +86,14 @@ def _validate_memory_statement(statement: str) -> None:
 
 
 def _norm_stmt(s: str) -> str:
-    # normalize whitespace to avoid invisible mismatches
     return " ".join((s or "").strip().split())
 
 
 def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
     """
-    Calls score_neutrality in a way that is compatible with both:
+    Compatible with both:
       - score_neutrality(text)
       - score_neutrality(text, debug=True)
-    Prevents the 'unexpected keyword argument debug' 500.
     """
     try:
         return score_neutrality(text_value, debug=debug)  # type: ignore[arg-type]
@@ -95,6 +104,74 @@ def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
                 "note": "scorer does not support debug=True; returned base scoring only"
             }
         return base
+
+
+def _insert_governance_event(
+    db,
+    *,
+    user_id: Optional[uuid.UUID],
+    session_id: Optional[uuid.UUID],
+    mode: str,
+    audit: Dict[str, Any],
+) -> None:
+    """
+    A3 — writes one audit row into governance_events.
+
+    Expected audit keys (best effort, defaults are safe):
+      allowed: bool
+      replaced: bool
+      score: int
+      grade: str
+      reason: str
+      findings: list/dict
+      decision: dict
+      notes: dict
+    """
+    if not user_id:
+        # If we can't associate to a user, don't hard-fail the chat flow.
+        return
+
+    allowed = bool(audit.get("allowed", True))
+    replaced = bool(audit.get("replaced", False))
+    score = int(audit.get("score", 0))
+    grade = str(audit.get("grade", "unknown"))
+    reason = str(audit.get("reason", ""))
+    findings = audit.get("findings", [])
+    decision = audit.get("decision", {})
+    notes = audit.get("notes", {})
+
+    db.execute(
+        text(
+            """
+            INSERT INTO governance_events (
+              id, user_id, session_id, mode,
+              allowed, replaced, score, grade, reason,
+              findings, decision, notes
+            )
+            VALUES (
+              :id, :user_id, :session_id, :mode,
+              :allowed, :replaced, :score, :grade, :reason,
+              CAST(:findings AS jsonb),
+              CAST(:decision AS jsonb),
+              CAST(:notes AS jsonb)
+            )
+            """
+        ),
+        {
+            "id": str(uuid.uuid4()),
+            "user_id": str(user_id),
+            "session_id": str(session_id) if session_id else None,
+            "mode": mode,
+            "allowed": allowed,
+            "replaced": replaced,
+            "score": score,
+            "grade": grade,
+            "reason": reason,
+            "findings": json.dumps(findings),
+            "decision": json.dumps(decision),
+            "notes": json.dumps(notes),
+        },
+    )
 
 
 # ---------------------------
@@ -137,17 +214,12 @@ def root():
 
 
 # ---------------------------
-# Neutrality scoring
+# Neutrality scoring (V1.1)
 # ---------------------------
 
 @app.post("/v1/neutrality/score", response_model=NeutralityScoreResponse)
 def neutrality_score(req: NeutralityScoreRequest):
-    """
-    Rule-based neutrality scoring (V1.1).
-    Uses a safe wrapper so the endpoint stays compatible if scorer signature changes.
-    """
     try:
-        # Some clients may not send debug; keep robust
         debug_flag = bool(getattr(req, "debug", False))
         return _score_neutrality_safe(req.text, debug_flag)
     except Exception as e:
@@ -158,7 +230,7 @@ def neutrality_score(req: NeutralityScoreRequest):
 
 
 # ---------------------------
-# Sessions (new user + session)
+# Sessions
 # ---------------------------
 
 @app.post("/v1/sessions", response_model=CreateSessionResponse)
@@ -167,10 +239,7 @@ def create_session():
     session_id = uuid.uuid4()
 
     with SessionLocal() as db:
-        db.execute(
-            text("INSERT INTO users (id) VALUES (:id)"),
-            {"id": str(user_id)},
-        )
+        db.execute(text("INSERT INTO users (id) VALUES (:id)"), {"id": str(user_id)})
         db.execute(
             text(
                 "INSERT INTO sessions (id, user_id, mode, question_used) "
@@ -180,16 +249,8 @@ def create_session():
         )
         db.commit()
 
-    return CreateSessionResponse(
-        user_id=user_id,
-        session_id=session_id,
-        mode="witness",
-    )
+    return CreateSessionResponse(user_id=user_id, session_id=session_id, mode="witness")
 
-
-# ---------------------------
-# Sessions (existing user -> new session)
-# ---------------------------
 
 @app.post("/v1/users/{user_id}/sessions", response_model=CreateSessionResponse)
 def create_session_for_user(user_id: uuid.UUID):
@@ -197,7 +258,6 @@ def create_session_for_user(user_id: uuid.UUID):
 
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
-
         db.execute(
             text(
                 "INSERT INTO sessions (id, user_id, mode, question_used) "
@@ -207,27 +267,24 @@ def create_session_for_user(user_id: uuid.UUID):
         )
         db.commit()
 
-    return CreateSessionResponse(
-        user_id=user_id,
-        session_id=session_id,
-        mode="witness",
-    )
+    return CreateSessionResponse(user_id=user_id, session_id=session_id, mode="witness")
 
 
 # ---------------------------
-# Messages
+# Messages (with governance)
 # ---------------------------
 
 @app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
 def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
     with SessionLocal() as db:
-        row = db.execute(
-            text("SELECT id FROM sessions WHERE id = :sid"),
+        _ensure_session_exists(db, session_id)
+
+        # fetch user_id for this session (for governance + audit)
+        uid_row = db.execute(
+            text("SELECT user_id FROM sessions WHERE id = :sid"),
             {"sid": str(session_id)},
         ).fetchone()
-
-        if not row:
-            raise HTTPException(status_code=404, detail="Session not found")
+        user_id = uuid.UUID(str(uid_row[0])) if uid_row and uid_row[0] else None
 
         # store user message
         db.execute(
@@ -242,23 +299,14 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
             },
         )
 
-        # v1 witness reply (presence, not advice)
+        # draft witness reply
         draft_reply = (
             "I’m here with you. I’m going to reflect back what I heard, briefly.\n\n"
             f"**What you said:** {payload.content}\n\n"
             "One question: what feels most important in this right now?"
         )
 
-        # ---------------------------
-        # A2: Output Governance Layer
-        # ---------------------------
-        # Get user_id for audit (via session -> user)
-        uid_row = db.execute(
-            text("SELECT user_id FROM sessions WHERE id = :sid"),
-            {"sid": str(session_id)},
-        ).fetchone()
-        user_id = uuid.UUID(str(uid_row[0])) if uid_row and uid_row[0] else None
-
+        # A2 governance gate
         final_reply, decision, audit = govern_output(
             user_text=payload.content,
             assistant_text=draft_reply,
@@ -267,9 +315,17 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
             mode="witness",
             debug=False,
         )
-        emit_audit_log(audit)
 
-        # store assistant message (governed)
+        # A3 persist audit event (same transaction)
+        _insert_governance_event(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            mode="witness",
+            audit=audit if isinstance(audit, dict) else {},
+        )
+
+        # store governed assistant message ONCE ✅
         db.execute(
             text(
                 "INSERT INTO messages (id, session_id, role, content) "
@@ -282,38 +338,15 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
             },
         )
 
-        # store assistant message
-        db.execute(
-            text(
-                "INSERT INTO messages (id, session_id, role, content) "
-                "VALUES (:id, :sid, 'assistant', :content)"
-            ),
-            {
-                "id": str(uuid.uuid4()),
-                "sid": str(session_id),
-                "content": reply,
-            },
-        )
-
         db.commit()
 
-    return SendMessageResponse(
-        session_id=session_id,
-        role="assistant",
-        content=final_reply,
-    )
+    return SendMessageResponse(session_id=session_id, role="assistant", content=final_reply)
 
 
 @app.get("/v1/sessions/{session_id}/messages")
 def list_messages(session_id: uuid.UUID):
     with SessionLocal() as db:
-        row = db.execute(
-            text("SELECT id FROM sessions WHERE id = :sid"),
-            {"sid": str(session_id)},
-        ).fetchone()
-
-        if not row:
-            raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_session_exists(db, session_id)
 
         rows = db.execute(
             text(
@@ -334,16 +367,102 @@ def list_messages(session_id: uuid.UUID):
             {"sid": str(session_id)},
         ).fetchall()
 
-    result = []
-    for r in rows:
-        result.append(
-            {
-                "role": r[0],
-                "content": r[1],
-                "created_at": r[2].isoformat() if r[2] else None,
-            }
-        )
-    return result
+    return [
+        {
+            "role": r[0],
+            "content": r[1],
+            "created_at": r[2].isoformat() if r[2] else None,
+        }
+        for r in rows
+    ]
+
+
+# ---------------------------
+# A3 — Governance audit endpoints
+# ---------------------------
+
+@app.get("/v1/users/{user_id}/governance-events")
+def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50):
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+        rows = db.execute(
+            text(
+                """
+                SELECT
+                  id, user_id, session_id, mode,
+                  allowed, replaced, score, grade, reason,
+                  findings, decision, notes,
+                  created_at
+                FROM governance_events
+                WHERE user_id = :uid
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"uid": str(user_id), "limit": int(limit)},
+        ).fetchall()
+
+    return [
+        {
+            "id": str(r[0]),
+            "user_id": str(r[1]),
+            "session_id": str(r[2]) if r[2] else None,
+            "mode": r[3],
+            "allowed": bool(r[4]),
+            "replaced": bool(r[5]),
+            "score": int(r[6]),
+            "grade": r[7],
+            "reason": r[8],
+            "findings": r[9] or [],
+            "decision": r[10] or {},
+            "notes": r[11] or {},
+            "created_at": r[12].isoformat() if r[12] else None,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/v1/sessions/{session_id}/governance-events")
+def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50):
+    with SessionLocal() as db:
+        _ensure_session_exists(db, session_id)
+
+        rows = db.execute(
+            text(
+                """
+                SELECT
+                  id, user_id, session_id, mode,
+                  allowed, replaced, score, grade, reason,
+                  findings, decision, notes,
+                  created_at
+                FROM governance_events
+                WHERE session_id = :sid
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"sid": str(session_id), "limit": int(limit)},
+        ).fetchall()
+
+    return [
+        {
+            "id": str(r[0]),
+            "user_id": str(r[1]),
+            "session_id": str(r[2]) if r[2] else None,
+            "mode": r[3],
+            "allowed": bool(r[4]),
+            "replaced": bool(r[5]),
+            "score": int(r[6]),
+            "grade": r[7],
+            "reason": r[8],
+            "findings": r[9] or [],
+            "decision": r[10] or {},
+            "notes": r[11] or {},
+            "created_at": r[12].isoformat() if r[12] else None,
+        }
+        for r in rows
+    ]
 
 
 # ---------------------------
@@ -352,9 +471,6 @@ def list_messages(session_id: uuid.UUID):
 
 @app.get("/v1/users/{user_id}/evidence-check")
 def evidence_check(user_id: uuid.UUID):
-    """
-    Quick visibility: do we actually have sessions + user messages for THIS user_id?
-    """
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
@@ -392,17 +508,12 @@ def evidence_check(user_id: uuid.UUID):
         "user_id": str(user_id),
         "sessions_count": int(sessions_count),
         "user_message_count": int(user_msgs),
-        "last_sessions": [
-            {"id": str(r[0]), "created_at": r[1].isoformat()} for r in last_sessions
-        ],
+        "last_sessions": [{"id": str(r[0]), "created_at": r[1].isoformat()} for r in last_sessions],
     }
 
 
 @app.get("/v1/users/{user_id}/memory-debug")
 def memory_debug(user_id: uuid.UUID, limit: int = 80):
-    """
-    Lightweight visibility into lexical signal counts (separate from compute_offer_debug).
-    """
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
@@ -426,14 +537,14 @@ def memory_debug(user_id: uuid.UUID, limit: int = 80):
         counts = {k: 0 for k in signals}
         evidence = {k: set() for k in signals}
 
-        for session_id, txt in items:
+        for sid, txt in items:
             low = (txt or "").strip().lower()
             if not low:
                 continue
             for k, needles in signals.items():
                 if any(n in low for n in needles):
                     counts[k] += 1
-                    evidence[k].add(str(session_id))
+                    evidence[k].add(str(sid))
 
         best_key = max(counts, key=lambda k: counts[k]) if counts else None
         best_count = counts[best_key] if best_key else 0
@@ -521,7 +632,6 @@ def memory_offer(user_id: uuid.UUID):
 
         offer = propose_memory_offer(db, user_id)
 
-        # If no strong pattern, return safe default — but avoid repeating it if already saved
         if not offer:
             dup_default = db.execute(
                 text(
@@ -535,11 +645,7 @@ def memory_offer(user_id: uuid.UUID):
                     LIMIT 1
                     """
                 ),
-                {
-                    "uid": str(user_id),
-                    "kind": DEFAULT_KIND,
-                    "statement": DEFAULT_STATEMENT,
-                },
+                {"uid": str(user_id), "kind": DEFAULT_KIND, "statement": DEFAULT_STATEMENT},
             ).fetchone()
 
             if dup_default:
@@ -561,12 +667,10 @@ def memory_offer(user_id: uuid.UUID):
                 )
             )
 
-        # Normal computed-offer flow
         offer_kind = offer["kind"]
         offer_stmt = _norm_stmt(offer["statement"])
         _validate_memory_statement(offer_stmt)
 
-        # Prevent offering duplicates already saved as active
         dup = db.execute(
             text(
                 """
@@ -579,11 +683,7 @@ def memory_offer(user_id: uuid.UUID):
                 LIMIT 1
                 """
             ),
-            {
-                "uid": str(user_id),
-                "kind": offer_kind,
-                "statement": offer_stmt,
-            },
+            {"uid": str(user_id), "kind": offer_kind, "statement": offer_stmt},
         ).fetchone()
 
         if dup:
@@ -611,7 +711,6 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
     stmt = _norm_stmt(payload.statement)
     _validate_memory_statement(stmt)
 
-    # Do not allow saving "negative_space" as a memory (fallback offer only)
     if payload.kind == "negative_space":
         raise HTTPException(
             status_code=400,
@@ -635,7 +734,6 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
-        # Scarcity rule: max 5 active memories
         count_row = db.execute(
             text("SELECT COUNT(*) FROM memories WHERE user_id = :uid AND active = true"),
             {"uid": str(user_id)},
@@ -645,7 +743,6 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
             raise HTTPException(status_code=400, detail="Max active memories reached (5)")
 
         mem_id = uuid.uuid4()
-
         evidence_json = [str(x) for x in (payload.evidence_session_ids or [])]
         evidence_str = json.dumps(evidence_json)
 
@@ -653,31 +750,17 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
             text(
                 """
                 INSERT INTO memories (
-                    id,
-                    user_id,
-                    kind,
-                    statement,
-                    evidence_session_ids,
-                    confidence,
-                    active
+                    id, user_id, kind, statement,
+                    evidence_session_ids, confidence, active
                 )
                 VALUES (
-                    :id,
-                    :uid,
-                    :kind,
-                    :statement,
+                    :id, :uid, :kind, :statement,
                     CAST(:evidence AS jsonb),
-                    :confidence,
-                    true
+                    :confidence, true
                 )
                 RETURNING
-                    id,
-                    kind,
-                    statement,
-                    confidence,
-                    active,
-                    evidence_session_ids,
-                    created_at
+                    id, kind, statement, confidence, active,
+                    evidence_session_ids, created_at
                 """
             ),
             {
@@ -733,4 +816,3 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
         db.commit()
 
     return {"archived": True}
-
