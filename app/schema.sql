@@ -1,3 +1,7 @@
+-- =========================
+-- Core tables
+-- =========================
+
 CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -19,7 +23,6 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Helpful indexes for common reads (history + offer computation)
 CREATE INDEX IF NOT EXISTS idx_messages_session_created
   ON messages(session_id, created_at ASC);
 
@@ -74,6 +77,7 @@ CREATE TABLE IF NOT EXISTS governance_events (
 
   allowed BOOLEAN NOT NULL,
   replaced BOOLEAN NOT NULL,
+
   score INTEGER NOT NULL,
   grade TEXT NOT NULL,
   reason TEXT NOT NULL,
@@ -82,7 +86,8 @@ CREATE TABLE IF NOT EXISTS governance_events (
   decision JSONB NOT NULL DEFAULT '{}'::jsonb,
   notes JSONB NOT NULL DEFAULT '{}'::jsonb,
 
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_governance_events_user_created
@@ -93,9 +98,4 @@ CREATE INDEX IF NOT EXISTS idx_governance_events_session_created
 
 CREATE INDEX IF NOT EXISTS idx_governance_events_created
   ON governance_events(created_at DESC);
-
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_memories_user_active ON memories(user_id, active);
-CREATE INDEX IF NOT EXISTS idx_memories_user_kind ON memories(user_id, kind);
+;
