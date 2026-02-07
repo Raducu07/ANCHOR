@@ -4,8 +4,8 @@ import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
-from sqlalchemy import text
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
@@ -25,7 +25,7 @@ from app.memory_shaping import (
 # ✅ ONE scorer module (V1.1)
 from app.neutrality_v11 import score_neutrality
 
-# ✅ Governance layer (A2/A3/A4)
+# ✅ Governance layer (A2/A3)
 from app.governance import govern_output
 
 from app.schemas import (
@@ -43,7 +43,7 @@ app = FastAPI(title="ANCHOR API")
 
 
 # ---------------------------
-# A4: Policy update request model
+# A4 — Policy update schema (request)
 # ---------------------------
 
 class GovernancePolicyUpdateRequest(BaseModel):
@@ -126,41 +126,46 @@ def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
         return base
 
 
-# Module-level cache to avoid repeated information_schema hits
-_GOV_EVENTS_HAS_A4_COLS: Optional[bool] = None
+# ---------------------------
+# Governance schema detection + insert (A3/A4)
+# ---------------------------
+
+# Cache column set (avoid per-request information_schema hits)
+_GOV_EVENTS_COLSET: Optional[set[str]] = None
 
 
-def _detect_governance_events_a4_cols(db) -> bool:
-    """
-    Detect whether governance_events has A4 columns:
-      policy_version, neutrality_version, decision_trace
-    Cached at module level.
-    """
-    global _GOV_EVENTS_HAS_A4_COLS
-    if _GOV_EVENTS_HAS_A4_COLS is not None:
-        return _GOV_EVENTS_HAS_A4_COLS
+def _get_governance_events_colset(db) -> set[str]:
+    global _GOV_EVENTS_COLSET
+    if _GOV_EVENTS_COLSET is not None:
+        return _GOV_EVENTS_COLSET
 
+    rows = db.execute(
+        text(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'governance_events'
+            """
+        )
+    ).fetchall()
+    _GOV_EVENTS_COLSET = {str(r[0]) for r in rows}
+    return _GOV_EVENTS_COLSET
+
+
+def _gov_has_a4_cols(db) -> bool:
+    cols = _get_governance_events_colset(db)
+    return {"policy_version", "neutrality_version", "decision_trace"}.issubset(cols)
+
+
+def _days_to_interval(days: int) -> int:
+    if days is None:
+        return 30
     try:
-        rows = db.execute(
-            text(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'governance_events'
-                """
-            )
-        ).fetchall()
-        colset = {str(r[0]) for r in rows}
-        _GOV_EVENTS_HAS_A4_COLS = {
-            "policy_version",
-            "neutrality_version",
-            "decision_trace",
-        }.issubset(colset)
+        d = int(days)
     except Exception:
-        _GOV_EVENTS_HAS_A4_COLS = False
-
-    return bool(_GOV_EVENTS_HAS_A4_COLS)
+        d = 30
+    return max(1, min(365, d))
 
 
 def _insert_governance_event(
@@ -176,12 +181,10 @@ def _insert_governance_event(
 
     Compatible with:
     - A3 schema: findings JSONB, audit JSONB
-    - A4: + policy_version, neutrality_version, decision_trace
+    - A4 upgrades: policy_version, neutrality_version, decision_trace
 
     Safe by design: never raises upward.
     """
-    global _GOV_EVENTS_HAS_A4_COLS
-
     try:
         if not user_id:
             return
@@ -206,7 +209,7 @@ def _insert_governance_event(
         grade = str(decision.get("grade", "unknown") or "unknown")
         reason = str(decision.get("reason", "") or "")
 
-        # Stable + compact decision trace (A4)
+        # Triggered rule ids
         triggered_rule_ids: List[str] = []
         for f in findings:
             if isinstance(f, dict):
@@ -215,7 +218,6 @@ def _insert_governance_event(
                     rid = rid.strip()
                     if rid:
                         triggered_rule_ids.append(rid)
-
         triggered_rule_ids = sorted(set(triggered_rule_ids))[:25]
 
         decision_trace = {
@@ -229,13 +231,22 @@ def _insert_governance_event(
             "reason": reason,
         }
 
-        # Default versions (A4). If your govern_output populates these into audit later,
-        # you can pull from audit["notes"] or audit["decision"] instead.
+        # Prefer pulling active policy versions from governance_config
         policy_version = "gov-v1.0"
         neutrality_version = "n-v1.1"
+        try:
+            pol = get_current_policy(db)
+            if isinstance(pol, dict):
+                pv = pol.get("policy_version")
+                nv = pol.get("neutrality_version")
+                if isinstance(pv, str) and pv.strip():
+                    policy_version = pv.strip()
+                if isinstance(nv, str) and nv.strip():
+                    neutrality_version = nv.strip()
+        except Exception:
+            pass
 
-        # Detect A4 columns once
-        has_a4 = _detect_governance_events_a4_cols(db)
+        has_a4 = _gov_has_a4_cols(db)
 
         if has_a4:
             db.execute(
@@ -368,92 +379,69 @@ def neutrality_score(req: NeutralityScoreRequest):
 
 
 # ---------------------------
-# A4 — Governance Policy Endpoints (4.1–4.4)
+# A4 — Governance policy endpoints (4.1–4.4)
 # ---------------------------
 
-@app.get("/v1/governance/policy")
-def get_governance_policy():
-    """
-    4.1 — Get current active governance policy (latest row).
-    """
+@app.get("/v1/governance/policy/current")
+def governance_policy_current():
     with SessionLocal() as db:
-        p = get_current_policy(db)
-        # try to return a plain dict safely
         try:
-            return dict(p.__dict__)
-        except Exception:
-            return {
-                "policy_version": getattr(p, "policy_version", None),
-                "neutrality_version": getattr(p, "neutrality_version", None),
-                "min_score_allow": getattr(p, "min_score_allow", 75),
-                "hard_block_rules": getattr(p, "hard_block_rules", ["jailbreak", "therapy", "promise"]),
-                "soft_rules": getattr(p, "soft_rules", ["direct_advice", "coercion"]),
-                "max_findings": getattr(p, "max_findings", 10),
-            }
+            return {"policy": get_current_policy(db)}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
 
 
 @app.get("/v1/governance/policy/history")
 def governance_policy_history(limit: int = 50):
-    """
-    4.2 — List governance policy history (most recent first).
-    """
+    limit = max(1, min(200, int(limit)))
     with SessionLocal() as db:
-        items = list_policy_history(db, int(limit))
-        out = []
-        for p in items:
-            try:
-                out.append(dict(p.__dict__))
-            except Exception:
-                out.append(
-                    {
-                        "policy_version": getattr(p, "policy_version", None),
-                        "neutrality_version": getattr(p, "neutrality_version", None),
-                        "min_score_allow": getattr(p, "min_score_allow", None),
-                        "hard_block_rules": getattr(p, "hard_block_rules", None),
-                        "soft_rules": getattr(p, "soft_rules", None),
-                        "max_findings": getattr(p, "max_findings", None),
-                        "created_at": getattr(p, "created_at", None),
-                        "updated_at": getattr(p, "updated_at", None),
-                    }
-                )
-        return out
+        try:
+            return {"history": list_policy_history(db, limit=limit)}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
 
 
 @app.post("/v1/governance/policy")
-def update_governance_policy(req: GovernancePolicyUpdateRequest):
+def governance_policy_create(payload: GovernancePolicyUpdateRequest):
+    with SessionLocal() as db:
+        try:
+            created = create_new_policy(
+                db,
+                policy_version=payload.policy_version,
+                neutrality_version=payload.neutrality_version,
+                min_score_allow=int(payload.min_score_allow),
+                hard_block_rules=list(payload.hard_block_rules or []),
+                soft_rules=list(payload.soft_rules or []),
+                max_findings=int(payload.max_findings),
+            )
+            return {"created": created}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
+
+
+@app.get("/v1/governance/policy/schema")
+def governance_policy_schema():
     """
-    4.3 — Create a new policy row (becomes active as latest).
-    4.4 — Activation is by convention: newest row is current policy.
+    Lightweight visibility endpoint for config table existence + newest row timestamp.
     """
     with SessionLocal() as db:
-        pol = create_new_policy(
-            db,
-            policy_version=req.policy_version,
-            neutrality_version=req.neutrality_version,
-            min_score_allow=req.min_score_allow,
-            hard_block_rules=req.hard_block_rules,
-            soft_rules=req.soft_rules,
-            max_findings=req.max_findings,
-        )
-        # safe commit regardless of whether create_new_policy commits internally
         try:
-            db.commit()
-        except Exception:
-            pass
-
-        try:
-            return {"active_policy": dict(pol.__dict__)}
-        except Exception:
+            row = db.execute(
+                text(
+                    """
+                    SELECT updated_at
+                    FROM governance_config
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """
+                )
+            ).fetchone()
             return {
-                "active_policy": {
-                    "policy_version": getattr(pol, "policy_version", None),
-                    "neutrality_version": getattr(pol, "neutrality_version", None),
-                    "min_score_allow": getattr(pol, "min_score_allow", None),
-                    "hard_block_rules": getattr(pol, "hard_block_rules", None),
-                    "soft_rules": getattr(pol, "soft_rules", None),
-                    "max_findings": getattr(pol, "max_findings", None),
-                }
+                "governance_config_table": "ok",
+                "latest_updated_at": row[0].isoformat() if row and row[0] else None,
             }
+        except Exception as e:
+            return {"governance_config_table": "error", "detail": str(e)}
 
 
 # ---------------------------
@@ -498,7 +486,7 @@ def create_session_for_user(user_id: uuid.UUID):
 
 
 # ---------------------------
-# Messages (with governance + policy injection)
+# Messages (with governance)
 # ---------------------------
 
 @app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
@@ -506,7 +494,6 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
     with SessionLocal() as db:
         _ensure_session_exists(db, session_id)
 
-        # fetch user_id for this session (for governance + audit)
         uid_row = db.execute(
             text("SELECT user_id FROM sessions WHERE id = :sid"),
             {"sid": str(session_id)},
@@ -533,50 +520,15 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
             "One question: what feels most important in this right now?"
         )
 
-        # A4: pull current governance policy (DB-backed)
-        policy_dict: Dict[str, Any] = {
-            "policy_version": "gov-v1.0",
-            "neutrality_version": "n-v1.1",
-            "min_score_allow": 75,
-            "hard_block_rules": ["jailbreak", "therapy", "promise"],
-            "soft_rules": ["direct_advice", "coercion"],
-            "max_findings": 10,
-        }
-        try:
-            p = get_current_policy(db)
-            policy_dict = {
-                "policy_version": getattr(p, "policy_version", policy_dict["policy_version"]),
-                "neutrality_version": getattr(p, "neutrality_version", policy_dict["neutrality_version"]),
-                "min_score_allow": getattr(p, "min_score_allow", policy_dict["min_score_allow"]),
-                "hard_block_rules": getattr(p, "hard_block_rules", policy_dict["hard_block_rules"]),
-                "soft_rules": getattr(p, "soft_rules", policy_dict["soft_rules"]),
-                "max_findings": getattr(p, "max_findings", policy_dict["max_findings"]),
-            }
-        except Exception:
-            # keep safe defaults
-            pass
-
-        # A2 governance gate (+ A4 policy injection if supported by governance.py)
-        try:
-            final_reply, decision, audit = govern_output(
-                user_text=payload.content,
-                assistant_text=draft_reply,
-                user_id=user_id,
-                session_id=session_id,
-                mode="witness",
-                policy=policy_dict,  # <-- A4 (safe; wrapped)
-                debug=False,
-            )
-        except TypeError:
-            # governance.py doesn't yet accept policy=
-            final_reply, decision, audit = govern_output(
-                user_text=payload.content,
-                assistant_text=draft_reply,
-                user_id=user_id,
-                session_id=session_id,
-                mode="witness",
-                debug=False,
-            )
+        # A2 governance gate
+        final_reply, _decision, audit = govern_output(
+            user_text=payload.content,
+            assistant_text=draft_reply,
+            user_id=user_id,
+            session_id=session_id,
+            mode="witness",
+            debug=False,
+        )
 
         # store governed assistant message ONCE ✅
         db.execute(
@@ -645,10 +597,11 @@ def list_messages(session_id: uuid.UUID):
 
 @app.get("/v1/users/{user_id}/governance-events")
 def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50):
+    limit = max(1, min(500, int(limit)))
+
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
-
-        has_a4 = _detect_governance_events_a4_cols(db)
+        has_a4 = _gov_has_a4_cols(db)
 
         if has_a4:
             rows = db.execute(
@@ -666,7 +619,7 @@ def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50):
                     LIMIT :limit
                     """
                 ),
-                {"uid": str(user_id), "limit": int(limit)},
+                {"uid": str(user_id), "limit": limit},
             ).fetchall()
 
             return [
@@ -705,34 +658,35 @@ def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50):
                 LIMIT :limit
                 """
             ),
-            {"uid": str(user_id), "limit": int(limit)},
+            {"uid": str(user_id), "limit": limit},
         ).fetchall()
 
-    return [
-        {
-            "id": str(r[0]),
-            "user_id": str(r[1]) if r[1] else None,
-            "session_id": str(r[2]) if r[2] else None,
-            "mode": r[3],
-            "allowed": bool(r[4]),
-            "replaced": bool(r[5]),
-            "score": int(r[6]),
-            "grade": r[7],
-            "reason": r[8],
-            "findings": r[9] or [],
-            "audit": r[10] or {},
-            "created_at": r[11].isoformat() if r[11] else None,
-        }
-        for r in rows
-    ]
+        return [
+            {
+                "id": str(r[0]),
+                "user_id": str(r[1]) if r[1] else None,
+                "session_id": str(r[2]) if r[2] else None,
+                "mode": r[3],
+                "allowed": bool(r[4]),
+                "replaced": bool(r[5]),
+                "score": int(r[6]),
+                "grade": r[7],
+                "reason": r[8],
+                "findings": r[9] or [],
+                "audit": r[10] or {},
+                "created_at": r[11].isoformat() if r[11] else None,
+            }
+            for r in rows
+        ]
 
 
 @app.get("/v1/sessions/{session_id}/governance-events")
 def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50):
+    limit = max(1, min(500, int(limit)))
+
     with SessionLocal() as db:
         _ensure_session_exists(db, session_id)
-
-        has_a4 = _detect_governance_events_a4_cols(db)
+        has_a4 = _gov_has_a4_cols(db)
 
         if has_a4:
             rows = db.execute(
@@ -750,7 +704,7 @@ def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50):
                     LIMIT :limit
                     """
                 ),
-                {"sid": str(session_id), "limit": int(limit)},
+                {"sid": str(session_id), "limit": limit},
             ).fetchall()
 
             return [
@@ -789,26 +743,340 @@ def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50):
                 LIMIT :limit
                 """
             ),
-            {"sid": str(session_id), "limit": int(limit)},
+            {"sid": str(session_id), "limit": limit},
         ).fetchall()
 
-    return [
-        {
-            "id": str(r[0]),
-            "user_id": str(r[1]) if r[1] else None,
-            "session_id": str(r[2]) if r[2] else None,
-            "mode": r[3],
-            "allowed": bool(r[4]),
-            "replaced": bool(r[5]),
-            "score": int(r[6]),
-            "grade": r[7],
-            "reason": r[8],
-            "findings": r[9] or [],
-            "audit": r[10] or {},
-            "created_at": r[11].isoformat() if r[11] else None,
+        return [
+            {
+                "id": str(r[0]),
+                "user_id": str(r[1]) if r[1] else None,
+                "session_id": str(r[2]) if r[2] else None,
+                "mode": r[3],
+                "allowed": bool(r[4]),
+                "replaced": bool(r[5]),
+                "score": int(r[6]),
+                "grade": r[7],
+                "reason": r[8],
+                "findings": r[9] or [],
+                "audit": r[10] or {},
+                "created_at": r[11].isoformat() if r[11] else None,
+            }
+            for r in rows
+        ]
+
+
+# ---------------------------
+# A5 — Governance analytics layer (default last 30 days)
+# ---------------------------
+
+@app.get("/v1/governance/health")
+def governance_health():
+    """
+    Minimal governance health check:
+    - table readable
+    - last event timestamp
+    - A4 columns present/absent
+    """
+    with SessionLocal() as db:
+        try:
+            cols = _get_governance_events_colset(db)
+            has_a4 = _gov_has_a4_cols(db)
+            last_row = db.execute(
+                text("SELECT created_at FROM governance_events ORDER BY created_at DESC LIMIT 1")
+            ).fetchone()
+            last_ts = last_row[0].isoformat() if last_row and last_row[0] else None
+
+            return {
+                "status": "ok",
+                "governance_events_table": "ok",
+                "has_a4_cols": bool(has_a4),
+                "columns": sorted(list(cols))[:200],
+                "last_event_created_at": last_ts,
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "governance_events_table": "error",
+                "detail": str(e),
+            }
+
+
+def _fetch_rule_counts_last_window(db, where_sql: str, params: Dict[str, Any], has_a4: bool) -> List[Dict[str, Any]]:
+    """
+    Top triggered rules in last window.
+    A4: decision_trace.triggered_rule_ids
+    A3: findings[*].rule_id
+    """
+    if has_a4:
+        q = f"""
+        WITH base AS (
+          SELECT decision_trace
+          FROM governance_events
+          WHERE {where_sql}
+        ),
+        rules AS (
+          SELECT jsonb_array_elements_text(COALESCE(decision_trace->'triggered_rule_ids', '[]'::jsonb)) AS rid
+          FROM base
+        )
+        SELECT rid, COUNT(*) AS n
+        FROM rules
+        WHERE rid IS NOT NULL AND rid <> ''
+        GROUP BY rid
+        ORDER BY n DESC, rid ASC
+        LIMIT 10
+        """
+        rows = db.execute(text(q), params).fetchall()
+        return [{"rule_id": r[0], "count": int(r[1])} for r in rows]
+
+    q = f"""
+    WITH base AS (
+      SELECT findings
+      FROM governance_events
+      WHERE {where_sql}
+    ),
+    rules AS (
+      SELECT (elem->>'rule_id') AS rid
+      FROM base, LATERAL jsonb_array_elements(COALESCE(findings, '[]'::jsonb)) AS elem
+    )
+    SELECT rid, COUNT(*) AS n
+    FROM rules
+    WHERE rid IS NOT NULL AND rid <> ''
+    GROUP BY rid
+    ORDER BY n DESC, rid ASC
+    LIMIT 10
+    """
+    rows = db.execute(text(q), params).fetchall()
+    return [{"rule_id": r[0], "count": int(r[1])} for r in rows]
+
+
+def _fetch_grade_breakdown_last_window(db, where_sql: str, params: Dict[str, Any]) -> Dict[str, int]:
+    q = f"""
+    SELECT grade, COUNT(*)::int
+    FROM governance_events
+    WHERE {where_sql}
+    GROUP BY grade
+    ORDER BY grade ASC
+    """
+    rows = db.execute(text(q), params).fetchall()
+    out: Dict[str, int] = {}
+    for g, n in rows:
+        out[str(g)] = int(n)
+    return out
+
+
+def _fetch_core_metrics_last_window(db, where_sql: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    q = f"""
+    SELECT
+      COUNT(*)::int AS events_total,
+      COALESCE(AVG(CASE WHEN allowed THEN 1 ELSE 0 END), 0)::float AS allowed_rate,
+      COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate,
+      COALESCE(AVG(score), 0)::float AS avg_score
+    FROM governance_events
+    WHERE {where_sql}
+    """
+    row = db.execute(text(q), params).fetchone()
+    if not row:
+        return {"events_total": 0, "allowed_rate": 0.0, "replaced_rate": 0.0, "avg_score": 0.0}
+    return {
+        "events_total": int(row[0]),
+        "allowed_rate": float(row[1]),
+        "replaced_rate": float(row[2]),
+        "avg_score": float(row[3]),
+    }
+
+
+@app.get("/v1/governance/metrics")
+def governance_metrics(days: int = 30):
+    """
+    Fleet metrics across all users/sessions (default last 30 days).
+    """
+    d = _days_to_interval(days)
+
+    with SessionLocal() as db:
+        has_a4 = _gov_has_a4_cols(db)
+        where_sql = "created_at >= (NOW() - (:days || ' days')::interval)"
+        params = {"days": d}
+
+        core = _fetch_core_metrics_last_window(db, where_sql, params)
+        grades = _fetch_grade_breakdown_last_window(db, where_sql, params)
+        top_rules = _fetch_rule_counts_last_window(db, where_sql, params, has_a4)
+
+        return {
+            "window_days": d,
+            "core": core,
+            "grade_breakdown": grades,
+            "top_triggered_rules": top_rules,
+            "has_a4_cols": bool(has_a4),
         }
-        for r in rows
-    ]
+
+
+@app.get("/v1/governance/metrics/by-policy")
+def governance_metrics_by_policy(days: int = 30, limit: int = 50):
+    """
+    Group metrics by policy_version + neutrality_version (A4),
+    or single bucket (A3).
+    """
+    d = _days_to_interval(days)
+    limit = max(1, min(200, int(limit)))
+
+    with SessionLocal() as db:
+        has_a4 = _gov_has_a4_cols(db)
+
+        if has_a4:
+            rows = db.execute(
+                text(
+                    """
+                    SELECT
+                      policy_version,
+                      neutrality_version,
+                      COUNT(*)::int AS events_total,
+                      COALESCE(AVG(CASE WHEN allowed THEN 1 ELSE 0 END), 0)::float AS allowed_rate,
+                      COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate,
+                      COALESCE(AVG(score), 0)::float AS avg_score
+                    FROM governance_events
+                    WHERE created_at >= (NOW() - (:days || ' days')::interval)
+                    GROUP BY policy_version, neutrality_version
+                    ORDER BY events_total DESC, policy_version ASC, neutrality_version ASC
+                    LIMIT :limit
+                    """
+                ),
+                {"days": d, "limit": limit},
+            ).fetchall()
+
+            return {
+                "window_days": d,
+                "has_a4_cols": True,
+                "rows": [
+                    {
+                        "policy_version": r[0],
+                        "neutrality_version": r[1],
+                        "events_total": int(r[2]),
+                        "allowed_rate": float(r[3]),
+                        "replaced_rate": float(r[4]),
+                        "avg_score": float(r[5]),
+                    }
+                    for r in rows
+                ],
+            }
+
+        row = db.execute(
+            text(
+                """
+                SELECT
+                  COUNT(*)::int AS events_total,
+                  COALESCE(AVG(CASE WHEN allowed THEN 1 ELSE 0 END), 0)::float AS allowed_rate,
+                  COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate,
+                  COALESCE(AVG(score), 0)::float AS avg_score
+                FROM governance_events
+                WHERE created_at >= (NOW() - (:days || ' days')::interval)
+                """
+            ),
+            {"days": d},
+        ).fetchone()
+
+        return {
+            "window_days": d,
+            "has_a4_cols": False,
+            "rows": [
+                {
+                    "policy_version": "gov-v1.0",
+                    "neutrality_version": "n-v1.1",
+                    "events_total": int(row[0] if row else 0),
+                    "allowed_rate": float(row[1] if row else 0.0),
+                    "replaced_rate": float(row[2] if row else 0.0),
+                    "avg_score": float(row[3] if row else 0.0),
+                }
+            ],
+        }
+
+
+@app.get("/v1/users/{user_id}/governance/metrics")
+def governance_metrics_for_user(user_id: uuid.UUID, days: int = 30):
+    """
+    User-scoped governance metrics (default last 30 days).
+    """
+    d = _days_to_interval(days)
+
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+        has_a4 = _gov_has_a4_cols(db)
+
+        where_sql = "user_id = :uid AND created_at >= (NOW() - (:days || ' days')::interval)"
+        params = {"uid": str(user_id), "days": d}
+
+        core = _fetch_core_metrics_last_window(db, where_sql, params)
+        grades = _fetch_grade_breakdown_last_window(db, where_sql, params)
+        top_rules = _fetch_rule_counts_last_window(db, where_sql, params, has_a4)
+
+        trend = db.execute(
+            text(
+                """
+                WITH w AS (
+                  SELECT
+                    CASE
+                      WHEN created_at >= (NOW() - '7 days'::interval) THEN 'last_7'
+                      WHEN created_at >= (NOW() - '14 days'::interval) AND created_at < (NOW() - '7 days'::interval) THEN 'prev_7'
+                      ELSE NULL
+                    END AS bucket,
+                    replaced
+                  FROM governance_events
+                  WHERE user_id = :uid
+                    AND created_at >= (NOW() - '14 days'::interval)
+                )
+                SELECT
+                  bucket,
+                  COUNT(*)::int AS n,
+                  COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate
+                FROM w
+                WHERE bucket IS NOT NULL
+                GROUP BY bucket
+                """
+            ),
+            {"uid": str(user_id)},
+        ).fetchall()
+
+        trend_map = {str(r[0]): {"events_total": int(r[1]), "replaced_rate": float(r[2])} for r in trend}
+
+        return {
+            "user_id": str(user_id),
+            "window_days": d,
+            "core": core,
+            "grade_breakdown": grades,
+            "top_triggered_rules": top_rules,
+            "trend_7d": {
+                "last_7": trend_map.get("last_7", {"events_total": 0, "replaced_rate": 0.0}),
+                "prev_7": trend_map.get("prev_7", {"events_total": 0, "replaced_rate": 0.0}),
+            },
+            "has_a4_cols": bool(has_a4),
+        }
+
+
+@app.get("/v1/sessions/{session_id}/governance/metrics")
+def governance_metrics_for_session(session_id: uuid.UUID, days: int = 30):
+    """
+    Session-scoped governance metrics (default last 30 days).
+    """
+    d = _days_to_interval(days)
+
+    with SessionLocal() as db:
+        _ensure_session_exists(db, session_id)
+        has_a4 = _gov_has_a4_cols(db)
+
+        where_sql = "session_id = :sid AND created_at >= (NOW() - (:days || ' days')::interval)"
+        params = {"sid": str(session_id), "days": d}
+
+        core = _fetch_core_metrics_last_window(db, where_sql, params)
+        grades = _fetch_grade_breakdown_last_window(db, where_sql, params)
+        top_rules = _fetch_rule_counts_last_window(db, where_sql, params, has_a4)
+
+        return {
+            "session_id": str(session_id),
+            "window_days": d,
+            "core": core,
+            "grade_breakdown": grades,
+            "top_triggered_rules": top_rules,
+            "has_a4_cols": bool(has_a4),
+        }
 
 
 # ---------------------------
@@ -860,6 +1128,8 @@ def evidence_check(user_id: uuid.UUID):
 
 @app.get("/v1/users/{user_id}/memory-debug")
 def memory_debug(user_id: uuid.UUID, limit: int = 80):
+    limit = max(1, min(500, int(limit)))
+
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
@@ -1162,4 +1432,3 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
         db.commit()
 
     return {"archived": True}
-
