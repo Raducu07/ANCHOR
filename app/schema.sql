@@ -64,17 +64,13 @@ CREATE TABLE IF NOT EXISTS governance_events (
 
   mode TEXT NOT NULL DEFAULT 'witness',
 
-  -- Flattened decision fields (easy queries)
   allowed BOOLEAN NOT NULL,
   replaced BOOLEAN NOT NULL,
   score INT NOT NULL,
   grade TEXT NOT NULL,
   reason TEXT NOT NULL,
 
-  -- Scorer findings (small, structured)
   findings JSONB NOT NULL DEFAULT '[]'::jsonb,
-
-  -- Full audit payload (optional, but useful for forensics)
   audit JSONB NOT NULL DEFAULT '{}'::jsonb,
 
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -91,7 +87,6 @@ CREATE INDEX IF NOT EXISTS idx_governance_events_created
 
 -- =========================
 -- A4: policy/versioning + deterministic decision trace
--- (safe, idempotent upgrades)
 -- =========================
 
 ALTER TABLE governance_events
@@ -100,21 +95,9 @@ ALTER TABLE governance_events
 ALTER TABLE governance_events
   ADD COLUMN IF NOT EXISTS neutrality_version TEXT NOT NULL DEFAULT 'n-v1.1';
 
--- Compact deterministic explanation:
--- {
---   "min_score_allow": 75,
---   "hard_block_rules": ["jailbreak","therapy","promise"],
---   "soft_rules": ["direct_advice","coercion"],
---   "triggered_rule_ids": ["direct_advice"],
---   "score": 92,
---   "grade": "pass",
---   "replaced": false,
---   "reason": "allowed"
--- }
 ALTER TABLE governance_events
   ADD COLUMN IF NOT EXISTS decision_trace JSONB NOT NULL DEFAULT '{}'::jsonb;
 
--- Helpful index for audits by policy / neutrality versions
 CREATE INDEX IF NOT EXISTS idx_governance_events_policy_version
   ON governance_events(policy_version, created_at DESC);
 
@@ -135,13 +118,37 @@ CREATE TABLE IF NOT EXISTS governance_config (
   hard_block_rules JSONB NOT NULL DEFAULT '["jailbreak","therapy","promise"]'::jsonb,
   soft_rules JSONB NOT NULL DEFAULT '["direct_advice","coercion"]'::jsonb,
 
-  -- optional future knobs
   max_findings INT NOT NULL DEFAULT 10,
 
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Ensure we only have one active config row by convention (not strict constraint)
 CREATE INDEX IF NOT EXISTS idx_governance_config_updated
   ON governance_config(updated_at DESC);
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- =========================
+-- Seed: ensure at least one policy row exists
+-- (idempotent; safe for repeated runs)
+-- =========================
+
+INSERT INTO governance_config (
+  id,
+  policy_version,
+  neutrality_version,
+  min_score_allow,
+  hard_block_rules,
+  soft_rules,
+  max_findings
+)
+SELECT
+  gen_random_uuid(),
+  'gov-v1.0',
+  'n-v1.1',
+  75,
+  '["jailbreak","therapy","promise"]'::jsonb,
+  '["direct_advice","coercion"]'::jsonb,
+  10
+WHERE NOT EXISTS (SELECT 1 FROM governance_config);
