@@ -88,3 +88,60 @@ CREATE INDEX IF NOT EXISTS idx_governance_events_session_created
 
 CREATE INDEX IF NOT EXISTS idx_governance_events_created
   ON governance_events(created_at DESC);
+
+-- =========================
+-- A4: policy/versioning + deterministic decision trace
+-- (safe, idempotent upgrades)
+-- =========================
+
+ALTER TABLE governance_events
+  ADD COLUMN IF NOT EXISTS policy_version TEXT NOT NULL DEFAULT 'gov-v1.0';
+
+ALTER TABLE governance_events
+  ADD COLUMN IF NOT EXISTS neutrality_version TEXT NOT NULL DEFAULT 'n-v1.1';
+
+-- Compact deterministic explanation:
+-- {
+--   "min_score_allow": 75,
+--   "hard_block_rules": ["jailbreak","therapy","promise"],
+--   "soft_rules": ["direct_advice","coercion"],
+--   "triggered_rule_ids": ["direct_advice"],
+--   "score": 92,
+--   "grade": "pass",
+--   "replaced": false,
+--   "reason": "allowed"
+-- }
+ALTER TABLE governance_events
+  ADD COLUMN IF NOT EXISTS decision_trace JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Helpful index for audits by policy / neutrality versions
+CREATE INDEX IF NOT EXISTS idx_governance_events_policy_version
+  ON governance_events(policy_version, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_governance_events_neutrality_version
+  ON governance_events(neutrality_version, created_at DESC);
+
+-- =========================
+-- A4: governance config (institution-friendly, auditable settings)
+-- =========================
+
+CREATE TABLE IF NOT EXISTS governance_config (
+  id UUID PRIMARY KEY,
+  policy_version TEXT NOT NULL,
+  neutrality_version TEXT NOT NULL,
+
+  min_score_allow INT NOT NULL DEFAULT 75,
+
+  hard_block_rules JSONB NOT NULL DEFAULT '["jailbreak","therapy","promise"]'::jsonb,
+  soft_rules JSONB NOT NULL DEFAULT '["direct_advice","coercion"]'::jsonb,
+
+  -- optional future knobs
+  max_findings INT NOT NULL DEFAULT 10,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Ensure we only have one active config row by convention (not strict constraint)
+CREATE INDEX IF NOT EXISTS idx_governance_config_updated
+  ON governance_config(updated_at DESC);
