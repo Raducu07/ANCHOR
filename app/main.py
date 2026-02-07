@@ -159,6 +159,9 @@ def _gov_has_a4_cols(db) -> bool:
 
 
 def _days_to_interval(days: int) -> int:
+    """
+    Clamp day window to [1, 365]. Default 30.
+    """
     if days is None:
         return 30
     try:
@@ -166,6 +169,15 @@ def _days_to_interval(days: int) -> int:
     except Exception:
         d = 30
     return max(1, min(365, d))
+
+
+def _time_window_where(days: int) -> str:
+    """
+    Standard time window predicate for governance_events.
+    Uses a parameter :days.
+    """
+    _ = _days_to_interval(days)  # validate/clamp upstream; keep here for readability
+    return "created_at >= (NOW() - (:days || ' days')::interval)"
 
 
 def _insert_governance_event(
@@ -592,21 +604,25 @@ def list_messages(session_id: uuid.UUID):
 
 
 # ---------------------------
-# A3/A4 — Governance audit endpoints (schema-correct)
+# A3/A4 — Governance audit endpoints (A5: default last 30 days)
 # ---------------------------
 
 @app.get("/v1/users/{user_id}/governance-events")
-def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50):
+def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50, days: int = 30):
     limit = max(1, min(500, int(limit)))
+    d = _days_to_interval(days)
 
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
         has_a4 = _gov_has_a4_cols(db)
 
+        where_sql = f"user_id = :uid AND {_time_window_where(d)}"
+        params = {"uid": str(user_id), "limit": limit, "days": d}
+
         if has_a4:
             rows = db.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                       id, user_id, session_id, mode,
                       allowed, replaced, score, grade, reason,
@@ -614,15 +630,63 @@ def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50):
                       policy_version, neutrality_version, decision_trace,
                       created_at
                     FROM governance_events
-                    WHERE user_id = :uid
+                    WHERE {where_sql}
                     ORDER BY created_at DESC
                     LIMIT :limit
                     """
                 ),
-                {"uid": str(user_id), "limit": limit},
+                params,
             ).fetchall()
 
-            return [
+            return {
+                "user_id": str(user_id),
+                "window_days": d,
+                "has_a4_cols": True,
+                "events": [
+                    {
+                        "id": str(r[0]),
+                        "user_id": str(r[1]) if r[1] else None,
+                        "session_id": str(r[2]) if r[2] else None,
+                        "mode": r[3],
+                        "allowed": bool(r[4]),
+                        "replaced": bool(r[5]),
+                        "score": int(r[6]),
+                        "grade": r[7],
+                        "reason": r[8],
+                        "findings": r[9] or [],
+                        "audit": r[10] or {},
+                        "policy_version": r[11],
+                        "neutrality_version": r[12],
+                        "decision_trace": r[13] or {},
+                        "created_at": r[14].isoformat() if r[14] else None,
+                    }
+                    for r in rows
+                ],
+            }
+
+        # A3-only
+        rows = db.execute(
+            text(
+                f"""
+                SELECT
+                  id, user_id, session_id, mode,
+                  allowed, replaced, score, grade, reason,
+                  findings, audit,
+                  created_at
+                FROM governance_events
+                WHERE {where_sql}
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            params,
+        ).fetchall()
+
+        return {
+            "user_id": str(user_id),
+            "window_days": d,
+            "has_a4_cols": False,
+            "events": [
                 {
                     "id": str(r[0]),
                     "user_id": str(r[1]) if r[1] else None,
@@ -635,63 +699,29 @@ def list_governance_events_for_user(user_id: uuid.UUID, limit: int = 50):
                     "reason": r[8],
                     "findings": r[9] or [],
                     "audit": r[10] or {},
-                    "policy_version": r[11],
-                    "neutrality_version": r[12],
-                    "decision_trace": r[13] or {},
-                    "created_at": r[14].isoformat() if r[14] else None,
+                    "created_at": r[11].isoformat() if r[11] else None,
                 }
                 for r in rows
-            ]
-
-        # A3-only
-        rows = db.execute(
-            text(
-                """
-                SELECT
-                  id, user_id, session_id, mode,
-                  allowed, replaced, score, grade, reason,
-                  findings, audit,
-                  created_at
-                FROM governance_events
-                WHERE user_id = :uid
-                ORDER BY created_at DESC
-                LIMIT :limit
-                """
-            ),
-            {"uid": str(user_id), "limit": limit},
-        ).fetchall()
-
-        return [
-            {
-                "id": str(r[0]),
-                "user_id": str(r[1]) if r[1] else None,
-                "session_id": str(r[2]) if r[2] else None,
-                "mode": r[3],
-                "allowed": bool(r[4]),
-                "replaced": bool(r[5]),
-                "score": int(r[6]),
-                "grade": r[7],
-                "reason": r[8],
-                "findings": r[9] or [],
-                "audit": r[10] or {},
-                "created_at": r[11].isoformat() if r[11] else None,
-            }
-            for r in rows
-        ]
+            ],
+        }
 
 
 @app.get("/v1/sessions/{session_id}/governance-events")
-def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50):
+def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50, days: int = 30):
     limit = max(1, min(500, int(limit)))
+    d = _days_to_interval(days)
 
     with SessionLocal() as db:
         _ensure_session_exists(db, session_id)
         has_a4 = _gov_has_a4_cols(db)
 
+        where_sql = f"session_id = :sid AND {_time_window_where(d)}"
+        params = {"sid": str(session_id), "limit": limit, "days": d}
+
         if has_a4:
             rows = db.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                       id, user_id, session_id, mode,
                       allowed, replaced, score, grade, reason,
@@ -699,15 +729,63 @@ def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50):
                       policy_version, neutrality_version, decision_trace,
                       created_at
                     FROM governance_events
-                    WHERE session_id = :sid
+                    WHERE {where_sql}
                     ORDER BY created_at DESC
                     LIMIT :limit
                     """
                 ),
-                {"sid": str(session_id), "limit": limit},
+                params,
             ).fetchall()
 
-            return [
+            return {
+                "session_id": str(session_id),
+                "window_days": d,
+                "has_a4_cols": True,
+                "events": [
+                    {
+                        "id": str(r[0]),
+                        "user_id": str(r[1]) if r[1] else None,
+                        "session_id": str(r[2]) if r[2] else None,
+                        "mode": r[3],
+                        "allowed": bool(r[4]),
+                        "replaced": bool(r[5]),
+                        "score": int(r[6]),
+                        "grade": r[7],
+                        "reason": r[8],
+                        "findings": r[9] or [],
+                        "audit": r[10] or {},
+                        "policy_version": r[11],
+                        "neutrality_version": r[12],
+                        "decision_trace": r[13] or {},
+                        "created_at": r[14].isoformat() if r[14] else None,
+                    }
+                    for r in rows
+                ],
+            }
+
+        # A3-only
+        rows = db.execute(
+            text(
+                f"""
+                SELECT
+                  id, user_id, session_id, mode,
+                  allowed, replaced, score, grade, reason,
+                  findings, audit,
+                  created_at
+                FROM governance_events
+                WHERE {where_sql}
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            params,
+        ).fetchall()
+
+        return {
+            "session_id": str(session_id),
+            "window_days": d,
+            "has_a4_cols": False,
+            "events": [
                 {
                     "id": str(r[0]),
                     "user_id": str(r[1]) if r[1] else None,
@@ -720,49 +798,11 @@ def list_governance_events_for_session(session_id: uuid.UUID, limit: int = 50):
                     "reason": r[8],
                     "findings": r[9] or [],
                     "audit": r[10] or {},
-                    "policy_version": r[11],
-                    "neutrality_version": r[12],
-                    "decision_trace": r[13] or {},
-                    "created_at": r[14].isoformat() if r[14] else None,
+                    "created_at": r[11].isoformat() if r[11] else None,
                 }
                 for r in rows
-            ]
-
-        # A3-only
-        rows = db.execute(
-            text(
-                """
-                SELECT
-                  id, user_id, session_id, mode,
-                  allowed, replaced, score, grade, reason,
-                  findings, audit,
-                  created_at
-                FROM governance_events
-                WHERE session_id = :sid
-                ORDER BY created_at DESC
-                LIMIT :limit
-                """
-            ),
-            {"sid": str(session_id), "limit": limit},
-        ).fetchall()
-
-        return [
-            {
-                "id": str(r[0]),
-                "user_id": str(r[1]) if r[1] else None,
-                "session_id": str(r[2]) if r[2] else None,
-                "mode": r[3],
-                "allowed": bool(r[4]),
-                "replaced": bool(r[5]),
-                "score": int(r[6]),
-                "grade": r[7],
-                "reason": r[8],
-                "findings": r[9] or [],
-                "audit": r[10] or {},
-                "created_at": r[11].isoformat() if r[11] else None,
-            }
-            for r in rows
-        ]
+            ],
+        }
 
 
 # ---------------------------
@@ -894,7 +934,7 @@ def governance_metrics(days: int = 30):
 
     with SessionLocal() as db:
         has_a4 = _gov_has_a4_cols(db)
-        where_sql = "created_at >= (NOW() - (:days || ' days')::interval)"
+        where_sql = _time_window_where(d)
         params = {"days": d}
 
         core = _fetch_core_metrics_last_window(db, where_sql, params)
@@ -1001,7 +1041,7 @@ def governance_metrics_for_user(user_id: uuid.UUID, days: int = 30):
         _ensure_user_exists(db, user_id)
         has_a4 = _gov_has_a4_cols(db)
 
-        where_sql = "user_id = :uid AND created_at >= (NOW() - (:days || ' days')::interval)"
+        where_sql = f"user_id = :uid AND {_time_window_where(d)}"
         params = {"uid": str(user_id), "days": d}
 
         core = _fetch_core_metrics_last_window(db, where_sql, params)
@@ -1062,7 +1102,7 @@ def governance_metrics_for_session(session_id: uuid.UUID, days: int = 30):
         _ensure_session_exists(db, session_id)
         has_a4 = _gov_has_a4_cols(db)
 
-        where_sql = "session_id = :sid AND created_at >= (NOW() - (:days || ' days')::interval)"
+        where_sql = f"session_id = :sid AND {_time_window_where(d)}"
         params = {"sid": str(session_id), "days": d}
 
         core = _fetch_core_metrics_last_window(db, where_sql, params)
