@@ -1,14 +1,21 @@
+# app/main.py
 import uuid
 import json
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
-from app.memory_shaping import propose_memory_offer, compute_offer_debug, fetch_recent_user_texts
+from app.memory_shaping import (
+    propose_memory_offer,
+    compute_offer_debug,
+    fetch_recent_user_texts,
+)
 
-from app.neutrality_v11 import score_neutrality  # <-- ONLY ONE neutrality import
+# ✅ Use ONLY ONE scorer module (V1.1)
+from app.neutrality_v11 import score_neutrality
 
 from app.schemas import (
     CreateSessionResponse,
@@ -28,7 +35,7 @@ app = FastAPI(title="ANCHOR API")
 # Helpers
 # ---------------------------
 
-def _ensure_user_exists(db, user_id: uuid.UUID):
+def _ensure_user_exists(db, user_id: uuid.UUID) -> None:
     row = db.execute(
         text("SELECT id FROM users WHERE id = :uid"),
         {"uid": str(user_id)},
@@ -37,7 +44,7 @@ def _ensure_user_exists(db, user_id: uuid.UUID):
         raise HTTPException(status_code=404, detail="User not found")
 
 
-def _validate_memory_statement(statement: str):
+def _validate_memory_statement(statement: str) -> None:
     s = (statement or "").strip()
 
     # Keep memory short + single-line (presence, not essays)
@@ -75,17 +82,16 @@ def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
     Calls score_neutrality in a way that is compatible with both:
       - score_neutrality(text)
       - score_neutrality(text, debug=True)
-
     Prevents the 'unexpected keyword argument debug' 500.
     """
     try:
-        # Try the newer signature first
-        return score_neutrality(text_value, debug=debug)  # type: ignore
+        return score_neutrality(text_value, debug=debug)  # type: ignore[arg-type]
     except TypeError:
-        # Fall back to older signature
-        base = score_neutrality(text_value)  # type: ignore
+        base = score_neutrality(text_value)  # type: ignore[misc]
         if debug and isinstance(base, dict):
-            base["debug"] = {"note": "scorer does not support debug=True; returned base scoring only"}
+            base["debug"] = {
+                "note": "scorer does not support debug=True; returned base scoring only"
+            }
         return base
 
 
@@ -132,13 +138,21 @@ def root():
 # Neutrality scoring
 # ---------------------------
 
-
 @app.post("/v1/neutrality/score", response_model=NeutralityScoreResponse)
 def neutrality_score(req: NeutralityScoreRequest):
+    """
+    Rule-based neutrality scoring (V1.1).
+    Uses a safe wrapper so the endpoint stays compatible if scorer signature changes.
+    """
     try:
-        return score_neutrality(req.text, debug=getattr(req, "debug", False))
+        # Some clients may not send debug; keep robust
+        debug_flag = bool(getattr(req, "debug", False))
+        return _score_neutrality_safe(req.text, debug_flag)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"neutrality_error: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"neutrality_error: {type(e).__name__}: {e}",
+        )
 
 
 # ---------------------------
@@ -298,11 +312,62 @@ def list_messages(session_id: uuid.UUID):
 
 
 # ---------------------------
-# Memory debug (optional but useful)
+# Evidence + Memory debugging
 # ---------------------------
+
+@app.get("/v1/users/{user_id}/evidence-check")
+def evidence_check(user_id: uuid.UUID):
+    """
+    Quick visibility: do we actually have sessions + user messages for THIS user_id?
+    """
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+
+        sessions_count = db.execute(
+            text("SELECT COUNT(*) FROM sessions WHERE user_id = :uid"),
+            {"uid": str(user_id)},
+        ).fetchone()[0]
+
+        user_msgs = db.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE s.user_id = :uid AND m.role = 'user'
+                """
+            ),
+            {"uid": str(user_id)},
+        ).fetchone()[0]
+
+        last_sessions = db.execute(
+            text(
+                """
+                SELECT id, created_at
+                FROM sessions
+                WHERE user_id = :uid
+                ORDER BY created_at DESC
+                LIMIT 5
+                """
+            ),
+            {"uid": str(user_id)},
+        ).fetchall()
+
+    return {
+        "user_id": str(user_id),
+        "sessions_count": int(sessions_count),
+        "user_message_count": int(user_msgs),
+        "last_sessions": [
+            {"id": str(r[0]), "created_at": r[1].isoformat()} for r in last_sessions
+        ],
+    }
+
 
 @app.get("/v1/users/{user_id}/memory-debug")
 def memory_debug(user_id: uuid.UUID, limit: int = 80):
+    """
+    Lightweight visibility into lexical signal counts (separate from compute_offer_debug).
+    """
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
@@ -356,55 +421,12 @@ def memory_offer_debug(user_id: uuid.UUID):
         return compute_offer_debug(db, user_id)
 
 
-@app.get("/v1/users/{user_id}/evidence-check")
-def evidence_check(user_id: uuid.UUID):
-    with SessionLocal() as db:
-        _ensure_user_exists(db, user_id)
-
-        sessions_count = db.execute(
-            text("SELECT COUNT(*) FROM sessions WHERE user_id = :uid"),
-            {"uid": str(user_id)},
-        ).fetchone()[0]
-
-        user_msgs = db.execute(
-            text(
-                """
-                SELECT COUNT(*)
-                FROM messages m
-                JOIN sessions s ON s.id = m.session_id
-                WHERE s.user_id = :uid AND m.role = 'user'
-                """
-            ),
-            {"uid": str(user_id)},
-        ).fetchone()[0]
-
-        last_sessions = db.execute(
-            text(
-                """
-                SELECT id, created_at
-                FROM sessions
-                WHERE user_id = :uid
-                ORDER BY created_at DESC
-                LIMIT 5
-                """
-            ),
-            {"uid": str(user_id)},
-        ).fetchall()
-
-    return {
-        "user_id": str(user_id),
-        "sessions_count": int(sessions_count),
-        "user_message_count": int(user_msgs),
-        "last_sessions": [{"id": str(r[0]), "created_at": r[1].isoformat()} for r in last_sessions],
-    }
-
-
 # ---------------------------
 # Memories
 # ---------------------------
 
-@app.get("/v1/users/{user_id}/memories", response_model=list[MemoryItem])
-def list_memories(user_id: uuid.UUID, active: bool = True, kind: str | None = None):
+@app.get("/v1/users/{user_id}/memories", response_model=List[MemoryItem])
+def list_memories(user_id: uuid.UUID, active: bool = True, kind: Optional[str] = None):
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
@@ -429,10 +451,10 @@ def list_memories(user_id: uuid.UUID, active: bool = True, kind: str | None = No
                 {"uid": str(user_id), "active": active},
             ).fetchall()
 
-    result = []
+    result: List[MemoryItem] = []
     for r in rows:
         evidence = r[5] or []
-        evidence_uuids = []
+        evidence_uuids: List[uuid.UUID] = []
         for x in evidence:
             try:
                 evidence_uuids.append(uuid.UUID(str(x)))
@@ -464,6 +486,7 @@ def memory_offer(user_id: uuid.UUID):
 
         offer = propose_memory_offer(db, user_id)
 
+        # If no strong pattern, return safe default — but avoid repeating it if already saved
         if not offer:
             dup_default = db.execute(
                 text(
@@ -477,7 +500,11 @@ def memory_offer(user_id: uuid.UUID):
                     LIMIT 1
                     """
                 ),
-                {"uid": str(user_id), "kind": DEFAULT_KIND, "statement": DEFAULT_STATEMENT},
+                {
+                    "uid": str(user_id),
+                    "kind": DEFAULT_KIND,
+                    "statement": DEFAULT_STATEMENT,
+                },
             ).fetchone()
 
             if dup_default:
@@ -499,10 +526,12 @@ def memory_offer(user_id: uuid.UUID):
                 )
             )
 
+        # Normal computed-offer flow
         offer_kind = offer["kind"]
         offer_stmt = _norm_stmt(offer["statement"])
         _validate_memory_statement(offer_stmt)
 
+        # Prevent offering duplicates already saved as active
         dup = db.execute(
             text(
                 """
@@ -515,7 +544,11 @@ def memory_offer(user_id: uuid.UUID):
                 LIMIT 1
                 """
             ),
-            {"uid": str(user_id), "kind": offer_kind, "statement": offer_stmt},
+            {
+                "uid": str(user_id),
+                "kind": offer_kind,
+                "statement": offer_stmt,
+            },
         ).fetchone()
 
         if dup:
@@ -567,6 +600,7 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
 
+        # Scarcity rule: max 5 active memories
         count_row = db.execute(
             text("SELECT COUNT(*) FROM memories WHERE user_id = :uid AND active = true"),
             {"uid": str(user_id)},
@@ -576,6 +610,7 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
             raise HTTPException(status_code=400, detail="Max active memories reached (5)")
 
         mem_id = uuid.uuid4()
+
         evidence_json = [str(x) for x in (payload.evidence_session_ids or [])]
         evidence_str = json.dumps(evidence_json)
 
@@ -622,7 +657,7 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
 
         db.commit()
 
-    evidence_uuids = []
+    evidence_uuids: List[uuid.UUID] = []
     for x in (row[5] or []):
         try:
             evidence_uuids.append(uuid.UUID(str(x)))
@@ -663,3 +698,4 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
         db.commit()
 
     return {"archived": True}
+
