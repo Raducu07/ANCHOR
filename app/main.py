@@ -117,61 +117,64 @@ def _insert_governance_event(
     """
     A3 — writes one audit row into governance_events.
 
-    Expected audit keys (best effort, defaults are safe):
-      allowed: bool
-      replaced: bool
-      score: int
-      grade: str
-      reason: str
-      findings: list/dict
-      decision: dict
-      notes: dict
+    IMPORTANT:
+    - This assumes your governance_events table has columns:
+        (id, user_id, session_id, mode, allowed, replaced, score, grade, reason,
+         findings jsonb, decision jsonb, notes jsonb, created_at)
+      If your schema differs, adjust this insert to match.
+
+    Safe by design: never raises upward.
     """
-    if not user_id:
-        # If we can't associate to a user, don't hard-fail the chat flow.
-        return
+    try:
+        if not user_id:
+            # If we can't associate to a user, don't hard-fail the flow.
+            return
 
-    allowed = bool(audit.get("allowed", True))
-    replaced = bool(audit.get("replaced", False))
-    score = int(audit.get("score", 0))
-    grade = str(audit.get("grade", "unknown"))
-    reason = str(audit.get("reason", ""))
-    findings = audit.get("findings", [])
-    decision = audit.get("decision", {})
-    notes = audit.get("notes", {})
+        allowed = bool(audit.get("allowed", True))
+        replaced = bool(audit.get("replaced", False))
+        score = int(audit.get("score", 0) or 0)
+        grade = str(audit.get("grade", "unknown") or "unknown")
+        reason = str(audit.get("reason", "") or "")
 
-    db.execute(
-        text(
-            """
-            INSERT INTO governance_events (
-              id, user_id, session_id, mode,
-              allowed, replaced, score, grade, reason,
-              findings, decision, notes
-            )
-            VALUES (
-              :id, :user_id, :session_id, :mode,
-              :allowed, :replaced, :score, :grade, :reason,
-              CAST(:findings AS jsonb),
-              CAST(:decision AS jsonb),
-              CAST(:notes AS jsonb)
-            )
-            """
-        ),
-        {
-            "id": str(uuid.uuid4()),
-            "user_id": str(user_id),
-            "session_id": str(session_id) if session_id else None,
-            "mode": mode,
-            "allowed": allowed,
-            "replaced": replaced,
-            "score": score,
-            "grade": grade,
-            "reason": reason,
-            "findings": json.dumps(findings),
-            "decision": json.dumps(decision),
-            "notes": json.dumps(notes),
-        },
-    )
+        findings = audit.get("findings", [])
+        decision = audit.get("decision", {})
+        notes = audit.get("notes", {})
+
+        db.execute(
+            text(
+                """
+                INSERT INTO governance_events (
+                  id, user_id, session_id, mode,
+                  allowed, replaced, score, grade, reason,
+                  findings, decision, notes
+                )
+                VALUES (
+                  :id, :user_id, :session_id, :mode,
+                  :allowed, :replaced, :score, :grade, :reason,
+                  CAST(:findings AS jsonb),
+                  CAST(:decision AS jsonb),
+                  CAST(:notes AS jsonb)
+                )
+                """
+            ),
+            {
+                "id": str(uuid.uuid4()),
+                "user_id": str(user_id),
+                "session_id": str(session_id) if session_id else None,
+                "mode": mode,
+                "allowed": allowed,
+                "replaced": replaced,
+                "score": score,
+                "grade": grade,
+                "reason": reason,
+                "findings": json.dumps(findings),
+                "decision": json.dumps(decision),
+                "notes": json.dumps(notes),
+            },
+        )
+    except Exception:
+        # Never break runtime due to audit persistence failure
+        pass
 
 
 # ---------------------------
@@ -316,15 +319,6 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
             debug=False,
         )
 
-        # A3 persist audit event (same transaction)
-        _insert_governance_event(
-            db,
-            user_id=user_id,
-            session_id=session_id,
-            mode="witness",
-            audit=audit if isinstance(audit, dict) else {},
-        )
-
         # store governed assistant message ONCE ✅
         db.execute(
             text(
@@ -336,6 +330,15 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
                 "sid": str(session_id),
                 "content": final_reply,
             },
+        )
+
+        # A3 persist audit event (same transaction)
+        _insert_governance_event(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            mode="witness",
+            audit=audit if isinstance(audit, dict) else {},
         )
 
         db.commit()
