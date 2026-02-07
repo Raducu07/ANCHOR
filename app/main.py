@@ -2,6 +2,8 @@
 import uuid
 import json
 from typing import Any, Dict, List, Optional
+from app.governance import govern_output, emit_audit_log
+
 
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
@@ -241,10 +243,43 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
         )
 
         # v1 witness reply (presence, not advice)
-        reply = (
+        draft_reply = (
             "I’m here with you. I’m going to reflect back what I heard, briefly.\n\n"
             f"**What you said:** {payload.content}\n\n"
             "One question: what feels most important in this right now?"
+        )
+
+        # ---------------------------
+        # A2: Output Governance Layer
+        # ---------------------------
+        # Get user_id for audit (via session -> user)
+        uid_row = db.execute(
+            text("SELECT user_id FROM sessions WHERE id = :sid"),
+            {"sid": str(session_id)},
+        ).fetchone()
+        user_id = uuid.UUID(str(uid_row[0])) if uid_row and uid_row[0] else None
+
+        final_reply, decision, audit = govern_output(
+            user_text=payload.content,
+            assistant_text=draft_reply,
+            user_id=user_id,
+            session_id=session_id,
+            mode="witness",
+            debug=False,
+        )
+        emit_audit_log(audit)
+
+        # store assistant message (governed)
+        db.execute(
+            text(
+                "INSERT INTO messages (id, session_id, role, content) "
+                "VALUES (:id, :sid, 'assistant', :content)"
+            ),
+            {
+                "id": str(uuid.uuid4()),
+                "sid": str(session_id),
+                "content": final_reply,
+            },
         )
 
         # store assistant message
@@ -265,7 +300,7 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
     return SendMessageResponse(
         session_id=session_id,
         role="assistant",
-        content=reply,
+        content=final_reply,
     )
 
 
