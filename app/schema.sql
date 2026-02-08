@@ -129,6 +129,16 @@ CREATE INDEX IF NOT EXISTS idx_governance_config_updated
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+CREATE INDEX IF NOT EXISTS idx_messages_created_at
+  ON messages(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_created_at
+  ON sessions(created_at DESC);
+
+-- If governance_events gets huge, BRIN can be extremely efficient for time-based pruning:
+CREATE INDEX IF NOT EXISTS brin_governance_events_created_at
+  ON governance_events USING BRIN (created_at);
+
 -- =========================
 -- Seed: ensure at least one policy row exists
 -- (idempotent; safe for repeated runs)
