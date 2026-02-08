@@ -1,0 +1,37 @@
+name: Anchor Retention Prune
+
+on:
+  schedule:
+    - cron: "15 3 * * *"   # daily at 03:15 UTC
+  workflow_dispatch:        # allows manual "Run workflow" from GitHub UI
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Call retention prune endpoint
+        env:
+          ANCHOR_ADMIN_TOKEN: ${{ secrets.ANCHOR_ADMIN_TOKEN }}
+          ANCHOR_API_BASE: ${{ secrets.ANCHOR_API_BASE }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ANCHOR_API_BASE}" ]; then
+            echo "Missing ANCHOR_API_BASE secret"
+            exit 1
+          fi
+
+          if [ -z "${ANCHOR_ADMIN_TOKEN}" ]; then
+            echo "Missing ANCHOR_ADMIN_TOKEN secret"
+            exit 1
+          fi
+
+          echo "Calling retention prune..."
+          curl -sS -X POST "${ANCHOR_API_BASE}/v1/admin/retention/prune?days=90" \
+            -H "Authorization: Bearer ${ANCHOR_ADMIN_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --fail
+          echo ""
+          echo "Done."
