@@ -44,6 +44,63 @@ from app.schemas import (
     NeutralityScoreResponse,
 )
 
+from typing import Any, Dict  # you already have these
+from sqlalchemy import text    # already imported
+
+def _clamp_retention_days(days: int) -> int:
+    try:
+        d = int(days)
+    except Exception:
+        d = 90
+    return max(7, min(3650, d))  # min 7 days, max 10 years
+
+
+def _run_retention_prune(db, days: int) -> Dict[str, Any]:
+    """
+    Deletes rows older than N days.
+    Returns counts per table.
+    NOTE: delete children first (messages -> sessions) to avoid FK issues.
+    """
+    d = _clamp_retention_days(days)
+
+    # 1) governance_events
+    gov = db.execute(
+        text("DELETE FROM governance_events WHERE created_at < (NOW() - (:days || ' days')::interval)"),
+        {"days": d},
+    )
+    gov_deleted = int(getattr(gov, "rowcount", 0) or 0)
+
+    # 2) messages older than window
+    msg = db.execute(
+        text("DELETE FROM messages WHERE created_at < (NOW() - (:days || ' days')::interval)"),
+        {"days": d},
+    )
+    msg_deleted = int(getattr(msg, "rowcount", 0) or 0)
+
+    # 3) sessions with no messages and older than window (safe cleanup)
+    ses = db.execute(
+        text(
+            """
+            DELETE FROM sessions s
+            WHERE s.created_at < (NOW() - (:days || ' days')::interval)
+              AND NOT EXISTS (
+                SELECT 1 FROM messages m WHERE m.session_id = s.id
+              )
+            """
+        ),
+        {"days": d},
+    )
+    ses_deleted = int(getattr(ses, "rowcount", 0) or 0)
+
+    return {
+        "retention_days": d,
+        "deleted": {
+            "governance_events": gov_deleted,
+            "messages": msg_deleted,
+            "sessions_orphans": ses_deleted,
+        },
+    }
+
 # ---------------------------
 # Logging — structured, safe-by-default
 # ---------------------------
@@ -656,6 +713,18 @@ def governance_policy_create(
             return {"created": created}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
+
+
+@app.post("/v1/admin/retention/prune")
+def retention_prune(days: int = 90, _: None = Depends(require_admin)):
+    """
+    Admin-only: delete rows older than N days (default 90).
+    Intended to be called by GitHub Actions cron.
+    """
+    with SessionLocal() as db:
+        result = _run_retention_prune(db, days)
+        db.commit()
+        return {"status": "ok", **result}
 
 
 @app.get("/v1/governance/policy/schema")
