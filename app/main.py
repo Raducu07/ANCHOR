@@ -5,6 +5,7 @@ import uuid
 import json
 import time
 import logging
+from datetime import datetime, timezone  # ✅ A6.7 + snapshot-lite
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, Response
@@ -44,10 +45,11 @@ from app.schemas import (
 )
 
 # ---------------------------
-# Logging (A6.4) — structured, safe-by-default
+# Logging — structured, safe-by-default
 # ---------------------------
 
 logger = logging.getLogger("anchor")
+
 
 def _coerce_log_level(value: str) -> int:
     """
@@ -60,45 +62,65 @@ def _coerce_log_level(value: str) -> int:
     lvl = getattr(logging, v.upper(), None)
     return int(lvl) if isinstance(lvl, int) else logging.INFO
 
+
 if not logger.handlers:
     level = _coerce_log_level(os.getenv("LOG_LEVEL", "INFO"))
-    logging.basicConfig(level=level)
+    logging.basicConfig(
+        level=level,
+        format="%(message)s",  # ✅ best for JSON log lines
+    )
 
 
 app = FastAPI(title="ANCHOR API")
 
 
 # ---------------------------
-# A6.4 — Request ID + structured request logs
+# A6.3 — Request ID + structured request logs (production-grade)
 # ---------------------------
 
 @app.middleware("http")
-async def request_id_and_logs(request: Request, call_next):
+async def request_logging_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.request_id = req_id
-
     start = time.time()
-    status_code = 500
+
     try:
         response: Response = await call_next(request)
-        status_code = response.status_code
-        response.headers["X-Request-ID"] = req_id
-        return response
-    finally:
+    except Exception as e:
         dur_ms = int((time.time() - start) * 1000)
-        # Do NOT log request bodies or message content.
-        logger.info(
+        logger.error(
             json.dumps(
                 {
                     "event": "http_request",
                     "request_id": req_id,
                     "method": request.method,
                     "path": request.url.path,
-                    "status_code": status_code,
+                    "status_code": 500,
                     "duration_ms": dur_ms,
+                    "error": f"{type(e).__name__}: {str(e)}",
                 }
             )
         )
+        raise
+
+    dur_ms = int((time.time() - start) * 1000)
+
+    # Attach request id to every response (very helpful in ops)
+    response.headers["X-Request-ID"] = req_id
+
+    logger.info(
+        json.dumps(
+            {
+                "event": "http_request",
+                "request_id": req_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": dur_ms,
+            }
+        )
+    )
+    return response
 
 
 # ---------------------------
@@ -446,6 +468,95 @@ def _insert_governance_event(
     except Exception:
         # Never break runtime due to audit persistence failure
         pass
+
+
+# ---------------------------
+# A6.6 — Retention controls (90 days) + safe admin prune endpoint
+# ---------------------------
+
+def _clamp_retention_days(days: int) -> int:
+    try:
+        d = int(days)
+    except Exception:
+        d = 90
+    return max(7, min(3650, d))  # min 7 days, max 10 years
+
+
+def _run_retention_prune(db, days: int) -> Dict[str, Any]:
+    """
+    Deletes rows older than N days.
+    Returns counts per table.
+    NOTE: We delete children first (messages -> sessions) to avoid FK issues.
+    """
+    d = _clamp_retention_days(days)
+
+    deleted: Dict[str, int] = {
+        "governance_events": 0,
+        "messages": 0,
+        "sessions_orphans": 0,
+    }
+    errors: Dict[str, str] = {}
+
+    # 1) governance_events
+    try:
+        gov = db.execute(
+            text(
+                "DELETE FROM governance_events WHERE created_at < (NOW() - (:days || ' days')::interval)"
+            ),
+            {"days": d},
+        )
+        deleted["governance_events"] = int(getattr(gov, "rowcount", 0) or 0)
+    except Exception as e:
+        errors["governance_events"] = f"{type(e).__name__}: {str(e)}"
+
+    # 2) messages older than window
+    try:
+        msg = db.execute(
+            text("DELETE FROM messages WHERE created_at < (NOW() - (:days || ' days')::interval)"),
+            {"days": d},
+        )
+        deleted["messages"] = int(getattr(msg, "rowcount", 0) or 0)
+    except Exception as e:
+        errors["messages"] = f"{type(e).__name__}: {str(e)}"
+
+    # 3) sessions with no messages and older than window (safe cleanup)
+    try:
+        ses = db.execute(
+            text(
+                """
+                DELETE FROM sessions s
+                WHERE s.created_at < (NOW() - (:days || ' days')::interval)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM messages m WHERE m.session_id = s.id
+                  )
+                """
+            ),
+            {"days": d},
+        )
+        deleted["sessions_orphans"] = int(getattr(ses, "rowcount", 0) or 0)
+    except Exception as e:
+        errors["sessions_orphans"] = f"{type(e).__name__}: {str(e)}"
+
+    out: Dict[str, Any] = {
+        "retention_days": d,
+        "deleted": deleted,
+    }
+    if errors:
+        out["errors"] = errors  # exposed only to admin calls
+    return out
+
+
+@app.post("/v1/admin/retention/prune")
+def retention_prune(days: int = 90, _: None = Depends(require_admin)):
+    """
+    Admin-only prune endpoint (Render Cron friendly).
+    Call: POST /v1/admin/retention/prune?days=90
+    Header: Authorization: Bearer <ANCHOR_ADMIN_TOKEN>
+    """
+    with SessionLocal() as db:
+        result = _run_retention_prune(db, days)
+        db.commit()
+        return {"status": "ok", **result}
 
 
 # ---------------------------
@@ -1309,6 +1420,130 @@ def governance_metrics_for_session(session_id: uuid.UUID, days: int = 30):
             "grade_breakdown": grades,
             "top_triggered_rules": top_rules,
             "has_a4_cols": bool(has_a4),
+        }
+
+
+# ---------------------------
+# A6.7 — Ops Snapshot Endpoint (single-call observability)
+# ---------------------------
+
+class OpsSnapshotResponse(BaseModel):
+    status: str
+    now_utc: str
+    db_ok: bool
+    has_a4_cols: bool
+    last_governance_event_created_at: Optional[str]
+    policy: Optional[Dict[str, Any]]
+    window_days: int
+    governance_core: Dict[str, Any]
+    governance_grade_breakdown: Dict[str, int]
+    governance_top_triggered_rules: List[Dict[str, Any]]
+    counts: Dict[str, int]
+
+
+@app.get("/v1/admin/ops/snapshot", response_model=OpsSnapshotResponse)
+def ops_snapshot(days: int = 30, _: None = Depends(require_admin)):
+    """
+    A6.7 — One-call ops snapshot for monitoring / dashboards.
+
+    Admin-gated. Default window = last 30 days.
+    Works on A3 and A4 DBs.
+    """
+    d = _days_to_interval(days)
+
+    with SessionLocal() as db:
+        # ---- DB connectivity ----
+        db_ok = True
+        try:
+            db.execute(text("SELECT 1")).fetchone()
+        except Exception:
+            db_ok = False
+
+        # ---- Schema detection ----
+        has_a4 = False
+        last_ts = None
+        policy: Optional[Dict[str, Any]] = None
+
+        try:
+            has_a4 = _gov_has_a4_cols(db)
+        except Exception:
+            has_a4 = False
+
+        # last governance event
+        try:
+            r = db.execute(
+                text("SELECT created_at FROM governance_events ORDER BY created_at DESC LIMIT 1")
+            ).fetchone()
+            if r and r[0]:
+                last_ts = r[0].isoformat()
+        except Exception:
+            last_ts = None
+
+        # current policy
+        try:
+            policy = get_current_policy(db)
+            if not isinstance(policy, dict):
+                policy = None
+        except Exception:
+            policy = None
+
+        # ---- Governance metrics (fleet) ----
+        where_sql = _time_window_where(d)
+        params = {"days": d}
+
+        try:
+            core = _fetch_core_metrics_last_window(db, where_sql, params)
+        except Exception:
+            core = {"events_total": 0, "allowed_rate": 0.0, "replaced_rate": 0.0, "avg_score": 0.0}
+
+        try:
+            grades = _fetch_grade_breakdown_last_window(db, where_sql, params)
+        except Exception:
+            grades = {}
+
+        try:
+            top_rules = _fetch_rule_counts_last_window(db, where_sql, params, has_a4)
+        except Exception:
+            top_rules = []
+
+        # ---- Useful counts ----
+        counts = {"users": 0, "sessions": 0, "messages": 0, "memories": 0}
+        try:
+            counts["users"] = int(db.execute(text("SELECT COUNT(*) FROM users")).fetchone()[0])
+            counts["sessions"] = int(db.execute(text("SELECT COUNT(*) FROM sessions")).fetchone()[0])
+            counts["messages"] = int(db.execute(text("SELECT COUNT(*) FROM messages")).fetchone()[0])
+            counts["memories"] = int(db.execute(text("SELECT COUNT(*) FROM memories")).fetchone()[0])
+        except Exception:
+            pass
+
+        return OpsSnapshotResponse(
+            status="ok" if db_ok else "degraded",
+            now_utc=datetime.now(timezone.utc).isoformat(),
+            db_ok=db_ok,
+            has_a4_cols=bool(has_a4),
+            last_governance_event_created_at=last_ts,
+            policy=policy,
+            window_days=d,
+            governance_core=core,
+            governance_grade_breakdown=grades,
+            governance_top_triggered_rules=top_rules,
+            counts=counts,
+        )
+
+
+# Optional upgrade: non-admin, limited public snapshot
+@app.get("/v1/ops/snapshot-lite")
+def ops_snapshot_lite():
+    with SessionLocal() as db:
+        db_ok = True
+        try:
+            db.execute(text("SELECT 1")).fetchone()
+        except Exception:
+            db_ok = False
+        return {
+            "status": "ok" if db_ok else "degraded",
+            "now_utc": datetime.now(timezone.utc).isoformat(),
+            "db_ok": db_ok,
         }
 
 
