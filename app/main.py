@@ -5,10 +5,12 @@ import uuid
 import json
 import time
 import logging
-from datetime import datetime, timezone  # ✅ A6.7 + snapshot-lite
+import traceback
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -44,68 +46,13 @@ from app.schemas import (
     NeutralityScoreResponse,
 )
 
-from typing import Any, Dict  # you already have these
-from sqlalchemy import text    # already imported
-
-def _clamp_retention_days(days: int) -> int:
-    try:
-        d = int(days)
-    except Exception:
-        d = 90
-    return max(7, min(3650, d))  # min 7 days, max 10 years
-
-
-def _run_retention_prune(db, days: int) -> Dict[str, Any]:
-    """
-    Deletes rows older than N days.
-    Returns counts per table.
-    NOTE: delete children first (messages -> sessions) to avoid FK issues.
-    """
-    d = _clamp_retention_days(days)
-
-    # 1) governance_events
-    gov = db.execute(
-        text("DELETE FROM governance_events WHERE created_at < (NOW() - (:days || ' days')::interval)"),
-        {"days": d},
-    )
-    gov_deleted = int(getattr(gov, "rowcount", 0) or 0)
-
-    # 2) messages older than window
-    msg = db.execute(
-        text("DELETE FROM messages WHERE created_at < (NOW() - (:days || ' days')::interval)"),
-        {"days": d},
-    )
-    msg_deleted = int(getattr(msg, "rowcount", 0) or 0)
-
-    # 3) sessions with no messages and older than window (safe cleanup)
-    ses = db.execute(
-        text(
-            """
-            DELETE FROM sessions s
-            WHERE s.created_at < (NOW() - (:days || ' days')::interval)
-              AND NOT EXISTS (
-                SELECT 1 FROM messages m WHERE m.session_id = s.id
-              )
-            """
-        ),
-        {"days": d},
-    )
-    ses_deleted = int(getattr(ses, "rowcount", 0) or 0)
-
-    return {
-        "retention_days": d,
-        "deleted": {
-            "governance_events": gov_deleted,
-            "messages": msg_deleted,
-            "sessions_orphans": ses_deleted,
-        },
-    }
-
 # ---------------------------
-# Logging — structured, safe-by-default
+# Logging — structured, safe-by-default (M7.4)
+# JSON-only lines, never log request bodies or secrets.
 # ---------------------------
 
 logger = logging.getLogger("anchor")
+logger.propagate = False  # avoid double-logging via root
 
 
 def _coerce_log_level(value: str) -> int:
@@ -120,20 +67,52 @@ def _coerce_log_level(value: str) -> int:
     return int(lvl) if isinstance(lvl, int) else logging.INFO
 
 
+def _json_dumps(obj: Dict[str, Any]) -> str:
+    # compact JSON for log aggregation
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+
+
+def log_event(level: int, event: str, **fields: Any) -> None:
+    """
+    Centralized structured logging.
+    - Always JSON
+    - Adds ts_utc + service
+    - Caller decides which fields to include (never include payload.content).
+    """
+    payload: Dict[str, Any] = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "service": "anchor",
+        "event": event,
+        **fields,
+    }
+    try:
+        logger.log(level, _json_dumps(payload))
+    except Exception:
+        # Never break runtime due to logging failure
+        pass
+
+
 if not logger.handlers:
     level = _coerce_log_level(os.getenv("LOG_LEVEL", "INFO"))
-    logging.basicConfig(
-        level=level,
-        format="%(message)s",  # ✅ best for JSON log lines
-    )
+    handler = logging.StreamHandler()
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter("%(message)s"))  # message already JSON
+    logger.addHandler(handler)
+    logger.setLevel(level)
 
+# ---------------------------
+# App
+# ---------------------------
 
 app = FastAPI(title="ANCHOR API")
 
+# ---------------------------
+# Request logging middleware (M7.4)
+# - JSON logs only
+# - request_id correlation
+# - safe exception response (no sensitive payloads)
+# ---------------------------
 
-# ---------------------------
-# A6.3 — Request ID + structured request logs (production-grade)
-# ---------------------------
 
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
@@ -143,46 +122,50 @@ async def request_logging_middleware(request: Request, call_next):
 
     try:
         response: Response = await call_next(request)
+        dur_ms = int((time.time() - start) * 1000)
+
+        response.headers["X-Request-ID"] = req_id
+
+        log_event(
+            logging.INFO,
+            "http_request",
+            request_id=req_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=dur_ms,
+        )
+        return response
+
     except Exception as e:
         dur_ms = int((time.time() - start) * 1000)
-        logger.error(
-            json.dumps(
-                {
-                    "event": "http_request",
-                    "request_id": req_id,
-                    "method": request.method,
-                    "path": request.url.path,
-                    "status_code": 500,
-                    "duration_ms": dur_ms,
-                    "error": f"{type(e).__name__}: {str(e)}",
-                }
-            )
+
+        include_trace = os.getenv("LOG_STACKTRACES", "").strip().lower() in {"1", "true", "yes"}
+        err_fields: Dict[str, Any] = {
+            "request_id": req_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": 500,
+            "duration_ms": dur_ms,
+            "error_type": type(e).__name__,
+            "error": str(e),
+        }
+        if include_trace:
+            err_fields["traceback"] = traceback.format_exc()
+
+        log_event(logging.ERROR, "http_exception", **err_fields)
+
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "internal_server_error", "request_id": req_id},
+            headers={"X-Request-ID": req_id},
         )
-        raise
-
-    dur_ms = int((time.time() - start) * 1000)
-
-    # Attach request id to every response (very helpful in ops)
-    response.headers["X-Request-ID"] = req_id
-
-    logger.info(
-        json.dumps(
-            {
-                "event": "http_request",
-                "request_id": req_id,
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "duration_ms": dur_ms,
-            }
-        )
-    )
-    return response
 
 
 # ---------------------------
 # A4 — Policy update schema (request)
 # ---------------------------
+
 
 class GovernancePolicyUpdateRequest(BaseModel):
     policy_version: str = Field(..., min_length=3, max_length=64)
@@ -196,6 +179,7 @@ class GovernancePolicyUpdateRequest(BaseModel):
 # ---------------------------
 # Helpers
 # ---------------------------
+
 
 def require_admin(authorization: str = Header(default="")) -> None:
     """
@@ -221,7 +205,7 @@ def require_admin(authorization: str = Header(default="")) -> None:
     if not auth.startswith(prefix):
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    provided = auth[len(prefix):].strip()
+    provided = auth[len(prefix) :].strip()
 
     # Constant-time compare.
     if not hmac.compare_digest(provided, token):
@@ -364,7 +348,6 @@ def _parse_cursor(cursor: Optional[str]) -> Optional[Tuple[str, str]]:
     eid = eid.strip()
     if not ts or not eid:
         return None
-    # Validate UUID format
     try:
         _ = uuid.UUID(eid)
     except Exception:
@@ -490,7 +473,6 @@ def _insert_governance_event(
                 },
             )
         else:
-            # A3-only schema
             db.execute(
                 text(
                     """
@@ -521,15 +503,14 @@ def _insert_governance_event(
                     "audit": json.dumps(a),
                 },
             )
-
     except Exception:
-        # Never break runtime due to audit persistence failure
         pass
 
 
 # ---------------------------
 # A6.6 — Retention controls (90 days) + safe admin prune endpoint
 # ---------------------------
+
 
 def _clamp_retention_days(days: int) -> int:
     try:
@@ -543,7 +524,7 @@ def _run_retention_prune(db, days: int) -> Dict[str, Any]:
     """
     Deletes rows older than N days.
     Returns counts per table.
-    NOTE: We delete children first (messages -> sessions) to avoid FK issues.
+    NOTE: delete children first (messages -> sessions) to avoid FK issues.
     """
     d = _clamp_retention_days(days)
 
@@ -557,9 +538,7 @@ def _run_retention_prune(db, days: int) -> Dict[str, Any]:
     # 1) governance_events
     try:
         gov = db.execute(
-            text(
-                "DELETE FROM governance_events WHERE created_at < (NOW() - (:days || ' days')::interval)"
-            ),
+            text("DELETE FROM governance_events WHERE created_at < (NOW() - (:days || ' days')::interval)"),
             {"days": d},
         )
         deleted["governance_events"] = int(getattr(gov, "rowcount", 0) or 0)
@@ -606,7 +585,7 @@ def _run_retention_prune(db, days: int) -> Dict[str, Any]:
 @app.post("/v1/admin/retention/prune")
 def retention_prune(days: int = 90, _: None = Depends(require_admin)):
     """
-    Admin-only prune endpoint (Render Cron friendly).
+    Admin-only prune endpoint (Render/GitHub Cron friendly).
     Call: POST /v1/admin/retention/prune?days=90
     Header: Authorization: Bearer <ANCHOR_ADMIN_TOKEN>
     """
@@ -620,6 +599,7 @@ def retention_prune(days: int = 90, _: None = Depends(require_admin)):
 # Startup
 # ---------------------------
 
+
 @app.on_event("startup")
 def on_startup():
     run_migrations()
@@ -628,6 +608,7 @@ def on_startup():
 # ---------------------------
 # Health / Root
 # ---------------------------
+
 
 @app.get("/health")
 def health():
@@ -659,6 +640,7 @@ def root():
 # Neutrality scoring (V1.1)
 # ---------------------------
 
+
 @app.post("/v1/neutrality/score", response_model=NeutralityScoreResponse)
 def neutrality_score(req: NeutralityScoreRequest):
     try:
@@ -674,6 +656,7 @@ def neutrality_score(req: NeutralityScoreRequest):
 # ---------------------------
 # A4 — Governance policy endpoints (4.1–4.4)
 # ---------------------------
+
 
 @app.get("/v1/governance/policy/current")
 def governance_policy_current():
@@ -715,18 +698,6 @@ def governance_policy_create(
             raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
 
 
-@app.post("/v1/admin/retention/prune")
-def retention_prune(days: int = 90, _: None = Depends(require_admin)):
-    """
-    Admin-only: delete rows older than N days (default 90).
-    Intended to be called by GitHub Actions cron.
-    """
-    with SessionLocal() as db:
-        result = _run_retention_prune(db, days)
-        db.commit()
-        return {"status": "ok", **result}
-
-
 @app.get("/v1/governance/policy/schema")
 def governance_policy_schema():
     """
@@ -755,6 +726,7 @@ def governance_policy_schema():
 # ---------------------------
 # Sessions
 # ---------------------------
+
 
 @app.post("/v1/sessions", response_model=CreateSessionResponse)
 def create_session():
@@ -797,6 +769,7 @@ def create_session_for_user(user_id: uuid.UUID):
 # Messages (with governance)
 # ---------------------------
 
+
 @app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
 def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
     with SessionLocal() as db:
@@ -808,7 +781,7 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
         ).fetchone()
         user_id = uuid.UUID(str(uid_row[0])) if uid_row and uid_row[0] else None
 
-        # store user message
+        # store user message (never log it)
         db.execute(
             text(
                 "INSERT INTO messages (id, session_id, role, content) "
@@ -900,9 +873,10 @@ def list_messages(session_id: uuid.UUID):
 
 
 # ---------------------------
-# A3/A4 — Governance audit endpoints (A5: default last 30 days)
+# A3/A4 — Governance audit endpoints (A5 default last 30 days)
 # A6.2 — Cursor pagination + mode filter
 # ---------------------------
+
 
 @app.get("/v1/users/{user_id}/governance-events")
 def list_governance_events_for_user(
@@ -914,21 +888,19 @@ def list_governance_events_for_user(
 ):
     limit = max(1, min(500, int(limit)))
     d = _days_to_interval(days)
-
     cursor_parsed = _parse_cursor(cursor)
 
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
         has_a4 = _gov_has_a4_cols(db)
 
-        clauses = [f"user_id = :uid", _time_window_where(d)]
+        clauses = ["user_id = :uid", _time_window_where(d)]
         params: Dict[str, Any] = {"uid": str(user_id), "limit": limit, "days": d}
 
         if mode:
             clauses.append("mode = :mode")
             params["mode"] = mode
 
-        # Desc pagination: (created_at, id) < (cursor_ts, cursor_id)
         if cursor_parsed:
             clauses.append("(created_at, id) < (:cursor_ts::timestamptz, :cursor_id::uuid)")
             params["cursor_ts"] = cursor_parsed[0]
@@ -958,7 +930,6 @@ def list_governance_events_for_user(
             next_cursor = None
             if rows:
                 last = rows[-1]
-                # created_at is last[14], id is last[0]
                 if last[14] and last[0]:
                     next_cursor = f"{last[14].isoformat()}|{str(last[0])}"
 
@@ -991,7 +962,7 @@ def list_governance_events_for_user(
                 ],
             }
 
-        # A3-only
+        # A3-only schema
         rows = db.execute(
             text(
                 f"""
@@ -1052,14 +1023,13 @@ def list_governance_events_for_session(
 ):
     limit = max(1, min(500, int(limit)))
     d = _days_to_interval(days)
-
     cursor_parsed = _parse_cursor(cursor)
 
     with SessionLocal() as db:
         _ensure_session_exists(db, session_id)
         has_a4 = _gov_has_a4_cols(db)
 
-        clauses = [f"session_id = :sid", _time_window_where(d)]
+        clauses = ["session_id = :sid", _time_window_where(d)]
         params: Dict[str, Any] = {"sid": str(session_id), "limit": limit, "days": d}
 
         if mode:
@@ -1127,7 +1097,7 @@ def list_governance_events_for_session(
                 ],
             }
 
-        # A3-only
+        # A3-only schema
         rows = db.execute(
             text(
                 f"""
@@ -1181,6 +1151,7 @@ def list_governance_events_for_session(
 # ---------------------------
 # A5 — Governance analytics layer (default last 30 days)
 # ---------------------------
+
 
 @app.get("/v1/governance/health")
 def governance_health():
@@ -1493,8 +1464,9 @@ def governance_metrics_for_session(session_id: uuid.UUID, days: int = 30):
 
 
 # ---------------------------
-# A6.7 — Ops Snapshot Endpoint (single-call observability)
+# M7.3 — Ops Snapshot endpoint (admin gated) + snapshot-lite
 # ---------------------------
+
 
 class OpsSnapshotResponse(BaseModel):
     status: str
@@ -1513,7 +1485,7 @@ class OpsSnapshotResponse(BaseModel):
 @app.get("/v1/admin/ops/snapshot", response_model=OpsSnapshotResponse)
 def ops_snapshot(days: int = 30, _: None = Depends(require_admin)):
     """
-    A6.7 — One-call ops snapshot for monitoring / dashboards.
+    One-call ops snapshot for monitoring / dashboards.
 
     Admin-gated. Default window = last 30 days.
     Works on A3 and A4 DBs.
@@ -1600,9 +1572,11 @@ def ops_snapshot(days: int = 30, _: None = Depends(require_admin)):
         )
 
 
-# Optional upgrade: non-admin, limited public snapshot
 @app.get("/v1/ops/snapshot-lite")
 def ops_snapshot_lite():
+    """
+    External uptime checks. No auth. Minimal surface area.
+    """
     with SessionLocal() as db:
         db_ok = True
         try:
@@ -1619,6 +1593,7 @@ def ops_snapshot_lite():
 # ---------------------------
 # Evidence + Memory debugging
 # ---------------------------
+
 
 @app.get("/v1/users/{user_id}/evidence-check")
 def evidence_check(user_id: uuid.UUID):
@@ -1674,16 +1649,37 @@ def memory_debug(user_id: uuid.UUID, limit: int = 80):
 
         signals = {
             "overwhelm_load": [
-                "overwhelmed", "too much", "can't keep up", "cannot keep up",
-                "exhausted", "burnt out", "drained", "no time", "stressed", "pressure"
+                "overwhelmed",
+                "too much",
+                "can't keep up",
+                "cannot keep up",
+                "exhausted",
+                "burnt out",
+                "drained",
+                "no time",
+                "stressed",
+                "pressure",
             ],
             "responsibility_conflict": [
-                "i have to", "i must", "obligation", "obligations", "responsible",
-                "expectations", "expects", "everyone", "depend on me", "duty"
+                "i have to",
+                "i must",
+                "obligation",
+                "obligations",
+                "responsible",
+                "expectations",
+                "expects",
+                "everyone",
+                "depend on me",
+                "duty",
             ],
             "control_uncertainty": [
-                "i don't know", "uncertain", "confused", "not sure", "what if",
-                "worried", "anxious"
+                "i don't know",
+                "uncertain",
+                "confused",
+                "not sure",
+                "what if",
+                "worried",
+                "anxious",
             ],
         }
 
@@ -1723,6 +1719,7 @@ def memory_offer_debug(user_id: uuid.UUID):
 # ---------------------------
 # Memories
 # ---------------------------
+
 
 @app.get("/v1/users/{user_id}/memories", response_model=List[MemoryItem])
 def list_memories(user_id: uuid.UUID, active: bool = True, kind: Optional[str] = None):
@@ -1969,3 +1966,45 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
         db.commit()
 
     return {"archived": True}
+
+
+# ===========================
+# RUNBOOK — Ops / Debugging (M7.4)
+# ===========================
+#
+# Quick health:
+#   GET  /health
+#   GET  /db-check
+#
+# Uptime-safe external probe:
+#   GET  /v1/ops/snapshot-lite
+#   - Returns: status, now_utc, db_ok
+#
+# Admin ops snapshot (one-call observability):
+#   GET  /v1/admin/ops/snapshot?days=30
+#   Header: Authorization: Bearer <ANCHOR_ADMIN_TOKEN>
+#   - Returns: db_ok, schema flags (has_a4_cols), policy, governance metrics, counts
+#
+# If something breaks:
+# 1) Find request_id:
+#    - Client response header: X-Request-ID
+#    - Or JSON body on 500: {"detail":"internal_server_error","request_id":"..."}
+#
+# 2) Search logs by request_id:
+#    - event=http_request (normal)
+#    - event=http_exception (crash)
+#
+# 3) Validate governance storage:
+#    GET /v1/governance/health
+#    - last_event_created_at, has_a4_cols
+#
+# 4) Confirm policy:
+#    GET /v1/governance/policy/current
+#
+# Logging controls:
+#   LOG_LEVEL=INFO|DEBUG|...
+#   LOG_STACKTRACES=true  (adds traceback to error logs; use cautiously)
+#
+# Sensitive logging policy:
+#   - Never log request bodies (payload.content) or Authorization headers.
+#   - Only log metadata: request_id, path, method, status_code, duration.
