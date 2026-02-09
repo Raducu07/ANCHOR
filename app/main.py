@@ -7,12 +7,17 @@ import time
 import logging
 import traceback
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+
+from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
@@ -101,10 +106,187 @@ if not logger.handlers:
     logger.setLevel(level)
 
 # ---------------------------
+# Env resolution (Render compatibility)
+# - Prefer APP_ENV
+# - Fall back to ENV (Render often uses this)
+# ---------------------------
+
+
+def get_app_env() -> str:
+    """
+    Returns a normalized environment name.
+    Preference order:
+      1) APP_ENV
+      2) ENV
+      3) 'dev'
+    """
+    v = (os.getenv("APP_ENV") or os.getenv("ENV") or "dev").strip().lower()
+    return v or "dev"
+
+
+def is_prod() -> bool:
+    return get_app_env() in {"prod", "production"}
+
+
+# ---------------------------
+# CORS / TrustedHost — env-gated + safe defaults
+# ---------------------------
+
+
+def _parse_csv_env(name: str) -> List[str]:
+    raw = (os.getenv(name, "") or "").strip()
+    if not raw:
+        return []
+    parts = [p.strip() for p in raw.split(",")]
+    return [p for p in parts if p]
+
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _configure_edge_middlewares(app: FastAPI) -> None:
+    """
+    Env-gated and safe-by-default:
+      - CORS disabled unless CORS_ALLOW_ORIGINS is set to a non-empty CSV list.
+      - If CORS_ALLOW_CREDENTIALS=true, we *forbid* '*' in CORS_ALLOW_ORIGINS.
+      - TrustedHost disabled unless TRUSTED_HOSTS is set to a non-empty CSV list.
+
+    Env:
+      CORS_ALLOW_ORIGINS="https://app.example.com,http://localhost:3000"
+      CORS_ALLOW_CREDENTIALS="false"   # default false (safe)
+      CORS_ALLOW_METHODS="GET,POST"    # default GET,POST,OPTIONS
+      CORS_ALLOW_HEADERS="Authorization,Content-Type,X-Request-ID"  # default minimal
+      CORS_MAX_AGE="600"               # default 600 seconds
+      TRUSTED_HOSTS="api.example.com,localhost,127.0.0.1"
+    """
+    # ----- TrustedHost (recommended first) -----
+    trusted_hosts = _parse_csv_env("TRUSTED_HOSTS")
+    if trusted_hosts:
+        # You can include patterns like "*.example.com" if needed.
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
+        log_event(logging.INFO, "trusted_host_enabled", allowed_hosts=trusted_hosts)
+    else:
+        log_event(logging.INFO, "trusted_host_disabled")
+
+    # ----- CORS -----
+    allow_origins = _parse_csv_env("CORS_ALLOW_ORIGINS")
+    if allow_origins:
+        allow_credentials = _env_truthy("CORS_ALLOW_CREDENTIALS", default=False)
+
+        # Avoid the classic misconfig: '*' + credentials.
+        if allow_credentials and any(o == "*" for o in allow_origins):
+            raise RuntimeError(
+                "CORS misconfig: cannot use '*' in CORS_ALLOW_ORIGINS when CORS_ALLOW_CREDENTIALS=true"
+            )
+
+        allow_methods = _parse_csv_env("CORS_ALLOW_METHODS") or ["GET", "POST", "OPTIONS"]
+        allow_headers = _parse_csv_env("CORS_ALLOW_HEADERS") or ["Authorization", "Content-Type", "X-Request-ID"]
+        try:
+            max_age = int((os.getenv("CORS_MAX_AGE", "600") or "600").strip())
+        except Exception:
+            max_age = 600
+
+        max_age = max(0, min(86400, max_age))  # clamp to 0..1 day
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allow_origins,
+            allow_credentials=allow_credentials,
+            allow_methods=allow_methods,
+            allow_headers=allow_headers,
+            max_age=max_age,
+        )
+        log_event(
+            logging.INFO,
+            "cors_enabled",
+            allow_origins=allow_origins,
+            allow_credentials=allow_credentials,
+            allow_methods=allow_methods,
+            allow_headers=allow_headers,
+            max_age=max_age,
+        )
+    else:
+        log_event(logging.INFO, "cors_disabled")
+
+
+# ---------------------------
+# Lifespan (startup/shutdown)
+# - optional dev-only dotenv load
+# - runs migrations once on boot
+# ---------------------------
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        # Dev-only .env loading (never rely on this in prod/Render)
+        if not is_prod():
+            try:
+                from dotenv import load_dotenv  # type: ignore
+
+                load_dotenv()
+                log_event(logging.INFO, "dotenv_loaded", app_env=get_app_env())
+            except Exception:
+                # No dotenv installed or no .env present; ignore.
+                log_event(logging.INFO, "dotenv_not_loaded", app_env=get_app_env())
+
+        # NOTE: do NOT add middleware here (too late).
+        run_migrations()
+        log_event(logging.INFO, "startup_migrations_ok", app_env=get_app_env())
+    except Exception as e:
+        # Fail fast: migrations & security config are part of correctness.
+        log_event(logging.ERROR, "startup_failed", error_type=type(e).__name__, error=str(e), app_env=get_app_env())
+        raise
+    yield
+    log_event(logging.INFO, "shutdown", app_env=get_app_env())
+
+
+# ---------------------------
 # App
 # ---------------------------
 
-app = FastAPI(title="ANCHOR API")
+app = FastAPI(title="ANCHOR API", lifespan=lifespan)
+
+# ✅ Middleware MUST be configured at import time (reliable)
+_configure_edge_middlewares(app)
+
+# ---------------------------
+# Exception handlers
+# - ensure request_id always returned
+# - avoid leaking internals
+# ---------------------------
+
+
+def _get_request_id(request: Request) -> str:
+    rid = getattr(request.state, "request_id", None)
+    return str(rid) if rid else (request.headers.get("X-Request-ID") or str(uuid.uuid4()))
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    req_id = _get_request_id(request)
+    headers = dict(getattr(exc, "headers", None) or {})
+    headers["X-Request-ID"] = req_id
+    return JSONResponse(
+        status_code=int(exc.status_code),
+        content={"detail": exc.detail, "request_id": req_id},
+        headers=headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    req_id = _get_request_id(request)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "request_id": req_id},
+        headers={"X-Request-ID": req_id},
+    )
+
 
 # ---------------------------
 # Request logging middleware (M7.4)
@@ -120,6 +302,14 @@ async def request_logging_middleware(request: Request, call_next):
     request.state.request_id = req_id
     start = time.time()
 
+    # best-effort client identity (no secrets)
+    client_ip = None
+    try:
+        if request.client:
+            client_ip = request.client.host
+    except Exception:
+        client_ip = None
+
     try:
         response: Response = await call_next(request)
         dur_ms = int((time.time() - start) * 1000)
@@ -134,6 +324,7 @@ async def request_logging_middleware(request: Request, call_next):
             path=request.url.path,
             status_code=response.status_code,
             duration_ms=dur_ms,
+            client_ip=client_ip,
         )
         return response
 
@@ -147,6 +338,7 @@ async def request_logging_middleware(request: Request, call_next):
             "path": request.url.path,
             "status_code": 500,
             "duration_ms": dur_ms,
+            "client_ip": client_ip,
             "error_type": type(e).__name__,
             "error": str(e),
         }
@@ -273,9 +465,7 @@ def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
     except TypeError:
         base = score_neutrality(text_value)  # type: ignore[misc]
         if debug and isinstance(base, dict):
-            base["debug"] = {
-                "note": "scorer does not support debug=True; returned base scoring only"
-            }
+            base["debug"] = {"note": "scorer does not support debug=True; returned base scoring only"}
         return base
 
 
@@ -283,11 +473,10 @@ def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
 # Governance schema detection + insert (A3/A4)
 # ---------------------------
 
-# Cache column set (avoid per-request information_schema hits)
-_GOV_EVENTS_COLSET: Optional[set[str]] = None
+_GOV_EVENTS_COLSET: Optional[Set[str]] = None
 
 
-def _get_governance_events_colset(db) -> set[str]:
+def _get_governance_events_colset(db) -> Set[str]:
     global _GOV_EVENTS_COLSET
     if _GOV_EVENTS_COLSET is not None:
         return _GOV_EVENTS_COLSET
@@ -312,9 +501,6 @@ def _gov_has_a4_cols(db) -> bool:
 
 
 def _days_to_interval(days: int) -> int:
-    """
-    Clamp day window to [1, 365]. Default 30.
-    """
     if days is None:
         return 30
     try:
@@ -325,19 +511,11 @@ def _days_to_interval(days: int) -> int:
 
 
 def _time_window_where(days: int) -> str:
-    """
-    Standard time window predicate for governance_events.
-    Uses a parameter :days.
-    """
     _ = _days_to_interval(days)
     return "created_at >= (NOW() - (:days || ' days')::interval)"
 
 
 def _parse_cursor(cursor: Optional[str]) -> Optional[Tuple[str, str]]:
-    """
-    Cursor format: "<iso_timestamp>|<uuid>"
-    Example: "2026-02-07T20:55:12.123456+00:00|2b3d...-...."
-    """
     if not cursor:
         return None
     cur = cursor.strip()
@@ -363,15 +541,6 @@ def _insert_governance_event(
     mode: str,
     audit: Dict[str, Any],
 ) -> None:
-    """
-    A3/A4 — writes one audit row into governance_events.
-
-    Compatible with:
-    - A3 schema: findings JSONB, audit JSONB
-    - A4 upgrades: policy_version, neutrality_version, decision_trace
-
-    Safe by design: never raises upward.
-    """
     try:
         if not user_id:
             return
@@ -396,7 +565,6 @@ def _insert_governance_event(
         grade = str(decision.get("grade", "unknown") or "unknown")
         reason = str(decision.get("reason", "") or "")
 
-        # Triggered rule ids
         triggered_rule_ids: List[str] = []
         for f in findings:
             if isinstance(f, dict):
@@ -418,7 +586,6 @@ def _insert_governance_event(
             "reason": reason,
         }
 
-        # Prefer pulling active policy versions from governance_config
         policy_version = "gov-v1.0"
         neutrality_version = "n-v1.1"
         try:
@@ -517,25 +684,15 @@ def _clamp_retention_days(days: int) -> int:
         d = int(days)
     except Exception:
         d = 90
-    return max(7, min(3650, d))  # min 7 days, max 10 years
+    return max(7, min(3650, d))
 
 
 def _run_retention_prune(db, days: int) -> Dict[str, Any]:
-    """
-    Deletes rows older than N days.
-    Returns counts per table.
-    NOTE: delete children first (messages -> sessions) to avoid FK issues.
-    """
     d = _clamp_retention_days(days)
 
-    deleted: Dict[str, int] = {
-        "governance_events": 0,
-        "messages": 0,
-        "sessions_orphans": 0,
-    }
+    deleted: Dict[str, int] = {"governance_events": 0, "messages": 0, "sessions_orphans": 0}
     errors: Dict[str, str] = {}
 
-    # 1) governance_events
     try:
         gov = db.execute(
             text("DELETE FROM governance_events WHERE created_at < (NOW() - (:days || ' days')::interval)"),
@@ -545,7 +702,6 @@ def _run_retention_prune(db, days: int) -> Dict[str, Any]:
     except Exception as e:
         errors["governance_events"] = f"{type(e).__name__}: {str(e)}"
 
-    # 2) messages older than window
     try:
         msg = db.execute(
             text("DELETE FROM messages WHERE created_at < (NOW() - (:days || ' days')::interval)"),
@@ -555,7 +711,6 @@ def _run_retention_prune(db, days: int) -> Dict[str, Any]:
     except Exception as e:
         errors["messages"] = f"{type(e).__name__}: {str(e)}"
 
-    # 3) sessions with no messages and older than window (safe cleanup)
     try:
         ses = db.execute(
             text(
@@ -573,22 +728,14 @@ def _run_retention_prune(db, days: int) -> Dict[str, Any]:
     except Exception as e:
         errors["sessions_orphans"] = f"{type(e).__name__}: {str(e)}"
 
-    out: Dict[str, Any] = {
-        "retention_days": d,
-        "deleted": deleted,
-    }
+    out: Dict[str, Any] = {"retention_days": d, "deleted": deleted}
     if errors:
-        out["errors"] = errors  # exposed only to admin calls
+        out["errors"] = errors
     return out
 
 
 @app.post("/v1/admin/retention/prune")
 def retention_prune(days: int = 90, _: None = Depends(require_admin)):
-    """
-    Admin-only prune endpoint (Render/GitHub Cron friendly).
-    Call: POST /v1/admin/retention/prune?days=90
-    Header: Authorization: Bearer <ANCHOR_ADMIN_TOKEN>
-    """
     with SessionLocal() as db:
         result = _run_retention_prune(db, days)
         db.commit()
@@ -596,17 +743,7 @@ def retention_prune(days: int = 90, _: None = Depends(require_admin)):
 
 
 # ---------------------------
-# Startup
-# ---------------------------
-
-
-@app.on_event("startup")
-def on_startup():
-    run_migrations()
-
-
-# ---------------------------
-# Health / Root
+# Health / Root / Version
 # ---------------------------
 
 
@@ -631,6 +768,17 @@ def db_memories_check():
             return {"memories_table": "error", "detail": str(e)}
 
 
+@app.get("/v1/version")
+def version():
+    return {
+        "name": "ANCHOR API",
+        "env": get_app_env(),
+        "git_sha": os.getenv("GIT_SHA", None),
+        "build": os.getenv("BUILD_ID", None),
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.get("/")
 def root():
     return {"name": "ANCHOR API", "status": "live"}
@@ -647,10 +795,7 @@ def neutrality_score(req: NeutralityScoreRequest):
         debug_flag = bool(getattr(req, "debug", False))
         return _score_neutrality_safe(req.text, debug_flag)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"neutrality_error: {type(e).__name__}: {e}",
-        )
+        raise HTTPException(status_code=500, detail=f"neutrality_error: {type(e).__name__}: {e}")
 
 
 # ---------------------------
@@ -678,10 +823,7 @@ def governance_policy_history(limit: int = 50):
 
 
 @app.post("/v1/governance/policy")
-def governance_policy_create(
-    payload: GovernancePolicyUpdateRequest,
-    _: None = Depends(require_admin),
-):
+def governance_policy_create(payload: GovernancePolicyUpdateRequest, _: None = Depends(require_admin)):
     with SessionLocal() as db:
         try:
             created = create_new_policy(
@@ -700,9 +842,6 @@ def governance_policy_create(
 
 @app.get("/v1/governance/policy/schema")
 def governance_policy_schema():
-    """
-    Lightweight visibility endpoint for config table existence + newest row timestamp.
-    """
     with SessionLocal() as db:
         try:
             row = db.execute(
@@ -736,10 +875,7 @@ def create_session():
     with SessionLocal() as db:
         db.execute(text("INSERT INTO users (id) VALUES (:id)"), {"id": str(user_id)})
         db.execute(
-            text(
-                "INSERT INTO sessions (id, user_id, mode, question_used) "
-                "VALUES (:sid, :uid, 'witness', false)"
-            ),
+            text("INSERT INTO sessions (id, user_id, mode, question_used) VALUES (:sid, :uid, 'witness', false)"),
             {"sid": str(session_id), "uid": str(user_id)},
         )
         db.commit()
@@ -754,10 +890,7 @@ def create_session_for_user(user_id: uuid.UUID):
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
         db.execute(
-            text(
-                "INSERT INTO sessions (id, user_id, mode, question_used) "
-                "VALUES (:sid, :uid, 'witness', false)"
-            ),
+            text("INSERT INTO sessions (id, user_id, mode, question_used) VALUES (:sid, :uid, 'witness', false)"),
             {"sid": str(session_id), "uid": str(user_id)},
         )
         db.commit()
@@ -783,15 +916,8 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
 
         # store user message (never log it)
         db.execute(
-            text(
-                "INSERT INTO messages (id, session_id, role, content) "
-                "VALUES (:id, :sid, 'user', :content)"
-            ),
-            {
-                "id": str(uuid.uuid4()),
-                "sid": str(session_id),
-                "content": payload.content,
-            },
+            text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'user', :content)"),
+            {"id": str(uuid.uuid4()), "sid": str(session_id), "content": payload.content},
         )
 
         # draft witness reply
@@ -801,7 +927,7 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
             "One question: what feels most important in this right now?"
         )
 
-        # A2 governance gate
+        # governance gate
         final_reply, _decision, audit = govern_output(
             user_text=payload.content,
             assistant_text=draft_reply,
@@ -813,18 +939,11 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
 
         # store governed assistant message ONCE ✅
         db.execute(
-            text(
-                "INSERT INTO messages (id, session_id, role, content) "
-                "VALUES (:id, :sid, 'assistant', :content)"
-            ),
-            {
-                "id": str(uuid.uuid4()),
-                "sid": str(session_id),
-                "content": final_reply,
-            },
+            text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'assistant', :content)"),
+            {"id": str(uuid.uuid4()), "sid": str(session_id), "content": final_reply},
         )
 
-        # A3/A4 persist audit event (same transaction)
+        # persist audit event (same transaction)
         _insert_governance_event(
             db,
             user_id=user_id,
@@ -863,11 +982,7 @@ def list_messages(session_id: uuid.UUID):
         ).fetchall()
 
     return [
-        {
-            "role": r[0],
-            "content": r[1],
-            "created_at": r[2].isoformat() if r[2] else None,
-        }
+        {"role": r[0], "content": r[1], "created_at": r[2].isoformat() if r[2] else None}
         for r in rows
     ]
 
@@ -1155,19 +1270,11 @@ def list_governance_events_for_session(
 
 @app.get("/v1/governance/health")
 def governance_health():
-    """
-    Minimal governance health check:
-    - table readable
-    - last event timestamp
-    - A4 columns present/absent
-    """
     with SessionLocal() as db:
         try:
             cols = _get_governance_events_colset(db)
             has_a4 = _gov_has_a4_cols(db)
-            last_row = db.execute(
-                text("SELECT created_at FROM governance_events ORDER BY created_at DESC LIMIT 1")
-            ).fetchone()
+            last_row = db.execute(text("SELECT created_at FROM governance_events ORDER BY created_at DESC LIMIT 1")).fetchone()
             last_ts = last_row[0].isoformat() if last_row and last_row[0] else None
 
             return {
@@ -1178,19 +1285,10 @@ def governance_health():
                 "last_event_created_at": last_ts,
             }
         except Exception as e:
-            return {
-                "status": "error",
-                "governance_events_table": "error",
-                "detail": str(e),
-            }
+            return {"status": "error", "governance_events_table": "error", "detail": str(e)}
 
 
 def _fetch_rule_counts_last_window(db, where_sql: str, params: Dict[str, Any], has_a4: bool) -> List[Dict[str, Any]]:
-    """
-    Top triggered rules in last window.
-    A4: decision_trace.triggered_rule_ids
-    A3: findings[*].rule_id
-    """
     if has_a4:
         q = f"""
         WITH base AS (
@@ -1271,9 +1369,6 @@ def _fetch_core_metrics_last_window(db, where_sql: str, params: Dict[str, Any]) 
 
 @app.get("/v1/governance/metrics")
 def governance_metrics(days: int = 30):
-    """
-    Fleet metrics across all users/sessions (default last 30 days).
-    """
     d = _days_to_interval(days)
 
     with SessionLocal() as db:
@@ -1296,10 +1391,6 @@ def governance_metrics(days: int = 30):
 
 @app.get("/v1/governance/metrics/by-policy")
 def governance_metrics_by_policy(days: int = 30, limit: int = 50):
-    """
-    Group metrics by policy_version + neutrality_version (A4),
-    or single bucket (A3).
-    """
     d = _days_to_interval(days)
     limit = max(1, min(200, int(limit)))
 
@@ -1376,9 +1467,6 @@ def governance_metrics_by_policy(days: int = 30, limit: int = 50):
 
 @app.get("/v1/users/{user_id}/governance/metrics")
 def governance_metrics_for_user(user_id: uuid.UUID, days: int = 30):
-    """
-    User-scoped governance metrics (default last 30 days).
-    """
     d = _days_to_interval(days)
 
     with SessionLocal() as db:
@@ -1399,7 +1487,8 @@ def governance_metrics_for_user(user_id: uuid.UUID, days: int = 30):
                   SELECT
                     CASE
                       WHEN created_at >= (NOW() - '7 days'::interval) THEN 'last_7'
-                      WHEN created_at >= (NOW() - '14 days'::interval) AND created_at < (NOW() - '7 days'::interval) THEN 'prev_7'
+                      WHEN created_at >= (NOW() - '14 days'::interval)
+                           AND created_at < (NOW() - '7 days'::interval) THEN 'prev_7'
                       ELSE NULL
                     END AS bucket,
                     replaced
@@ -1437,9 +1526,6 @@ def governance_metrics_for_user(user_id: uuid.UUID, days: int = 30):
 
 @app.get("/v1/sessions/{session_id}/governance/metrics")
 def governance_metrics_for_session(session_id: uuid.UUID, days: int = 30):
-    """
-    Session-scoped governance metrics (default last 30 days).
-    """
     d = _days_to_interval(days)
 
     with SessionLocal() as db:
@@ -1484,23 +1570,15 @@ class OpsSnapshotResponse(BaseModel):
 
 @app.get("/v1/admin/ops/snapshot", response_model=OpsSnapshotResponse)
 def ops_snapshot(days: int = 30, _: None = Depends(require_admin)):
-    """
-    One-call ops snapshot for monitoring / dashboards.
-
-    Admin-gated. Default window = last 30 days.
-    Works on A3 and A4 DBs.
-    """
     d = _days_to_interval(days)
 
     with SessionLocal() as db:
-        # ---- DB connectivity ----
         db_ok = True
         try:
             db.execute(text("SELECT 1")).fetchone()
         except Exception:
             db_ok = False
 
-        # ---- Schema detection ----
         has_a4 = False
         last_ts = None
         policy: Optional[Dict[str, Any]] = None
@@ -1510,17 +1588,13 @@ def ops_snapshot(days: int = 30, _: None = Depends(require_admin)):
         except Exception:
             has_a4 = False
 
-        # last governance event
         try:
-            r = db.execute(
-                text("SELECT created_at FROM governance_events ORDER BY created_at DESC LIMIT 1")
-            ).fetchone()
+            r = db.execute(text("SELECT created_at FROM governance_events ORDER BY created_at DESC LIMIT 1")).fetchone()
             if r and r[0]:
                 last_ts = r[0].isoformat()
         except Exception:
             last_ts = None
 
-        # current policy
         try:
             policy = get_current_policy(db)
             if not isinstance(policy, dict):
@@ -1528,7 +1602,6 @@ def ops_snapshot(days: int = 30, _: None = Depends(require_admin)):
         except Exception:
             policy = None
 
-        # ---- Governance metrics (fleet) ----
         where_sql = _time_window_where(d)
         params = {"days": d}
 
@@ -1547,7 +1620,6 @@ def ops_snapshot(days: int = 30, _: None = Depends(require_admin)):
         except Exception:
             top_rules = []
 
-        # ---- Useful counts ----
         counts = {"users": 0, "sessions": 0, "messages": 0, "memories": 0}
         try:
             counts["users"] = int(db.execute(text("SELECT COUNT(*) FROM users")).fetchone()[0])
@@ -1574,9 +1646,6 @@ def ops_snapshot(days: int = 30, _: None = Depends(require_admin)):
 
 @app.get("/v1/ops/snapshot-lite")
 def ops_snapshot_lite():
-    """
-    External uptime checks. No auth. Minimal surface area.
-    """
     with SessionLocal() as db:
         db_ok = True
         try:
@@ -1867,13 +1936,7 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
             detail="negative_space is an offer fallback and cannot be saved as a memory",
         )
 
-    kind_allowed = {
-        "recurring_tension",
-        "unexpressed_axis",
-        "values_vs_emphasis",
-        "decision_posture",
-        "negative_space",
-    }
+    kind_allowed = {"recurring_tension", "unexpressed_axis", "values_vs_emphasis", "decision_posture", "negative_space"}
     if payload.kind not in kind_allowed:
         raise HTTPException(status_code=400, detail="Invalid memory kind")
 
@@ -1983,23 +2046,15 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
 # Admin ops snapshot (one-call observability):
 #   GET  /v1/admin/ops/snapshot?days=30
 #   Header: Authorization: Bearer <ANCHOR_ADMIN_TOKEN>
-#   - Returns: db_ok, schema flags (has_a4_cols), policy, governance metrics, counts
 #
-# If something breaks:
-# 1) Find request_id:
-#    - Client response header: X-Request-ID
-#    - Or JSON body on 500: {"detail":"internal_server_error","request_id":"..."}
+# Retention prune (cron-friendly):
+#   POST /v1/admin/retention/prune?days=90
+#   Header: Authorization: Bearer <ANCHOR_ADMIN_TOKEN>
 #
-# 2) Search logs by request_id:
-#    - event=http_request (normal)
-#    - event=http_exception (crash)
-#
-# 3) Validate governance storage:
-#    GET /v1/governance/health
-#    - last_event_created_at, has_a4_cols
-#
-# 4) Confirm policy:
-#    GET /v1/governance/policy/current
+# Edge security (env-gated):
+#   TRUSTED_HOSTS="anchor-api-prod.onrender.com"
+#   CORS_ALLOW_ORIGINS="https://app.example.com,http://localhost:3000"
+#   CORS_ALLOW_CREDENTIALS="false"   # default false
 #
 # Logging controls:
 #   LOG_LEVEL=INFO|DEBUG|...
