@@ -53,6 +53,41 @@ CREATE INDEX IF NOT EXISTS idx_memories_user_active ON memories(user_id, active)
 CREATE INDEX IF NOT EXISTS idx_memories_user_kind ON memories(user_id, kind);
 
 -- =========================
+-- M8.1/M8.2: memory offers (handshake + audit)
+-- =========================
+
+CREATE TABLE IF NOT EXISTS memory_offers (
+  id UUID PRIMARY KEY,                      -- offer_id
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+  kind TEXT NOT NULL CHECK (kind IN (
+    'recurring_tension',
+    'unexpressed_axis',
+    'values_vs_emphasis',
+    'decision_posture',
+    'negative_space'
+  )),
+
+  statement TEXT NOT NULL,
+  evidence_session_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+  confidence TEXT NOT NULL CHECK (confidence IN ('tentative','emerging','consistent')),
+
+  -- minimal explainability (no raw user text)
+  basis JSONB NOT NULL DEFAULT '{}'::jsonb,  -- e.g. {"signal":"control_uncertainty","scanned_n":80}
+
+  status TEXT NOT NULL CHECK (status IN ('proposed','accepted','rejected','expired')) DEFAULT 'proposed',
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  decided_at TIMESTAMPTZ NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_offers_user_created
+  ON memory_offers(user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_memory_offers_user_status_created
+  ON memory_offers(user_id, status, created_at DESC);
+
+-- =========================
 -- ANCHOR A3: governance audit table
 -- =========================
 
