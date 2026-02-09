@@ -1,4 +1,12 @@
 -- =========================
+-- ANCHOR schema.sql (corrected)
+-- PostgreSQL
+-- =========================
+
+-- Needed for gen_random_uuid() used in the seed.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- =========================
 -- Core tables
 -- =========================
 
@@ -22,6 +30,19 @@ CREATE TABLE IF NOT EXISTS messages (
   content TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Useful indexes for common queries
+CREATE INDEX IF NOT EXISTS idx_sessions_user_created_at
+  ON sessions(user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session_created_at
+  ON messages(session_id, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_created_at
+  ON messages(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_created_at
+  ON sessions(created_at DESC);
 
 -- =========================
 -- ANCHOR v1: memories table
@@ -49,8 +70,11 @@ CREATE TABLE IF NOT EXISTS memories (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_memories_user_active ON memories(user_id, active);
-CREATE INDEX IF NOT EXISTS idx_memories_user_kind ON memories(user_id, kind);
+CREATE INDEX IF NOT EXISTS idx_memories_user_active
+  ON memories(user_id, active);
+
+CREATE INDEX IF NOT EXISTS idx_memories_user_kind
+  ON memories(user_id, kind);
 
 -- =========================
 -- M8.1/M8.2: memory offers (handshake + audit)
@@ -72,10 +96,11 @@ CREATE TABLE IF NOT EXISTS memory_offers (
   evidence_session_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
   confidence TEXT NOT NULL CHECK (confidence IN ('tentative','emerging','consistent')),
 
-  -- minimal explainability (no raw user text)
-  basis JSONB NOT NULL DEFAULT '{}'::jsonb,  -- e.g. {"signal":"control_uncertainty","scanned_n":80}
+  -- minimal explainability; never store raw user messages here
+  basis JSONB NOT NULL DEFAULT '{}'::jsonb,
 
-  status TEXT NOT NULL CHECK (status IN ('proposed','accepted','rejected','expired')) DEFAULT 'proposed',
+  status TEXT NOT NULL CHECK (status IN ('proposed','accepted','rejected','expired'))
+    DEFAULT 'proposed',
 
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   decided_at TIMESTAMPTZ NULL
@@ -120,6 +145,10 @@ CREATE INDEX IF NOT EXISTS idx_governance_events_session_created
 CREATE INDEX IF NOT EXISTS idx_governance_events_created
   ON governance_events(created_at DESC);
 
+-- If governance_events gets huge, BRIN can be extremely efficient for time-based pruning:
+CREATE INDEX IF NOT EXISTS brin_governance_events_created_at
+  ON governance_events USING BRIN (created_at);
+
 -- =========================
 -- A4: policy/versioning + deterministic decision trace
 -- =========================
@@ -162,18 +191,6 @@ CREATE TABLE IF NOT EXISTS governance_config (
 CREATE INDEX IF NOT EXISTS idx_governance_config_updated
   ON governance_config(updated_at DESC);
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
-CREATE INDEX IF NOT EXISTS idx_messages_created_at
-  ON messages(created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_sessions_created_at
-  ON sessions(created_at DESC);
-
--- If governance_events gets huge, BRIN can be extremely efficient for time-based pruning:
-CREATE INDEX IF NOT EXISTS brin_governance_events_created_at
-  ON governance_events USING BRIN (created_at);
-
 -- =========================
 -- Seed: ensure at least one policy row exists
 -- (idempotent; safe for repeated runs)
@@ -198,10 +215,9 @@ SELECT
   10
 WHERE NOT EXISTS (SELECT 1 FROM governance_config);
 
-
 -- =========================
 -- Optional performance: A4-only GIN index on decision_trace
--- (safe on A3 because we check column existence)
+-- (safe because we check column existence)
 -- =========================
 
 DO $$
