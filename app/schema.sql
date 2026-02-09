@@ -213,7 +213,6 @@ BEGIN
       AND table_name = 'governance_events'
       AND column_name = 'decision_trace'
   ) THEN
-    -- GIN helps JSONB containment / key lookups / rule exploration
     CREATE INDEX IF NOT EXISTS idx_governance_events_decision_trace_gin
       ON governance_events
       USING GIN (decision_trace);
