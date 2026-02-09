@@ -15,13 +15,16 @@ jobs:
         env:
           ANCHOR_API_BASE: ${{ secrets.ANCHOR_API_BASE }}
           ANCHOR_ADMIN_TOKEN: ${{ secrets.ANCHOR_ADMIN_TOKEN }}
-        run: |
-          set -e
+run: |
+  set -e
 
-          echo "Calling retention prune..."
-          curl -sS -X POST "${ANCHOR_API_BASE}/v1/admin/retention/prune?days=90" \
-            -H "Authorization: Bearer ${ANCHOR_ADMIN_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --fail
+  echo "Calling retention prune..."
+  echo "ANCHOR_API_BASE=[$ANCHOR_API_BASE]"
+  echo "ANCHOR_API_BASE bytes:"; printf %s "$ANCHOR_API_BASE" | od -An -t x1
 
-          echo "Retention prune completed"
+  curl -sS -X POST "${ANCHOR_API_BASE}/v1/admin/retention/prune?days=90" \
+    -H "Authorization: Bearer ${ANCHOR_ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    --fail
+
+  echo "Retention prune completed"
