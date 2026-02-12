@@ -803,8 +803,19 @@ def _insert_governance_event(
                     "audit": json.dumps(a),
                 },
             )
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            log_event(
+                logging.ERROR,
+                "governance.event.insert_failed",
+                error_type=type(e).__name__,
+                error=_truncate(str(e), 240),
+                user_id=str(user_id) if user_id else None,
+                session_id=str(session_id) if session_id else None,
+                mode=mode,
+            )
+        except Exception:
+            pass
 
 
 def _extract_governance_log_fields(audit: Dict[str, Any], db=None) -> Dict[str, Any]:
