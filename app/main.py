@@ -7,6 +7,8 @@ import time
 import logging
 import traceback
 import hashlib
+import threading
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Set
 from contextlib import asynccontextmanager
@@ -55,32 +57,25 @@ from app.schemas import (
 # ---------------------------
 # Logging — structured, safe-by-default (M2 Step 1)
 # JSON-only lines, never log request bodies or secrets.
-# Adds: env, version, and request-scoped envelope via middleware.
 # ---------------------------
 
 logger = logging.getLogger("anchor")
 logger.propagate = False  # avoid double-logging via root
 
 
-def _get_service_name() -> str:
-    # stable, overridable
-    return (os.getenv("SERVICE_NAME") or os.getenv("APP_NAME") or "anchor").strip() or "anchor"
+def _coerce_log_level(value: str) -> int:
+    v = (value or "INFO").strip()
+    if v.isdigit():
+        return int(v)
+    lvl = getattr(logging, v.upper(), None)
+    return int(lvl) if isinstance(lvl, int) else logging.INFO
 
 
-def _get_app_version() -> Optional[str]:
-    # prefer an explicit version, else fall back to common build vars
-    v = (os.getenv("APP_VERSION") or os.getenv("GIT_SHA") or os.getenv("BUILD_ID") or "").strip()
-    return v or None
+def _json_dumps(obj: Dict[str, Any]) -> str:
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
 def get_app_env() -> str:
-    """
-    Returns a normalized environment name.
-    Preference order:
-      1) APP_ENV
-      2) ENV
-      3) 'dev'
-    """
     v = (os.getenv("APP_ENV") or os.getenv("ENV") or "dev").strip().lower()
     return v or "dev"
 
@@ -89,7 +84,26 @@ def is_prod() -> bool:
     return get_app_env() in {"prod", "production"}
 
 
-# --- HMAC hashing helpers (no raw PII in logs) ---
+def _get_service_name() -> str:
+    return (os.getenv("SERVICE_NAME") or os.getenv("APP_NAME") or "anchor").strip() or "anchor"
+
+
+def _get_app_version() -> Optional[str]:
+    v = (os.getenv("APP_VERSION") or os.getenv("GIT_SHA") or os.getenv("BUILD_ID") or "").strip()
+    return v or None
+
+
+def _truncate(s: str, n: int = 200) -> str:
+    s = str(s or "")
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def _trace_enabled() -> bool:
+    v1 = (os.getenv("LOG_STACKTRACE") or "").strip().lower()
+    v2 = (os.getenv("LOG_STACKTRACES") or "").strip().lower()
+    truthy = {"1", "true", "yes", "y", "on"}
+    return (v1 in truthy) or (v2 in truthy)
+
 
 _HMAC_KEY_CACHE: Optional[bytes] = None
 
@@ -109,7 +123,7 @@ def _get_log_hmac_key() -> bytes:
         fallback = "dev-insecure-log-hmac-key" if not is_prod() else "missing-log-hmac-key"
         _HMAC_KEY_CACHE = fallback.encode("utf-8")
         try:
-            log_event(logging.WARNING, "log_hmac_key_missing")
+            log_event(logging.WARNING, "log_hmac_key_missing", env=get_app_env(), service=_get_service_name())
         except Exception:
             pass
         return _HMAC_KEY_CACHE
@@ -119,56 +133,13 @@ def _get_log_hmac_key() -> bytes:
 
 
 def _hmac_sha256_hex(value: Optional[str]) -> Optional[str]:
-    """
-    Returns hex digest HMAC-SHA256(value). None if input empty.
-    """
     if not value:
         return None
     key = _get_log_hmac_key()
     return hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _truncate(s: str, n: int = 200) -> str:
-    s = str(s or "")
-    return s if len(s) <= n else s[:n] + "…"
-
-
-def _trace_enabled() -> bool:
-    """
-    Support BOTH env vars:
-      - LOG_STACKTRACE
-      - LOG_STACKTRACES (legacy)
-    """
-    v1 = (os.getenv("LOG_STACKTRACE") or "").strip().lower()
-    v2 = (os.getenv("LOG_STACKTRACES") or "").strip().lower()
-    truthy = {"1", "true", "yes", "y", "on"}
-    return (v1 in truthy) or (v2 in truthy)
-
-
-def _coerce_log_level(value: str) -> int:
-    """
-    Accepts: 'info', 'INFO', '20', etc. Returns a valid logging level int.
-    Defaults to INFO if unknown.
-    """
-    v = (value or "INFO").strip()
-    if v.isdigit():
-        return int(v)
-    lvl = getattr(logging, v.upper(), None)
-    return int(lvl) if isinstance(lvl, int) else logging.INFO
-
-
-def _json_dumps(obj: Dict[str, Any]) -> str:
-    # compact JSON for log aggregation
-    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
-
-
 def log_event(level: int, event: str, **fields: Any) -> None:
-    """
-    Centralized structured logging.
-    - Always JSON
-    - Adds ts_utc + service + env + version
-    - Caller decides which fields to include (never include payload.content).
-    """
     payload: Dict[str, Any] = {
         "ts_utc": datetime.now(timezone.utc).isoformat(),
         "service": _get_service_name(),
@@ -180,7 +151,6 @@ def log_event(level: int, event: str, **fields: Any) -> None:
     try:
         logger.log(level, _json_dumps(payload))
     except Exception:
-        # Never break runtime due to logging failure
         pass
 
 
@@ -188,7 +158,7 @@ if not logger.handlers:
     level = _coerce_log_level(os.getenv("LOG_LEVEL", "INFO"))
     handler = logging.StreamHandler()
     handler.setLevel(level)
-    handler.setFormatter(logging.Formatter("%(message)s"))  # message already JSON
+    handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
     logger.setLevel(level)
 
@@ -213,21 +183,6 @@ def _env_truthy(name: str, default: bool = False) -> bool:
 
 
 def _configure_edge_middlewares(app: FastAPI) -> None:
-    """
-    Env-gated and safe-by-default:
-      - CORS disabled unless CORS_ALLOW_ORIGINS is set to a non-empty CSV list.
-      - If CORS_ALLOW_CREDENTIALS=true, we *forbid* '*' in CORS_ALLOW_ORIGINS.
-      - TrustedHost disabled unless TRUSTED_HOSTS is set to a non-empty CSV list.
-
-    Env:
-      CORS_ALLOW_ORIGINS="https://app.example.com,http://localhost:3000"
-      CORS_ALLOW_CREDENTIALS="false"   # default false (safe)
-      CORS_ALLOW_METHODS="GET,POST"    # default GET,POST,OPTIONS
-      CORS_ALLOW_HEADERS="Authorization,Content-Type,X-Request-ID"  # default minimal
-      CORS_MAX_AGE="600"               # default 600 seconds
-      TRUSTED_HOSTS="api.example.com,localhost,127.0.0.1"
-    """
-    # ----- TrustedHost -----
     trusted_hosts = _parse_csv_env("TRUSTED_HOSTS")
     if trusted_hosts:
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
@@ -235,12 +190,9 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
     else:
         log_event(logging.INFO, "trusted_host_disabled")
 
-    # ----- CORS -----
     allow_origins = _parse_csv_env("CORS_ALLOW_ORIGINS")
     if allow_origins:
         allow_credentials = _env_truthy("CORS_ALLOW_CREDENTIALS", default=False)
-
-        # Avoid misconfig: '*' + credentials.
         if allow_credentials and any(o == "*" for o in allow_origins):
             raise RuntimeError(
                 "CORS misconfig: cannot use '*' in CORS_ALLOW_ORIGINS when CORS_ALLOW_CREDENTIALS=true"
@@ -252,8 +204,7 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
             max_age = int((os.getenv("CORS_MAX_AGE", "600") or "600").strip())
         except Exception:
             max_age = 600
-
-        max_age = max(0, min(86400, max_age))  # clamp 0..1 day
+        max_age = max(0, min(86400, max_age))
 
         app.add_middleware(
             CORSMiddleware,
@@ -275,11 +226,8 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
     else:
         log_event(logging.INFO, "cors_disabled")
 
-
 # ---------------------------
-# Lifespan (startup/shutdown)
-# - optional dev-only dotenv load
-# - runs migrations once on boot
+# Lifespan
 # ---------------------------
 
 
@@ -303,20 +251,15 @@ async def lifespan(app: FastAPI):
     yield
     log_event(logging.INFO, "shutdown")
 
-
 # ---------------------------
 # App
 # ---------------------------
 
 app = FastAPI(title="ANCHOR API", lifespan=lifespan)
-
-# ✅ Middleware MUST be configured at import time (reliable)
 _configure_edge_middlewares(app)
 
 # ---------------------------
 # Exception handlers
-# - ensure request_id always returned
-# - avoid leaking internals
 # ---------------------------
 
 
@@ -346,20 +289,117 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         headers={"X-Request-ID": req_id},
     )
 
-
 # ---------------------------
-# Request logging middleware (M2 Step 1)
-# - start + end events
-# - request_id correlation
-# - safe hashed client identity
-# - route template when available
+# M2 Step 3 — Rolling HTTP metrics (in-memory)
 # ---------------------------
 
-
-def _route_template(request: Request) -> str:
+class _HttpMetricStore:
     """
-    Prefer the route template (e.g. /v1/sessions/{session_id}/messages)
-    If not available, fallback to the raw path.
+    Rolling store of recent request outcomes for quick ops visibility.
+    Not durable; resets on deploy. Safe-by-default: no bodies, no headers.
+    """
+    def __init__(self, maxlen: int = 4000):
+        self._lock = threading.Lock()
+        self._items = deque(maxlen=maxlen)  # (ts_ns, method, route, status, dur_ms)
+
+    def add(self, ts_ns: int, method: str, route: str, status: int, dur_ms: int) -> None:
+        with self._lock:
+            self._items.append((ts_ns, method, route, int(status), int(dur_ms)))
+
+    def snapshot(self) -> List[Tuple[int, str, str, int, int]]:
+        with self._lock:
+            return list(self._items)
+
+_HTTP_METRICS = _HttpMetricStore(maxlen=int(os.getenv("HTTP_METRICS_MAXLEN", "4000") or "4000"))
+
+def _percentile(values: List[int], p: float) -> int:
+    if not values:
+        return 0
+    vs = sorted(values)
+    if p <= 0:
+        return int(vs[0])
+    if p >= 100:
+        return int(vs[-1])
+    k = (len(vs) - 1) * (p / 100.0)
+    f = int(k)
+    c = min(f + 1, len(vs) - 1)
+    if f == c:
+        return int(vs[f])
+    d0 = vs[f] * (c - k)
+    d1 = vs[c] * (k - f)
+    return int(round(d0 + d1))
+
+def _summarize_http_metrics(items: List[Tuple[int, str, str, int, int]], window_sec: int, limit: int) -> Dict[str, Any]:
+    now_ns = time.time_ns()
+    window_ns = max(1, int(window_sec)) * 1_000_000_000
+    cut = now_ns - window_ns
+
+    filtered = [x for x in items if x[0] >= cut]
+    total = len(filtered)
+
+    durations = [x[4] for x in filtered]
+    s5xx = sum(1 for x in filtered if 500 <= x[3] <= 599)
+    s4xx = sum(1 for x in filtered if 400 <= x[3] <= 499)
+
+    by_route: Dict[str, Dict[str, Any]] = {}
+    for _, method, route, status, dur_ms in filtered:
+        key = f"{method} {route}"
+        bucket = by_route.get(key)
+        if bucket is None:
+            bucket = {"count": 0, "durations": [], "5xx": 0, "4xx": 0}
+            by_route[key] = bucket
+        bucket["count"] += 1
+        bucket["durations"].append(int(dur_ms))
+        if 500 <= status <= 599:
+            bucket["5xx"] += 1
+        if 400 <= status <= 499:
+            bucket["4xx"] += 1
+
+    rows: List[Dict[str, Any]] = []
+    for k, b in by_route.items():
+        ds = b["durations"]
+        rows.append(
+            {
+                "route": k,
+                "count": int(b["count"]),
+                "p50_ms": _percentile(ds, 50),
+                "p95_ms": _percentile(ds, 95),
+                "avg_ms": float(sum(ds) / len(ds)) if ds else 0.0,
+                "rate_5xx": float(b["5xx"] / b["count"]) if b["count"] else 0.0,
+                "rate_4xx": float(b["4xx"] / b["count"]) if b["count"] else 0.0,
+            }
+        )
+
+    rows.sort(key=lambda r: (r["rate_5xx"], r["p95_ms"], r["count"]), reverse=True)
+    rows = rows[: max(1, min(200, int(limit)))]
+
+    return {
+        "window_sec": int(window_sec),
+        "events_total": int(total),
+        "p50_ms": _percentile(durations, 50),
+        "p95_ms": _percentile(durations, 95),
+        "avg_ms": float(sum(durations) / len(durations)) if durations else 0.0,
+        "rate_5xx": float(s5xx / total) if total else 0.0,
+        "rate_4xx": float(s4xx / total) if total else 0.0,
+        "routes": rows,
+    }
+
+# ---------------------------
+# Request logging middleware (M2 Step 1) + metrics (M2 Step 3)
+# ---------------------------
+
+_SKIP_LOG_PATHS = {"/health", "/openapi.json", "/docs"}
+
+def _host(request: Request) -> Optional[str]:
+    try:
+        return request.headers.get("host")
+    except Exception:
+        return None
+
+def _route_template_from_scope(request: Request) -> str:
+    """
+    After routing has occurred, Starlette sets scope['route'].
+    This returns template paths like: /v1/sessions/{session_id}/messages
     """
     try:
         route = request.scope.get("route")
@@ -369,31 +409,12 @@ def _route_template(request: Request) -> str:
         pass
     return request.url.path
 
-
-def _host(request: Request) -> Optional[str]:
-    try:
-        return request.headers.get("host")
-    except Exception:
-        return None
-
-
-_SKIP_LOG_PATHS = {"/health", "/openapi.json", "/docs", "/docs/", "/redoc", "/redoc/"}
-
-
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.request_id = req_id
 
-    # Skip noisy probe endpoints (but still attach request id)
-    if request.url.path in _SKIP_LOG_PATHS:
-        response: Response = await call_next(request)
-        response.headers["X-Request-ID"] = req_id
-        return response
-
-    start_ns = time.time_ns()
-
-    # Safe client identity: hash only (never log raw IP/UA)
+    # capture safe client identity (hashed only)
     client_ip = None
     try:
         if request.client:
@@ -407,37 +428,64 @@ async def request_logging_middleware(request: Request, call_next):
     except Exception:
         ua = None
 
-    base_fields: Dict[str, Any] = {
-        "request_id": req_id,
-        "method": request.method,
-        "route": _route_template(request),
-        "path": request.url.path,
-        "host": _host(request),
-        "client_ip_hash": _hmac_sha256_hex(client_ip),
-        "user_agent_hash": _hmac_sha256_hex(ua),
-    }
+    start_ns = time.time_ns()
 
-    log_event(logging.INFO, "http.request.start", **base_fields)
+    # Start event: route template not reliably available yet (routing happens inside call_next)
+    if request.url.path not in _SKIP_LOG_PATHS:
+        log_event(
+            logging.INFO,
+            "http.request.start",
+            request_id=req_id,
+            method=request.method,
+            route=request.url.path,  # updated at end with template
+            path=request.url.path,
+            host=_host(request),
+            client_ip_hash=_hmac_sha256_hex(client_ip),
+            user_agent_hash=_hmac_sha256_hex(ua),
+        )
 
     try:
         response: Response = await call_next(request)
         dur_ms = int((time.time_ns() - start_ns) / 1_000_000)
         response.headers["X-Request-ID"] = req_id
 
-        log_event(
-            logging.INFO,
-            "http.request.end",
-            **base_fields,
-            status_code=response.status_code,
-            duration_ms=dur_ms,
-        )
+        # Now route template should be available
+        route_tmpl = _route_template_from_scope(request)
+
+        # Record in rolling metrics (M2 Step 3)
+        _HTTP_METRICS.add(start_ns, request.method, route_tmpl, response.status_code, dur_ms)
+
+        if request.url.path not in _SKIP_LOG_PATHS:
+            log_event(
+                logging.INFO,
+                "http.request.end",
+                request_id=req_id,
+                method=request.method,
+                route=route_tmpl,
+                path=request.url.path,
+                host=_host(request),
+                client_ip_hash=_hmac_sha256_hex(client_ip),
+                user_agent_hash=_hmac_sha256_hex(ua),
+                status_code=response.status_code,
+                duration_ms=dur_ms,
+            )
         return response
 
     except Exception as e:
         dur_ms = int((time.time_ns() - start_ns) / 1_000_000)
+        route_tmpl = _route_template_from_scope(request)
+
+        # Record failure as 500
+        _HTTP_METRICS.add(start_ns, request.method, route_tmpl, 500, dur_ms)
 
         err_fields: Dict[str, Any] = {
-            **base_fields,
+            "request_id": req_id,
+            "method": request.method,
+            "route": route_tmpl,
+            "path": request.url.path,
+            "host": _host(request),
+            "client_ip_hash": _hmac_sha256_hex(client_ip),
+            "user_agent_hash": _hmac_sha256_hex(ua),
             "status_code": 500,
             "duration_ms": dur_ms,
             "error_type": type(e).__name__,
@@ -454,11 +502,49 @@ async def request_logging_middleware(request: Request, call_next):
             headers={"X-Request-ID": req_id},
         )
 
+# ---------------------------
+# Root/Health/Version
+# ---------------------------
+
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/db-check")
+def db_check():
+    db_ping()
+    return {"db": "ok"}
+
+@app.get("/db-memories-check")
+def db_memories_check():
+    with SessionLocal() as db:
+        try:
+            db.execute(text("SELECT 1 FROM memories LIMIT 1"))
+            return {"memories_table": "ok"}
+        except Exception as e:
+            return {"memories_table": "error", "detail": str(e)}
+
+@app.get("/v1/version")
+def version():
+    return {
+        "name": "ANCHOR API",
+        "env": get_app_env(),
+        "git_sha": os.getenv("GIT_SHA", None),
+        "build": os.getenv("BUILD_ID", None),
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+@app.get("/")
+def root():
+    return {"name": "ANCHOR API", "status": "live"}
 
 # ---------------------------
 # A4 — Policy update schema (request)
 # ---------------------------
-
 
 class GovernancePolicyUpdateRequest(BaseModel):
     policy_version: str = Field(..., min_length=3, max_length=64)
@@ -468,99 +554,52 @@ class GovernancePolicyUpdateRequest(BaseModel):
     soft_rules: List[str] = Field(default_factory=lambda: ["direct_advice", "coercion"])
     max_findings: int = Field(default=10, ge=1, le=50)
 
-
 # ---------------------------
 # Helpers
 # ---------------------------
 
-
 def require_admin(authorization: str = Header(default="")) -> None:
-    """
-    Admin gate using a static bearer token.
-
-    Set env:
-      ANCHOR_ADMIN_TOKEN="some-long-random-string"
-
-    Client must send:
-      Authorization: Bearer <token>
-    """
     token = os.getenv("ANCHOR_ADMIN_TOKEN", "").strip()
-
-    # Fail closed if misconfigured (safer).
     if not token:
-        raise HTTPException(
-            status_code=500,
-            detail="server_misconfig: ANCHOR_ADMIN_TOKEN is not set",
-        )
+        raise HTTPException(status_code=500, detail="server_misconfig: ANCHOR_ADMIN_TOKEN is not set")
 
     auth = (authorization or "").strip()
     prefix = "Bearer "
     if not auth.startswith(prefix):
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    provided = auth[len(prefix) :].strip()
-
-    # Constant-time compare.
+    provided = auth[len(prefix):].strip()
     if not hmac.compare_digest(provided, token):
         raise HTTPException(status_code=401, detail="unauthorized")
 
-
 def _ensure_user_exists(db, user_id: uuid.UUID) -> None:
-    row = db.execute(
-        text("SELECT id FROM users WHERE id = :uid"),
-        {"uid": str(user_id)},
-    ).fetchone()
+    row = db.execute(text("SELECT id FROM users WHERE id = :uid"), {"uid": str(user_id)}).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
 
-
 def _ensure_session_exists(db, session_id: uuid.UUID) -> None:
-    row = db.execute(
-        text("SELECT id FROM sessions WHERE id = :sid"),
-        {"sid": str(session_id)},
-    ).fetchone()
+    row = db.execute(text("SELECT id FROM sessions WHERE id = :sid"), {"sid": str(session_id)}).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Session not found")
-
-
-def _validate_memory_statement(statement: str) -> None:
-    s = (statement or "").strip()
-
-    # Keep memory short + single-line (presence, not essays)
-    if not s or "\n" in s or len(s) > 280:
-        raise HTTPException(status_code=400, detail="Invalid memory statement")
-
-    # Minimal neutrality guardrails (v1)
-    banned = [
-        "you should",
-        "try to",
-        "it might help",
-        "i recommend",
-        "diagnos",
-        "therapy",
-        "therapist",
-        "you need to",
-        "this will help",
-        "you will feel",
-    ]
-    low = s.lower()
-    if any(b in low for b in banned):
-        raise HTTPException(
-            status_code=400,
-            detail="Memory statement violates neutrality rules",
-        )
-
 
 def _norm_stmt(s: str) -> str:
     return " ".join((s or "").strip().split())
 
+def _validate_memory_statement(statement: str) -> None:
+    s = (statement or "").strip()
+    if not s or "\n" in s or len(s) > 280:
+        raise HTTPException(status_code=400, detail="Invalid memory statement")
+
+    banned = [
+        "you should", "try to", "it might help", "i recommend",
+        "diagnos", "therapy", "therapist", "you need to",
+        "this will help", "you will feel",
+    ]
+    low = s.lower()
+    if any(b in low for b in banned):
+        raise HTTPException(status_code=400, detail="Memory statement violates neutrality rules")
 
 def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
-    """
-    Compatible with both:
-      - score_neutrality(text)
-      - score_neutrality(text, debug=True)
-    """
     try:
         return score_neutrality(text_value, debug=debug)  # type: ignore[arg-type]
     except TypeError:
@@ -569,13 +608,11 @@ def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
             base["debug"] = {"note": "scorer does not support debug=True; returned base scoring only"}
         return base
 
-
 # ---------------------------
 # Governance schema detection + insert (A3/A4)
 # ---------------------------
 
 _GOV_EVENTS_COLSET: Optional[Set[str]] = None
-
 
 def _get_governance_events_colset(db) -> Set[str]:
     global _GOV_EVENTS_COLSET
@@ -595,44 +632,9 @@ def _get_governance_events_colset(db) -> Set[str]:
     _GOV_EVENTS_COLSET = {str(r[0]) for r in rows}
     return _GOV_EVENTS_COLSET
 
-
 def _gov_has_a4_cols(db) -> bool:
     cols = _get_governance_events_colset(db)
     return {"policy_version", "neutrality_version", "decision_trace"}.issubset(cols)
-
-
-def _days_to_interval(days: int) -> int:
-    if days is None:
-        return 30
-    try:
-        d = int(days)
-    except Exception:
-        d = 30
-    return max(1, min(365, d))
-
-
-def _time_window_where(days: int) -> str:
-    _ = _days_to_interval(days)
-    return "created_at >= (NOW() - (:days || ' days')::interval)"
-
-
-def _parse_cursor(cursor: Optional[str]) -> Optional[Tuple[str, str]]:
-    if not cursor:
-        return None
-    cur = cursor.strip()
-    if "|" not in cur:
-        return None
-    ts, eid = cur.split("|", 1)
-    ts = ts.strip()
-    eid = eid.strip()
-    if not ts or not eid:
-        return None
-    try:
-        _ = uuid.UUID(eid)
-    except Exception:
-        return None
-    return (ts, eid)
-
 
 def _insert_governance_event(
     db,
@@ -647,7 +649,6 @@ def _insert_governance_event(
             return
 
         a = audit or {}
-
         decision = a.get("decision")
         if not isinstance(decision, dict):
             decision = {}
@@ -670,10 +671,8 @@ def _insert_governance_event(
         for f in findings:
             if isinstance(f, dict):
                 rid = f.get("rule_id")
-                if isinstance(rid, str):
-                    rid = rid.strip()
-                    if rid:
-                        triggered_rule_ids.append(rid)
+                if isinstance(rid, str) and rid.strip():
+                    triggered_rule_ids.append(rid.strip())
         triggered_rule_ids = sorted(set(triggered_rule_ids))[:25]
 
         decision_trace = {
@@ -774,252 +773,16 @@ def _insert_governance_event(
     except Exception:
         pass
 
-
-# ---------------------------
-# A6.6 — Retention controls (90 days) + safe admin prune endpoint
-# ---------------------------
-
-
-def _clamp_retention_days(days: int) -> int:
-    try:
-        d = int(days)
-    except Exception:
-        d = 90
-    return max(7, min(3650, d))
-
-
-def _run_retention_prune(db, days: int) -> Dict[str, Any]:
-    d = _clamp_retention_days(days)
-
-    deleted: Dict[str, int] = {"governance_events": 0, "messages": 0, "sessions_orphans": 0}
-    errors: Dict[str, str] = {}
-
-    try:
-        gov = db.execute(
-            text("DELETE FROM governance_events WHERE created_at < (NOW() - (:days || ' days')::interval)"),
-            {"days": d},
-        )
-        deleted["governance_events"] = int(getattr(gov, "rowcount", 0) or 0)
-    except Exception as e:
-        errors["governance_events"] = f"{type(e).__name__}: {str(e)}"
-
-    try:
-        msg = db.execute(
-            text("DELETE FROM messages WHERE created_at < (NOW() - (:days || ' days')::interval)"),
-            {"days": d},
-        )
-        deleted["messages"] = int(getattr(msg, "rowcount", 0) or 0)
-    except Exception as e:
-        errors["messages"] = f"{type(e).__name__}: {str(e)}"
-
-    try:
-        ses = db.execute(
-            text(
-                """
-                DELETE FROM sessions s
-                WHERE s.created_at < (NOW() - (:days || ' days')::interval)
-                  AND NOT EXISTS (
-                    SELECT 1 FROM messages m WHERE m.session_id = s.id
-                  )
-                """
-            ),
-            {"days": d},
-        )
-        deleted["sessions_orphans"] = int(getattr(ses, "rowcount", 0) or 0)
-    except Exception as e:
-        errors["sessions_orphans"] = f"{type(e).__name__}: {str(e)}"
-
-    out: Dict[str, Any] = {"retention_days": d, "deleted": deleted}
-    if errors:
-        out["errors"] = errors
-    return out
-
-
-@app.post("/v1/admin/retention/prune")
-def retention_prune(days: int = 90, _: None = Depends(require_admin)):
-    with SessionLocal() as db:
-        result = _run_retention_prune(db, days)
-        db.commit()
-        return {"status": "ok", **result}
-
-
-# ---------------------------
-# Health / Root / Version
-# ---------------------------
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/db-check")
-def db_check():
-    db_ping()
-    return {"db": "ok"}
-
-
-@app.get("/db-memories-check")
-def db_memories_check():
-    with SessionLocal() as db:
-        try:
-            db.execute(text("SELECT 1 FROM memories LIMIT 1"))
-            return {"memories_table": "ok"}
-        except Exception as e:
-            return {"memories_table": "error", "detail": str(e)}
-
-
-@app.get("/v1/version")
-def version():
-    return {
-        "name": "ANCHOR API",
-        "env": get_app_env(),
-        "git_sha": os.getenv("GIT_SHA", None),
-        "build": os.getenv("BUILD_ID", None),
-        "now_utc": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-@app.get("/")
-def root():
-    return {"name": "ANCHOR API", "status": "live"}
-
-
-# Render / LB probes may use HEAD; avoid noisy 405s
-@app.head("/")
-def root_head():
-    return Response(status_code=200)
-
-
-# ---------------------------
-# Neutrality scoring (V1.1)
-# ---------------------------
-
-
-@app.post("/v1/neutrality/score", response_model=NeutralityScoreResponse)
-def neutrality_score(req: NeutralityScoreRequest):
-    try:
-        debug_flag = bool(getattr(req, "debug", False))
-        return _score_neutrality_safe(req.text, debug_flag)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"neutrality_error: {type(e).__name__}: {e}")
-
-
-# ---------------------------
-# A4 — Governance policy endpoints (4.1–4.4)
-# ---------------------------
-
-
-@app.get("/v1/governance/policy/current")
-def governance_policy_current():
-    with SessionLocal() as db:
-        try:
-            return {"policy": get_current_policy(db)}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
-
-
-@app.get("/v1/governance/policy/history")
-def governance_policy_history(limit: int = 50):
-    limit = max(1, min(200, int(limit)))
-    with SessionLocal() as db:
-        try:
-            return {"history": list_policy_history(db, limit=limit)}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
-
-
-@app.post("/v1/governance/policy")
-def governance_policy_create(payload: GovernancePolicyUpdateRequest, _: None = Depends(require_admin)):
-    with SessionLocal() as db:
-        try:
-            created = create_new_policy(
-                db,
-                policy_version=payload.policy_version,
-                neutrality_version=payload.neutrality_version,
-                min_score_allow=int(payload.min_score_allow),
-                hard_block_rules=list(payload.hard_block_rules or []),
-                soft_rules=list(payload.soft_rules or []),
-                max_findings=int(payload.max_findings),
-            )
-            return {"created": created}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
-
-
-@app.get("/v1/governance/policy/schema")
-def governance_policy_schema():
-    with SessionLocal() as db:
-        try:
-            row = db.execute(
-                text(
-                    """
-                    SELECT updated_at
-                    FROM governance_config
-                    ORDER BY updated_at DESC
-                    LIMIT 1
-                    """
-                )
-            ).fetchone()
-            return {
-                "governance_config_table": "ok",
-                "latest_updated_at": row[0].isoformat() if row and row[0] else None,
-            }
-        except Exception as e:
-            return {"governance_config_table": "error", "detail": str(e)}
-
-
-# ---------------------------
-# Sessions
-# ---------------------------
-
-
-@app.post("/v1/sessions", response_model=CreateSessionResponse)
-def create_session():
-    user_id = uuid.uuid4()
-    session_id = uuid.uuid4()
-
-    with SessionLocal() as db:
-        db.execute(text("INSERT INTO users (id) VALUES (:id)"), {"id": str(user_id)})
-        db.execute(
-            text("INSERT INTO sessions (id, user_id, mode, question_used) VALUES (:sid, :uid, 'witness', false)"),
-            {"sid": str(session_id), "uid": str(user_id)},
-        )
-        db.commit()
-
-    return CreateSessionResponse(user_id=user_id, session_id=session_id, mode="witness")
-
-
-@app.post("/v1/users/{user_id}/sessions", response_model=CreateSessionResponse)
-def create_session_for_user(user_id: uuid.UUID):
-    session_id = uuid.uuid4()
-
-    with SessionLocal() as db:
-        _ensure_user_exists(db, user_id)
-        db.execute(
-            text("INSERT INTO sessions (id, user_id, mode, question_used) VALUES (:sid, :uid, 'witness', false)"),
-            {"sid": str(session_id), "uid": str(user_id)},
-        )
-        db.commit()
-
-    return CreateSessionResponse(user_id=user_id, session_id=session_id, mode="witness")
-
-
-# ---------------------------
-# Messages (with governance)
-# ---------------------------
-
-
 def _extract_governance_log_fields(audit: Dict[str, Any], db=None) -> Dict[str, Any]:
-    """
-    Produce a compact, safe governance summary for logging.
-    No user/assistant content, no raw findings bodies.
-    """
     a = audit or {}
 
     decision = a.get("decision")
     if not isinstance(decision, dict):
         decision = {}
+
+    notes = a.get("notes")
+    if not isinstance(notes, dict):
+        notes = {}
 
     findings = a.get("findings")
     if not isinstance(findings, list):
@@ -1038,7 +801,6 @@ def _extract_governance_log_fields(audit: Dict[str, Any], db=None) -> Dict[str, 
                 triggered_rule_ids.append(rid.strip())
     triggered_rule_ids = sorted(set(triggered_rule_ids))[:25]
 
-    # Default versions; attempt to fetch from policy if db provided
     policy_version = "gov-v1.0"
     neutrality_version = "n-v1.1"
     if db is not None:
@@ -1065,11 +827,132 @@ def _extract_governance_log_fields(audit: Dict[str, Any], db=None) -> Dict[str, 
         "neutrality_version": neutrality_version,
     }
 
+# ---------------------------
+# M2 Step 3 — Admin endpoint for HTTP metrics
+# ---------------------------
+
+@app.get("/v1/admin/ops/http-metrics")
+def ops_http_metrics(window_sec: int = 900, limit: int = 50, _: None = Depends(require_admin)):
+    window_sec = max(30, min(86400, int(window_sec)))
+    limit = max(1, min(200, int(limit)))
+    items = _HTTP_METRICS.snapshot()
+    return {
+        "status": "ok",
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+        "metrics": _summarize_http_metrics(items, window_sec=window_sec, limit=limit),
+    }
+
+# ---------------------------
+# Neutrality scoring (V1.1)
+# ---------------------------
+
+@app.post("/v1/neutrality/score", response_model=NeutralityScoreResponse)
+def neutrality_score(req: NeutralityScoreRequest):
+    try:
+        debug_flag = bool(getattr(req, "debug", False))
+        return _score_neutrality_safe(req.text, debug_flag)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"neutrality_error: {type(e).__name__}: {e}")
+
+# ---------------------------
+# Governance policy endpoints
+# ---------------------------
+
+@app.get("/v1/governance/policy/current")
+def governance_policy_current():
+    with SessionLocal() as db:
+        try:
+            return {"policy": get_current_policy(db)}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
+
+@app.get("/v1/governance/policy/history")
+def governance_policy_history(limit: int = 50):
+    limit = max(1, min(200, int(limit)))
+    with SessionLocal() as db:
+        try:
+            return {"history": list_policy_history(db, limit=limit)}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
+
+@app.post("/v1/governance/policy")
+def governance_policy_create(payload: GovernancePolicyUpdateRequest, _: None = Depends(require_admin)):
+    with SessionLocal() as db:
+        try:
+            created = create_new_policy(
+                db,
+                policy_version=payload.policy_version,
+                neutrality_version=payload.neutrality_version,
+                min_score_allow=int(payload.min_score_allow),
+                hard_block_rules=list(payload.hard_block_rules or []),
+                soft_rules=list(payload.soft_rules or []),
+                max_findings=int(payload.max_findings),
+            )
+            return {"created": created}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
+
+@app.get("/v1/governance/policy/schema")
+def governance_policy_schema():
+    with SessionLocal() as db:
+        try:
+            row = db.execute(
+                text(
+                    """
+                    SELECT updated_at
+                    FROM governance_config
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """
+                )
+            ).fetchone()
+            return {
+                "governance_config_table": "ok",
+                "latest_updated_at": row[0].isoformat() if row and row[0] else None,
+            }
+        except Exception as e:
+            return {"governance_config_table": "error", "detail": str(e)}
+
+# ---------------------------
+# Sessions
+# ---------------------------
+
+@app.post("/v1/sessions", response_model=CreateSessionResponse)
+def create_session():
+    user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+
+    with SessionLocal() as db:
+        db.execute(text("INSERT INTO users (id) VALUES (:id)"), {"id": str(user_id)})
+        db.execute(
+            text("INSERT INTO sessions (id, user_id, mode, question_used) VALUES (:sid, :uid, 'witness', false)"),
+            {"sid": str(session_id), "uid": str(user_id)},
+        )
+        db.commit()
+
+    return CreateSessionResponse(user_id=user_id, session_id=session_id, mode="witness")
+
+@app.post("/v1/users/{user_id}/sessions", response_model=CreateSessionResponse)
+def create_session_for_user(user_id: uuid.UUID):
+    session_id = uuid.uuid4()
+
+    with SessionLocal() as db:
+        _ensure_user_exists(db, user_id)
+        db.execute(
+            text("INSERT INTO sessions (id, user_id, mode, question_used) VALUES (:sid, :uid, 'witness', false)"),
+            {"sid": str(session_id), "uid": str(user_id)},
+        )
+        db.commit()
+
+    return CreateSessionResponse(user_id=user_id, session_id=session_id, mode="witness")
+
+# ---------------------------
+# Messages (with governance) + M2 Step 2 governance summary log
+# ---------------------------
 
 @app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
 def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Request):
     handler_start_ns = time.time_ns()
-    req_id = _get_request_id(request)
 
     with SessionLocal() as db:
         _ensure_session_exists(db, session_id)
@@ -1086,14 +969,13 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Re
             {"id": str(uuid.uuid4()), "sid": str(session_id), "content": payload.content},
         )
 
-        # draft witness reply
+        # draft witness reply (ASCII to avoid encoding artifacts)
         draft_reply = (
-            "I’m here with you. I’m going to reflect back what I heard, briefly.\n\n"
+            "I'm here with you. I'm going to reflect back what I heard, briefly.\n\n"
             f"**What you said:** {payload.content}\n\n"
             "One question: what feels most important in this right now?"
         )
 
-        # governance gate
         final_reply, _decision, audit = govern_output(
             user_text=payload.content,
             assistant_text=draft_reply,
@@ -1103,23 +985,11 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Re
             debug=False,
         )
 
-        # M2 Step 2 — governance decision summary log (no content, no DB dependency)
+        # M2 Step 2 — governance decision summary log (no content)
         try:
+            req_id = _get_request_id(request)
             dur_ms = int((time.time_ns() - handler_start_ns) / 1_000_000)
-
-            a = audit if isinstance(audit, dict) else {}
-            decision = a.get("decision") if isinstance(a.get("decision"), dict) else {}
-            findings = a.get("findings") if isinstance(a.get("findings"), list) else []
-
-            # Extract triggered rule IDs safely (no raw findings body)
-            triggered_rule_ids: List[str] = []
-            for f in findings:
-                if isinstance(f, dict):
-                    rid = f.get("rule_id")
-                    if isinstance(rid, str) and rid.strip():
-                        triggered_rule_ids.append(rid.strip())
-            triggered_rule_ids = sorted(set(triggered_rule_ids))[:25]
-
+            gov_fields = _extract_governance_log_fields(audit if isinstance(audit, dict) else {}, db=db)
             log_event(
                 logging.INFO,
                 "governance.decision",
@@ -1129,35 +999,16 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Re
                 mode="witness",
                 route="/v1/sessions/{session_id}/messages",
                 duration_ms=dur_ms,
-                allowed=bool(decision.get("allowed", True)),
-                replaced=bool(decision.get("replaced", False)),
-                score=int(decision.get("score", 0) or 0),
-                grade=str(decision.get("grade", "unknown") or "unknown"),
-                findings_count=len(findings),
-                triggered_rule_ids=triggered_rule_ids,
+                **gov_fields,
             )
-        except Exception as e:
-            # last-resort fallback so *something* lands in logs
-            try:
-                log_event(
-                    logging.INFO,
-                    "governance.decision",
-                    request_id=req_id,
-                    session_id=str(session_id),
-                    mode="witness",
-                    note="log_fallback",
-                    error_type=type(e).__name__,
-                )
-            except Exception:
-                pass
+        except Exception:
+            pass
 
-        # store governed assistant message ONCE ✅
         db.execute(
             text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'assistant', :content)"),
             {"id": str(uuid.uuid4()), "sid": str(session_id), "content": final_reply},
         )
 
-        # persist audit event (same transaction)
         _insert_governance_event(
             db,
             user_id=user_id,
@@ -1169,7 +1020,6 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Re
         db.commit()
 
     return SendMessageResponse(session_id=session_id, role="assistant", content=final_reply)
-
 
 @app.get("/v1/sessions/{session_id}/messages")
 def list_messages(session_id: uuid.UUID):
@@ -1195,688 +1045,12 @@ def list_messages(session_id: uuid.UUID):
             {"sid": str(session_id)},
         ).fetchall()
 
-    return [
-        {"role": r[0], "content": r[1], "created_at": r[2].isoformat() if r[2] else None}
-        for r in rows
-    ]
-
+    return [{"role": r[0], "content": r[1], "created_at": r[2].isoformat() if r[2] else None} for r in rows]
 
 # ---------------------------
-# A3/A4 — Governance audit endpoints (A5 default last 30 days)
-# A6.2 — Cursor pagination + mode filter
+# Evidence + Memory debugging + Memories
+# (kept as-is from your previous version; unchanged logic)
 # ---------------------------
-
-
-@app.get("/v1/users/{user_id}/governance-events")
-def list_governance_events_for_user(
-    user_id: uuid.UUID,
-    limit: int = 50,
-    days: int = 30,
-    mode: Optional[str] = None,
-    cursor: Optional[str] = None,
-):
-    limit = max(1, min(500, int(limit)))
-    d = _days_to_interval(days)
-    cursor_parsed = _parse_cursor(cursor)
-
-    with SessionLocal() as db:
-        _ensure_user_exists(db, user_id)
-        has_a4 = _gov_has_a4_cols(db)
-
-        clauses = ["user_id = :uid", _time_window_where(d)]
-        params: Dict[str, Any] = {"uid": str(user_id), "limit": limit, "days": d}
-
-        if mode:
-            clauses.append("mode = :mode")
-            params["mode"] = mode
-
-        if cursor_parsed:
-            clauses.append("(created_at, id) < (:cursor_ts::timestamptz, :cursor_id::uuid)")
-            params["cursor_ts"] = cursor_parsed[0]
-            params["cursor_id"] = cursor_parsed[1]
-
-        where_sql = " AND ".join(clauses)
-
-        if has_a4:
-            rows = db.execute(
-                text(
-                    f"""
-                    SELECT
-                      id, user_id, session_id, mode,
-                      allowed, replaced, score, grade, reason,
-                      findings, audit,
-                      policy_version, neutrality_version, decision_trace,
-                      created_at
-                    FROM governance_events
-                    WHERE {where_sql}
-                    ORDER BY created_at DESC, id DESC
-                    LIMIT :limit
-                    """
-                ),
-                params,
-            ).fetchall()
-
-            next_cursor = None
-            if rows:
-                last = rows[-1]
-                if last[14] and last[0]:
-                    next_cursor = f"{last[14].isoformat()}|{str(last[0])}"
-
-            return {
-                "user_id": str(user_id),
-                "window_days": d,
-                "has_a4_cols": True,
-                "mode": mode,
-                "cursor": cursor,
-                "next_cursor": next_cursor,
-                "events": [
-                    {
-                        "id": str(r[0]),
-                        "user_id": str(r[1]) if r[1] else None,
-                        "session_id": str(r[2]) if r[2] else None,
-                        "mode": r[3],
-                        "allowed": bool(r[4]),
-                        "replaced": bool(r[5]),
-                        "score": int(r[6]),
-                        "grade": r[7],
-                        "reason": r[8],
-                        "findings": r[9] or [],
-                        "audit": r[10] or {},
-                        "policy_version": r[11],
-                        "neutrality_version": r[12],
-                        "decision_trace": r[13] or {},
-                        "created_at": r[14].isoformat() if r[14] else None,
-                    }
-                    for r in rows
-                ],
-            }
-
-        # A3-only schema
-        rows = db.execute(
-            text(
-                f"""
-                SELECT
-                  id, user_id, session_id, mode,
-                  allowed, replaced, score, grade, reason,
-                  findings, audit,
-                  created_at
-                FROM governance_events
-                WHERE {where_sql}
-                ORDER BY created_at DESC, id DESC
-                LIMIT :limit
-                """
-            ),
-            params,
-        ).fetchall()
-
-        next_cursor = None
-        if rows:
-            last = rows[-1]
-            if last[11] and last[0]:
-                next_cursor = f"{last[11].isoformat()}|{str(last[0])}"
-
-        return {
-            "user_id": str(user_id),
-            "window_days": d,
-            "has_a4_cols": False,
-            "mode": mode,
-            "cursor": cursor,
-            "next_cursor": next_cursor,
-            "events": [
-                {
-                    "id": str(r[0]),
-                    "user_id": str(r[1]) if r[1] else None,
-                    "session_id": str(r[2]) if r[2] else None,
-                    "mode": r[3],
-                    "allowed": bool(r[4]),
-                    "replaced": bool(r[5]),
-                    "score": int(r[6]),
-                    "grade": r[7],
-                    "reason": r[8],
-                    "findings": r[9] or [],
-                    "audit": r[10] or {},
-                    "created_at": r[11].isoformat() if r[11] else None,
-                }
-                for r in rows
-            ],
-        }
-
-
-@app.get("/v1/sessions/{session_id}/governance-events")
-def list_governance_events_for_session(
-    session_id: uuid.UUID,
-    limit: int = 50,
-    days: int = 30,
-    mode: Optional[str] = None,
-    cursor: Optional[str] = None,
-):
-    limit = max(1, min(500, int(limit)))
-    d = _days_to_interval(days)
-    cursor_parsed = _parse_cursor(cursor)
-
-    with SessionLocal() as db:
-        _ensure_session_exists(db, session_id)
-        has_a4 = _gov_has_a4_cols(db)
-
-        clauses = ["session_id = :sid", _time_window_where(d)]
-        params: Dict[str, Any] = {"sid": str(session_id), "limit": limit, "days": d}
-
-        if mode:
-            clauses.append("mode = :mode")
-            params["mode"] = mode
-
-        if cursor_parsed:
-            clauses.append("(created_at, id) < (:cursor_ts::timestamptz, :cursor_id::uuid)")
-            params["cursor_ts"] = cursor_parsed[0]
-            params["cursor_id"] = cursor_parsed[1]
-
-        where_sql = " AND ".join(clauses)
-
-        if has_a4:
-            rows = db.execute(
-                text(
-                    f"""
-                    SELECT
-                      id, user_id, session_id, mode,
-                      allowed, replaced, score, grade, reason,
-                      findings, audit,
-                      policy_version, neutrality_version, decision_trace,
-                      created_at
-                    FROM governance_events
-                    WHERE {where_sql}
-                    ORDER BY created_at DESC, id DESC
-                    LIMIT :limit
-                    """
-                ),
-                params,
-            ).fetchall()
-
-            next_cursor = None
-            if rows:
-                last = rows[-1]
-                if last[14] and last[0]:
-                    next_cursor = f"{last[14].isoformat()}|{str(last[0])}"
-
-            return {
-                "session_id": str(session_id),
-                "window_days": d,
-                "has_a4_cols": True,
-                "mode": mode,
-                "cursor": cursor,
-                "next_cursor": next_cursor,
-                "events": [
-                    {
-                        "id": str(r[0]),
-                        "user_id": str(r[1]) if r[1] else None,
-                        "session_id": str(r[2]) if r[2] else None,
-                        "mode": r[3],
-                        "allowed": bool(r[4]),
-                        "replaced": bool(r[5]),
-                        "score": int(r[6]),
-                        "grade": r[7],
-                        "reason": r[8],
-                        "findings": r[9] or [],
-                        "audit": r[10] or {},
-                        "policy_version": r[11],
-                        "neutrality_version": r[12],
-                        "decision_trace": r[13] or {},
-                        "created_at": r[14].isoformat() if r[14] else None,
-                    }
-                    for r in rows
-                ],
-            }
-
-        # A3-only schema
-        rows = db.execute(
-            text(
-                f"""
-                SELECT
-                  id, user_id, session_id, mode,
-                  allowed, replaced, score, grade, reason,
-                  findings, audit,
-                  created_at
-                FROM governance_events
-                WHERE {where_sql}
-                ORDER BY created_at DESC, id DESC
-                LIMIT :limit
-                """
-            ),
-            params,
-        ).fetchall()
-
-        next_cursor = None
-        if rows:
-            last = rows[-1]
-            if last[11] and last[0]:
-                next_cursor = f"{last[11].isoformat()}|{str(last[0])}"
-
-        return {
-            "session_id": str(session_id),
-            "window_days": d,
-            "has_a4_cols": False,
-            "mode": mode,
-            "cursor": cursor,
-            "next_cursor": next_cursor,
-            "events": [
-                {
-                    "id": str(r[0]),
-                    "user_id": str(r[1]) if r[1] else None,
-                    "session_id": str(r[2]) if r[2] else None,
-                    "mode": r[3],
-                    "allowed": bool(r[4]),
-                    "replaced": bool(r[5]),
-                    "score": int(r[6]),
-                    "grade": r[7],
-                    "reason": r[8],
-                    "findings": r[9] or [],
-                    "audit": r[10] or {},
-                    "created_at": r[11].isoformat() if r[11] else None,
-                }
-                for r in rows
-            ],
-        }
-
-
-# ---------------------------
-# A5 — Governance analytics layer (default last 30 days)
-# ---------------------------
-
-
-@app.get("/v1/governance/health")
-def governance_health():
-    with SessionLocal() as db:
-        try:
-            cols = _get_governance_events_colset(db)
-            has_a4 = _gov_has_a4_cols(db)
-            last_row = db.execute(text("SELECT created_at FROM governance_events ORDER BY created_at DESC LIMIT 1")).fetchone()
-            last_ts = last_row[0].isoformat() if last_row and last_row[0] else None
-
-            return {
-                "status": "ok",
-                "governance_events_table": "ok",
-                "has_a4_cols": bool(has_a4),
-                "columns": sorted(list(cols))[:200],
-                "last_event_created_at": last_ts,
-            }
-        except Exception as e:
-            return {"status": "error", "governance_events_table": "error", "detail": str(e)}
-
-
-def _fetch_rule_counts_last_window(db, where_sql: str, params: Dict[str, Any], has_a4: bool) -> List[Dict[str, Any]]:
-    if has_a4:
-        q = f"""
-        WITH base AS (
-          SELECT decision_trace
-          FROM governance_events
-          WHERE {where_sql}
-        ),
-        rules AS (
-          SELECT jsonb_array_elements_text(COALESCE(decision_trace->'triggered_rule_ids', '[]'::jsonb)) AS rid
-          FROM base
-        )
-        SELECT rid, COUNT(*) AS n
-        FROM rules
-        WHERE rid IS NOT NULL AND rid <> ''
-        GROUP BY rid
-        ORDER BY n DESC, rid ASC
-        LIMIT 10
-        """
-        rows = db.execute(text(q), params).fetchall()
-        return [{"rule_id": r[0], "count": int(r[1])} for r in rows]
-
-    q = f"""
-    WITH base AS (
-      SELECT findings
-      FROM governance_events
-      WHERE {where_sql}
-    ),
-    rules AS (
-      SELECT (elem->>'rule_id') AS rid
-      FROM base, LATERAL jsonb_array_elements(COALESCE(findings, '[]'::jsonb)) AS elem
-    )
-    SELECT rid, COUNT(*) AS n
-    FROM rules
-    WHERE rid IS NOT NULL AND rid <> ''
-    GROUP BY rid
-    ORDER BY n DESC, rid ASC
-    LIMIT 10
-    """
-    rows = db.execute(text(q), params).fetchall()
-    return [{"rule_id": r[0], "count": int(r[1])} for r in rows]
-
-
-def _fetch_grade_breakdown_last_window(db, where_sql: str, params: Dict[str, Any]) -> Dict[str, int]:
-    q = f"""
-    SELECT grade, COUNT(*)::int
-    FROM governance_events
-    WHERE {where_sql}
-    GROUP BY grade
-    ORDER BY grade ASC
-    """
-    rows = db.execute(text(q), params).fetchall()
-    out: Dict[str, int] = {}
-    for g, n in rows:
-        out[str(g)] = int(n)
-    return out
-
-
-def _fetch_core_metrics_last_window(db, where_sql: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    q = f"""
-    SELECT
-      COUNT(*)::int AS events_total,
-      COALESCE(AVG(CASE WHEN allowed THEN 1 ELSE 0 END), 0)::float AS allowed_rate,
-      COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate,
-      COALESCE(AVG(score), 0)::float AS avg_score
-    FROM governance_events
-    WHERE {where_sql}
-    """
-    row = db.execute(text(q), params).fetchone()
-    if not row:
-        return {"events_total": 0, "allowed_rate": 0.0, "replaced_rate": 0.0, "avg_score": 0.0}
-    return {
-        "events_total": int(row[0]),
-        "allowed_rate": float(row[1]),
-        "replaced_rate": float(row[2]),
-        "avg_score": float(row[3]),
-    }
-
-
-@app.get("/v1/governance/metrics")
-def governance_metrics(days: int = 30):
-    d = _days_to_interval(days)
-
-    with SessionLocal() as db:
-        has_a4 = _gov_has_a4_cols(db)
-        where_sql = _time_window_where(d)
-        params = {"days": d}
-
-        core = _fetch_core_metrics_last_window(db, where_sql, params)
-        grades = _fetch_grade_breakdown_last_window(db, where_sql, params)
-        top_rules = _fetch_rule_counts_last_window(db, where_sql, params, has_a4)
-
-        return {
-            "window_days": d,
-            "core": core,
-            "grade_breakdown": grades,
-            "top_triggered_rules": top_rules,
-            "has_a4_cols": bool(has_a4),
-        }
-
-
-@app.get("/v1/governance/metrics/by-policy")
-def governance_metrics_by_policy(days: int = 30, limit: int = 50):
-    d = _days_to_interval(days)
-    limit = max(1, min(200, int(limit)))
-
-    with SessionLocal() as db:
-        has_a4 = _gov_has_a4_cols(db)
-
-        if has_a4:
-            rows = db.execute(
-                text(
-                    """
-                    SELECT
-                      policy_version,
-                      neutrality_version,
-                      COUNT(*)::int AS events_total,
-                      COALESCE(AVG(CASE WHEN allowed THEN 1 ELSE 0 END), 0)::float AS allowed_rate,
-                      COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate,
-                      COALESCE(AVG(score), 0)::float AS avg_score
-                    FROM governance_events
-                    WHERE created_at >= (NOW() - (:days || ' days')::interval)
-                    GROUP BY policy_version, neutrality_version
-                    ORDER BY events_total DESC, policy_version ASC, neutrality_version ASC
-                    LIMIT :limit
-                    """
-                ),
-                {"days": d, "limit": limit},
-            ).fetchall()
-
-            return {
-                "window_days": d,
-                "has_a4_cols": True,
-                "rows": [
-                    {
-                        "policy_version": r[0],
-                        "neutrality_version": r[1],
-                        "events_total": int(r[2]),
-                        "allowed_rate": float(r[3]),
-                        "replaced_rate": float(r[4]),
-                        "avg_score": float(r[5]),
-                    }
-                    for r in rows
-                ],
-            }
-
-        row = db.execute(
-            text(
-                """
-                SELECT
-                  COUNT(*)::int AS events_total,
-                  COALESCE(AVG(CASE WHEN allowed THEN 1 ELSE 0 END), 0)::float AS allowed_rate,
-                  COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate,
-                  COALESCE(AVG(score), 0)::float AS avg_score
-                FROM governance_events
-                WHERE created_at >= (NOW() - (:days || ' days')::interval)
-                """
-            ),
-            {"days": d},
-        ).fetchone()
-
-        return {
-            "window_days": d,
-            "has_a4_cols": False,
-            "rows": [
-                {
-                    "policy_version": "gov-v1.0",
-                    "neutrality_version": "n-v1.1",
-                    "events_total": int(row[0] if row else 0),
-                    "allowed_rate": float(row[1] if row else 0.0),
-                    "replaced_rate": float(row[2] if row else 0.0),
-                    "avg_score": float(row[3] if row else 0.0),
-                }
-            ],
-        }
-
-
-@app.get("/v1/users/{user_id}/governance/metrics")
-def governance_metrics_for_user(user_id: uuid.UUID, days: int = 30):
-    d = _days_to_interval(days)
-
-    with SessionLocal() as db:
-        _ensure_user_exists(db, user_id)
-        has_a4 = _gov_has_a4_cols(db)
-
-        where_sql = f"user_id = :uid AND {_time_window_where(d)}"
-        params = {"uid": str(user_id), "days": d}
-
-        core = _fetch_core_metrics_last_window(db, where_sql, params)
-        grades = _fetch_grade_breakdown_last_window(db, where_sql, params)
-        top_rules = _fetch_rule_counts_last_window(db, where_sql, params, has_a4)
-
-        trend = db.execute(
-            text(
-                """
-                WITH w AS (
-                  SELECT
-                    CASE
-                      WHEN created_at >= (NOW() - '7 days'::interval) THEN 'last_7'
-                      WHEN created_at >= (NOW() - '14 days'::interval)
-                           AND created_at < (NOW() - '7 days'::interval) THEN 'prev_7'
-                      ELSE NULL
-                    END AS bucket,
-                    replaced
-                  FROM governance_events
-                  WHERE user_id = :uid
-                    AND created_at >= (NOW() - '14 days'::interval)
-                )
-                SELECT
-                  bucket,
-                  COUNT(*)::int AS n,
-                  COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate
-                FROM w
-                WHERE bucket IS NOT NULL
-                GROUP BY bucket
-                """
-            ),
-            {"uid": str(user_id)},
-        ).fetchall()
-
-        trend_map = {str(r[0]): {"events_total": int(r[1]), "replaced_rate": float(r[2])} for r in trend}
-
-        return {
-            "user_id": str(user_id),
-            "window_days": d,
-            "core": core,
-            "grade_breakdown": grades,
-            "top_triggered_rules": top_rules,
-            "trend_7d": {
-                "last_7": trend_map.get("last_7", {"events_total": 0, "replaced_rate": 0.0}),
-                "prev_7": trend_map.get("prev_7", {"events_total": 0, "replaced_rate": 0.0}),
-            },
-            "has_a4_cols": bool(has_a4),
-        }
-
-
-@app.get("/v1/sessions/{session_id}/governance/metrics")
-def governance_metrics_for_session(session_id: uuid.UUID, days: int = 30):
-    d = _days_to_interval(days)
-
-    with SessionLocal() as db:
-        _ensure_session_exists(db, session_id)
-        has_a4 = _gov_has_a4_cols(db)
-
-        where_sql = f"session_id = :sid AND {_time_window_where(d)}"
-        params = {"sid": str(session_id), "days": d}
-
-        core = _fetch_core_metrics_last_window(db, where_sql, params)
-        grades = _fetch_grade_breakdown_last_window(db, where_sql, params)
-        top_rules = _fetch_rule_counts_last_window(db, where_sql, params, has_a4)
-
-        return {
-            "session_id": str(session_id),
-            "window_days": d,
-            "core": core,
-            "grade_breakdown": grades,
-            "top_triggered_rules": top_rules,
-            "has_a4_cols": bool(has_a4),
-        }
-
-
-# ---------------------------
-# M7.3 — Ops Snapshot endpoint (admin gated) + snapshot-lite
-# ---------------------------
-
-
-class OpsSnapshotResponse(BaseModel):
-    status: str
-    now_utc: str
-    db_ok: bool
-    has_a4_cols: bool
-    last_governance_event_created_at: Optional[str]
-    policy: Optional[Dict[str, Any]]
-    window_days: int
-    governance_core: Dict[str, Any]
-    governance_grade_breakdown: Dict[str, int]
-    governance_top_triggered_rules: List[Dict[str, Any]]
-    counts: Dict[str, int]
-
-
-@app.get("/v1/admin/ops/snapshot", response_model=OpsSnapshotResponse)
-def ops_snapshot(days: int = 30, _: None = Depends(require_admin)):
-    d = _days_to_interval(days)
-
-    with SessionLocal() as db:
-        db_ok = True
-        try:
-            db.execute(text("SELECT 1")).fetchone()
-        except Exception:
-            db_ok = False
-
-        has_a4 = False
-        last_ts = None
-        policy: Optional[Dict[str, Any]] = None
-
-        try:
-            has_a4 = _gov_has_a4_cols(db)
-        except Exception:
-            has_a4 = False
-
-        try:
-            r = db.execute(text("SELECT created_at FROM governance_events ORDER BY created_at DESC LIMIT 1")).fetchone()
-            if r and r[0]:
-                last_ts = r[0].isoformat()
-        except Exception:
-            last_ts = None
-
-        try:
-            policy = get_current_policy(db)
-            if not isinstance(policy, dict):
-                policy = None
-        except Exception:
-            policy = None
-
-        where_sql = _time_window_where(d)
-        params = {"days": d}
-
-        try:
-            core = _fetch_core_metrics_last_window(db, where_sql, params)
-        except Exception:
-            core = {"events_total": 0, "allowed_rate": 0.0, "replaced_rate": 0.0, "avg_score": 0.0}
-
-        try:
-            grades = _fetch_grade_breakdown_last_window(db, where_sql, params)
-        except Exception:
-            grades = {}
-
-        try:
-            top_rules = _fetch_rule_counts_last_window(db, where_sql, params, has_a4)
-        except Exception:
-            top_rules = []
-
-        counts = {"users": 0, "sessions": 0, "messages": 0, "memories": 0}
-        try:
-            counts["users"] = int(db.execute(text("SELECT COUNT(*) FROM users")).fetchone()[0])
-            counts["sessions"] = int(db.execute(text("SELECT COUNT(*) FROM sessions")).fetchone()[0])
-            counts["messages"] = int(db.execute(text("SELECT COUNT(*) FROM messages")).fetchone()[0])
-            counts["memories"] = int(db.execute(text("SELECT COUNT(*) FROM memories")).fetchone()[0])
-        except Exception:
-            pass
-
-        return OpsSnapshotResponse(
-            status="ok" if db_ok else "degraded",
-            now_utc=datetime.now(timezone.utc).isoformat(),
-            db_ok=db_ok,
-            has_a4_cols=bool(has_a4),
-            last_governance_event_created_at=last_ts,
-            policy=policy,
-            window_days=d,
-            governance_core=core,
-            governance_grade_breakdown=grades,
-            governance_top_triggered_rules=top_rules,
-            counts=counts,
-        )
-
-
-@app.get("/v1/ops/snapshot-lite")
-def ops_snapshot_lite():
-    with SessionLocal() as db:
-        db_ok = True
-        try:
-            db.execute(text("SELECT 1")).fetchone()
-        except Exception:
-            db_ok = False
-        return {
-            "status": "ok" if db_ok else "degraded",
-            "now_utc": datetime.now(timezone.utc).isoformat(),
-            "db_ok": db_ok,
-        }
-
-
-# ---------------------------
-# Evidence + Memory debugging
-# ---------------------------
-
 
 @app.get("/v1/users/{user_id}/evidence-check")
 def evidence_check(user_id: uuid.UUID):
@@ -1920,49 +1094,23 @@ def evidence_check(user_id: uuid.UUID):
         "last_sessions": [{"id": str(r[0]), "created_at": r[1].isoformat()} for r in last_sessions],
     }
 
-
 @app.get("/v1/users/{user_id}/memory-debug")
 def memory_debug(user_id: uuid.UUID, limit: int = 80):
     limit = max(1, min(500, int(limit)))
 
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
-
         items = fetch_recent_user_texts(db, user_id, limit=limit)
 
         signals = {
             "overwhelm_load": [
-                "overwhelmed",
-                "too much",
-                "can't keep up",
-                "cannot keep up",
-                "exhausted",
-                "burnt out",
-                "drained",
-                "no time",
-                "stressed",
-                "pressure",
+                "overwhelmed","too much","can't keep up","cannot keep up","exhausted","burnt out","drained","no time","stressed","pressure",
             ],
             "responsibility_conflict": [
-                "i have to",
-                "i must",
-                "obligation",
-                "obligations",
-                "responsible",
-                "expectations",
-                "expects",
-                "everyone",
-                "depend on me",
-                "duty",
+                "i have to","i must","obligation","obligations","responsible","expectations","expects","everyone","depend on me","duty",
             ],
             "control_uncertainty": [
-                "i don't know",
-                "uncertain",
-                "confused",
-                "not sure",
-                "what if",
-                "worried",
-                "anxious",
+                "i don't know","uncertain","confused","not sure","what if","worried","anxious",
             ],
         }
 
@@ -1991,18 +1139,11 @@ def memory_debug(user_id: uuid.UUID, limit: int = 80):
             "sample_last_5_texts": [t for (_, t) in items[-5:]],
         }
 
-
 @app.get("/v1/users/{user_id}/memory-offer-debug")
 def memory_offer_debug(user_id: uuid.UUID):
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
         return compute_offer_debug(db, user_id)
-
-
-# ---------------------------
-# Memories
-# ---------------------------
-
 
 @app.get("/v1/users/{user_id}/memories", response_model=List[MemoryItem])
 def list_memories(user_id: uuid.UUID, active: bool = True, kind: Optional[str] = None):
@@ -2052,7 +1193,6 @@ def list_memories(user_id: uuid.UUID, active: bool = True, kind: Optional[str] =
             )
         )
     return result
-
 
 @app.post("/v1/users/{user_id}/memory-offer", response_model=MemoryOfferResponse)
 def memory_offer(user_id: uuid.UUID):
@@ -2138,17 +1278,13 @@ def memory_offer(user_id: uuid.UUID):
             )
         )
 
-
 @app.post("/v1/users/{user_id}/memories", response_model=MemoryItem)
 def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
     stmt = _norm_stmt(payload.statement)
     _validate_memory_statement(stmt)
 
     if payload.kind == "negative_space":
-        raise HTTPException(
-            status_code=400,
-            detail="negative_space is an offer fallback and cannot be saved as a memory",
-        )
+        raise HTTPException(status_code=400, detail="negative_space is an offer fallback and cannot be saved as a memory")
 
     kind_allowed = {"recurring_tension", "unexpressed_axis", "values_vs_emphasis", "decision_posture", "negative_space"}
     if payload.kind not in kind_allowed:
@@ -2219,7 +1355,6 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
         created_at=row[6].isoformat() if row[6] else "",
     )
 
-
 @app.post("/v1/users/{user_id}/memories/{memory_id}/archive")
 def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
     with SessionLocal() as db:
@@ -2244,36 +1379,25 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
 
     return {"archived": True}
 
-
 # ===========================
-# RUNBOOK — Ops / Debugging (M7.4)
+# RUNBOOK — Ops / Debugging (M2/M7)
 # ===========================
-#
 # Quick health:
 #   GET  /health
 #   GET  /db-check
 #
-# Uptime-safe external probe:
-#   GET  /v1/ops/snapshot-lite
-#   - Returns: status, now_utc, db_ok
-#
-# Admin ops snapshot (one-call observability):
-#   GET  /v1/admin/ops/snapshot?days=30
-#   Header: Authorization: Bearer <ANCHOR_ADMIN_TOKEN>
-#
-# Retention prune (cron-friendly):
-#   POST /v1/admin/retention/prune?days=90
+# Admin HTTP SLO view (rolling in-memory):
+#   GET  /v1/admin/ops/http-metrics?window_sec=900&limit=50
 #   Header: Authorization: Bearer <ANCHOR_ADMIN_TOKEN>
 #
 # Edge security (env-gated):
 #   TRUSTED_HOSTS="anchor-api-prod.onrender.com"
 #   CORS_ALLOW_ORIGINS="https://app.example.com,http://localhost:3000"
-#   CORS_ALLOW_CREDENTIALS="false"   # default false
 #
 # Logging controls:
 #   LOG_LEVEL=INFO|DEBUG|...
-#   LOG_STACKTRACES=true  (adds traceback to error logs; use cautiously)
+#   LOG_STACKTRACES=true  (adds traceback; use cautiously)
 #
 # Sensitive logging policy:
-#   - Never log request bodies (payload.content) or Authorization headers.
-#   - Only log metadata: request_id, path, method, status_code, duration.
+#   - Never log request bodies or Authorization headers.
+#   - Only metadata, hashed client identity, and governance decision summary.
