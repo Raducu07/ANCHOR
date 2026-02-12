@@ -841,6 +841,199 @@ def ops_http_metrics(window_sec: int = 900, limit: int = 50, _: None = Depends(r
         "now_utc": datetime.now(timezone.utc).isoformat(),
         "metrics": _summarize_http_metrics(items, window_sec=window_sec, limit=limit),
     }
+    
+*** Begin Patch
+*** Update File: app/main.py
+@@
+ @app.get("/v1/admin/ops/http-metrics")
+ def ops_http_metrics(window_sec: int = 900, limit: int = 50, _: None = Depends(require_admin)):
+     window_sec = max(30, min(86400, int(window_sec)))
+     limit = max(1, min(200, int(limit)))
+     items = _HTTP_METRICS.snapshot()
+     return {
+         "status": "ok",
+         "now_utc": datetime.now(timezone.utc).isoformat(),
+         "metrics": _summarize_http_metrics(items, window_sec=window_sec, limit=limit),
+     }
+ 
++# ---------------------------
++# M2 Step 3 — Admin SLO metrics (minimal, JSON)
++# - request_count
++# - 5xx_rate
++# - P95_latency
++# - governance_replaced_rate
++# Admin-only (uses require_admin)
++# ---------------------------
++
++def _window_days_from_seconds(window_sec: int) -> int:
++    """
++    Convert a seconds window to a conservative whole-days window for DB queries.
++    We only need approximate alignment for governance_replaced_rate.
++    """
++    try:
++        ws = int(window_sec)
++    except Exception:
++        ws = 900
++    ws = max(30, min(86400, ws))
++    # round up to at least 1 day
++    return max(1, int((ws + 86400 - 1) // 86400))
++
++
++def _compute_governance_replaced_rate(db, days: int) -> Dict[str, Any]:
++    """
++    Returns replaced_rate and events_total for the last N days.
++    Uses governance_events (already persisted) and does not require A4 columns.
++    """
++    try:
++        d = max(1, min(365, int(days)))
++    except Exception:
++        d = 1
++
++    row = db.execute(
++        text(
++            """
++            SELECT
++              COUNT(*)::int AS events_total,
++              COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate
++            FROM governance_events
++            WHERE created_at >= (NOW() - (:days || ' days')::interval)
++            """
++        ),
++        {"days": d},
++    ).fetchone()
++
++    if not row:
++        return {"governance_events_total": 0, "governance_replaced_rate": 0.0, "window_days": d}
++
++    return {
++        "governance_events_total": int(row[0] or 0),
++        "governance_replaced_rate": float(row[1] or 0.0),
++        "window_days": d,
++    }
++
++
++@app.get("/v1/admin/ops/metrics")
++def ops_metrics(window_sec: int = 900, _: None = Depends(require_admin)):
++    """
++    Minimal SLO surface (JSON) for quick ops + easy alerting.
++    Admin-only by default.
++    """
++    window_sec = max(30, min(86400, int(window_sec)))
++    now_utc = datetime.now(timezone.utc).isoformat()
++
++    # HTTP metrics from in-memory rolling store
++    items = _HTTP_METRICS.snapshot()
++    http_summary = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
++
++    request_count = int(http_summary.get("events_total", 0) or 0)
++    rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
++    p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
++
++    # Governance replaced_rate from DB (approx window alignment via days)
++    gov_days = _window_days_from_seconds(window_sec)
++    with SessionLocal() as db:
++        gov = _compute_governance_replaced_rate(db, days=gov_days)
++
++    return {
++        "status": "ok",
++        "now_utc": now_utc,
++        "window_sec": int(window_sec),
++        "request_count": request_count,
++        "rate_5xx": rate_5xx,
++        "p95_latency_ms": p95_latency_ms,
++        "governance_replaced_rate": float(gov.get("governance_replaced_rate", 0.0) or 0.0),
++        "governance_events_total": int(gov.get("governance_events_total", 0) or 0),
++    }
++
++
++@app.get("/v1/admin/ops/slo-check")
++def ops_slo_check(
++    window_sec: int = 900,
++    max_5xx_rate: float = 0.01,
++    max_p95_latency_ms: int = 1000,
++    max_governance_replaced_rate: float = 0.10,
++    min_request_count: int = 20,
++    _: None = Depends(require_admin),
++):
++    """
++    Boolean SLO status derived from thresholds.
++    Admin-only by default.
++
++    Defaults (sane starters):
++      - 5xx_rate <= 1%
++      - P95 latency <= 1000ms
++      - governance_replaced_rate <= 10%
++      - require at least 20 requests in the window (avoid noisy pass/fail on tiny samples)
++    """
++    window_sec = max(30, min(86400, int(window_sec)))
++    now_utc = datetime.now(timezone.utc).isoformat()
++
++    # HTTP summary
++    items = _HTTP_METRICS.snapshot()
++    http_summary = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
++
++    request_count = int(http_summary.get("events_total", 0) or 0)
++    rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
++    p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
++
++    # Governance summary (approx window via days)
++    gov_days = _window_days_from_seconds(window_sec)
++    with SessionLocal() as db:
++        gov = _compute_governance_replaced_rate(db, days=gov_days)
++    gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
++    gov_total = int(gov.get("governance_events_total", 0) or 0)
++
++    # Gate on sample size
++    enough_traffic = request_count >= int(min_request_count)
++
++    ok_5xx = (rate_5xx <= float(max_5xx_rate))
++    ok_p95 = (p95_latency_ms <= int(max_p95_latency_ms))
++    ok_gov = (gov_replaced <= float(max_governance_replaced_rate))
++
++    # If not enough traffic, return "unknown" but do not page
++    if not enough_traffic:
++        return {
++            "status": "ok",
++            "now_utc": now_utc,
++            "window_sec": int(window_sec),
++            "slo_ok": None,
++            "reason": "insufficient_traffic",
++            "request_count": request_count,
++            "rate_5xx": rate_5xx,
++            "p95_latency_ms": p95_latency_ms,
++            "governance_replaced_rate": gov_replaced,
++            "governance_events_total": gov_total,
++            "thresholds": {
++                "max_5xx_rate": float(max_5xx_rate),
++                "max_p95_latency_ms": int(max_p95_latency_ms),
++                "max_governance_replaced_rate": float(max_governance_replaced_rate),
++                "min_request_count": int(min_request_count)}}
++
++    slo_ok = bool(ok_5xx and ok_p95 and ok_gov)
++    return {
++        "status": "ok",
++        "now_utc": now_utc,
++        "window_sec": int(window_sec),
++        "slo_ok": slo_ok,
++        "checks": {
++            "ok_5xx": ok_5xx,
++            "ok_p95": ok_p95,
++            "ok_governance_replaced_rate": ok_gov,
++        },
++        "request_count": request_count,
++        "rate_5xx": rate_5xx,
++        "p95_latency_ms": p95_latency_ms,
++        "governance_replaced_rate": gov_replaced,
++        "governance_events_total": gov_total,
++        "thresholds": {
++            "max_5xx_rate": float(max_5xx_rate),
++            "max_p95_latency_ms": int(max_p95_latency_ms),
++            "max_governance_replaced_rate": float(max_governance_replaced_rate),
++            "min_request_count": int(min_request_count),
++        },
++    }
++
+*** End Patch
 
 # ---------------------------
 # Neutrality scoring (V1.1)
