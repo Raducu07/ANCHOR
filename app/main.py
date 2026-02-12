@@ -842,9 +842,6 @@ def ops_http_metrics(window_sec: int = 900, limit: int = 50, _: None = Depends(r
         "metrics": _summarize_http_metrics(items, window_sec=window_sec, limit=limit),
     }
     
-*** Begin Patch
-*** Update File: app/main.py
-@@
  @app.get("/v1/admin/ops/http-metrics")
  def ops_http_metrics(window_sec: int = 900, limit: int = 50, _: None = Depends(require_admin)):
      window_sec = max(30, min(86400, int(window_sec)))
@@ -1032,8 +1029,6 @@ def ops_http_metrics(window_sec: int = 900, limit: int = 50, _: None = Depends(r
 +            "min_request_count": int(min_request_count),
 +        },
 +    }
-+
-*** End Patch
 
 # ---------------------------
 # Neutrality scoring (V1.1)
