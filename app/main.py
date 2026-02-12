@@ -62,8 +62,6 @@ logger = logging.getLogger("anchor")
 logger.propagate = False  # avoid double-logging via root
 
 
-# --- Service/version fields (M2 Step 1) ---
-
 def _get_service_name() -> str:
     # stable, overridable
     return (os.getenv("SERVICE_NAME") or os.getenv("APP_NAME") or "anchor").strip() or "anchor"
@@ -73,6 +71,22 @@ def _get_app_version() -> Optional[str]:
     # prefer an explicit version, else fall back to common build vars
     v = (os.getenv("APP_VERSION") or os.getenv("GIT_SHA") or os.getenv("BUILD_ID") or "").strip()
     return v or None
+
+
+def get_app_env() -> str:
+    """
+    Returns a normalized environment name.
+    Preference order:
+      1) APP_ENV
+      2) ENV
+      3) 'dev'
+    """
+    v = (os.getenv("APP_ENV") or os.getenv("ENV") or "dev").strip().lower()
+    return v or "dev"
+
+
+def is_prod() -> bool:
+    return get_app_env() in {"prod", "production"}
 
 
 # --- HMAC hashing helpers (no raw PII in logs) ---
@@ -92,11 +106,10 @@ def _get_log_hmac_key() -> bytes:
 
     raw = (os.getenv("LOG_HMAC_KEY") or "").strip()
     if not raw:
-        # non-breaking fallback; warn once
         fallback = "dev-insecure-log-hmac-key" if not is_prod() else "missing-log-hmac-key"
         _HMAC_KEY_CACHE = fallback.encode("utf-8")
         try:
-            log_event(logging.WARNING, "log_hmac_key_missing", env=get_app_env(), service=_get_service_name())
+            log_event(logging.WARNING, "log_hmac_key_missing")
         except Exception:
             pass
         return _HMAC_KEY_CACHE
@@ -147,80 +160,6 @@ def _coerce_log_level(value: str) -> int:
 def _json_dumps(obj: Dict[str, Any]) -> str:
     # compact JSON for log aggregation
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
-
-
-def get_app_env() -> str:
-    """
-    Returns a normalized environment name.
-    Preference order:
-      1) APP_ENV
-      2) ENV
-      3) 'dev'
-    """
-    v = (os.getenv("APP_ENV") or os.getenv("ENV") or "dev").strip().lower()
-    return v or "dev"
-
-
-def is_prod() -> bool:
-    return get_app_env() in {"prod", "production"}
-
-
-def _get_service_name() -> str:
-    # stable, but overridable
-    return (os.getenv("SERVICE_NAME") or os.getenv("APP_NAME") or "anchor").strip() or "anchor"
-
-
-def _get_app_version() -> Optional[str]:
-    # prefer an explicit version, else fall back to common build vars
-    v = (os.getenv("APP_VERSION") or os.getenv("GIT_SHA") or os.getenv("BUILD_ID") or "").strip()
-    return v or None
-
-
-# --- HMAC hashing helpers (no raw PII in logs) ---
-
-_HMAC_KEY_CACHE: Optional[bytes] = None
-
-
-def _get_log_hmac_key() -> bytes:
-    """
-    Returns a key for HMAC hashing.
-    - In prod: we strongly recommend setting LOG_HMAC_KEY.
-    - If missing: we still proceed (non-breaking) but log a warning once and
-      use a deterministic placeholder key (less ideal).
-    """
-    global _HMAC_KEY_CACHE
-    if _HMAC_KEY_CACHE is not None:
-        return _HMAC_KEY_CACHE
-
-    raw = (os.getenv("LOG_HMAC_KEY") or "").strip()
-    if not raw:
-        # non-breaking fallback; warn once
-        fallback = "dev-insecure-log-hmac-key" if not is_prod() else "missing-log-hmac-key"
-        _HMAC_KEY_CACHE = fallback.encode("utf-8")
-        # Emit warning (safe fields only)
-        try:
-            log_event(logging.WARNING, "log_hmac_key_missing", env=get_app_env(), service=_get_service_name())
-        except Exception:
-            pass
-        return _HMAC_KEY_CACHE
-
-    _HMAC_KEY_CACHE = raw.encode("utf-8")
-    return _HMAC_KEY_CACHE
-
-
-def _hmac_sha256_hex(value: Optional[str]) -> Optional[str]:
-    """
-    Returns hex digest HMAC-SHA256(value). None if input empty.
-    """
-    if not value:
-        return None
-    key = _get_log_hmac_key()
-    return hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def _truncate(s: str, n: int = 200) -> str:
-    s = str(s or "")
-    return s if len(s) <= n else s[:n] + "…"
 
 
 def log_event(level: int, event: str, **fields: Any) -> None:
@@ -288,7 +227,7 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
       CORS_MAX_AGE="600"               # default 600 seconds
       TRUSTED_HOSTS="api.example.com,localhost,127.0.0.1"
     """
-    # ----- TrustedHost (recommended first) -----
+    # ----- TrustedHost -----
     trusted_hosts = _parse_csv_env("TRUSTED_HOSTS")
     if trusted_hosts:
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
@@ -301,7 +240,7 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
     if allow_origins:
         allow_credentials = _env_truthy("CORS_ALLOW_CREDENTIALS", default=False)
 
-        # Avoid the classic misconfig: '*' + credentials.
+        # Avoid misconfig: '*' + credentials.
         if allow_credentials and any(o == "*" for o in allow_origins):
             raise RuntimeError(
                 "CORS misconfig: cannot use '*' in CORS_ALLOW_ORIGINS when CORS_ALLOW_CREDENTIALS=true"
@@ -314,7 +253,7 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
         except Exception:
             max_age = 600
 
-        max_age = max(0, min(86400, max_age))  # clamp to 0..1 day
+        max_age = max(0, min(86400, max_age))  # clamp 0..1 day
 
         app.add_middleware(
             CORSMiddleware,
@@ -438,31 +377,19 @@ def _host(request: Request) -> Optional[str]:
         return None
 
 
-def _route_template(request: Request) -> str:
-    """
-    Prefer the route template (e.g. /v1/sessions/{session_id}/messages)
-    If not available, fallback to the raw path.
-    """
-    try:
-        route = request.scope.get("route")
-        if route and getattr(route, "path", None):
-            return str(route.path)
-    except Exception:
-        pass
-    return request.url.path
-
-
-def _host(request: Request) -> Optional[str]:
-    try:
-        return request.headers.get("host")
-    except Exception:
-        return None
+_SKIP_LOG_PATHS = {"/health", "/openapi.json", "/docs", "/docs/", "/redoc", "/redoc/"}
 
 
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.request_id = req_id
+
+    # Skip noisy probe endpoints (but still attach request id)
+    if request.url.path in _SKIP_LOG_PATHS:
+        response: Response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        return response
 
     start_ns = time.time_ns()
 
@@ -490,16 +417,13 @@ async def request_logging_middleware(request: Request, call_next):
         "user_agent_hash": _hmac_sha256_hex(ua),
     }
 
-    # START event
     log_event(logging.INFO, "http.request.start", **base_fields)
 
     try:
         response: Response = await call_next(request)
         dur_ms = int((time.time_ns() - start_ns) / 1_000_000)
-
         response.headers["X-Request-ID"] = req_id
 
-        # END event
         log_event(
             logging.INFO,
             "http.request.end",
@@ -520,7 +444,6 @@ async def request_logging_middleware(request: Request, call_next):
             "error": _truncate(str(e), 240),
         }
         if _trace_enabled():
-            # Keep behind env toggle (stack traces can sometimes include data)
             err_fields["traceback"] = traceback.format_exc()
 
         log_event(logging.ERROR, "error.unhandled", **err_fields)
@@ -962,6 +885,12 @@ def root():
     return {"name": "ANCHOR API", "status": "live"}
 
 
+# Render / LB probes may use HEAD; avoid noisy 405s
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
+
+
 # ---------------------------
 # Neutrality scoring (V1.1)
 # ---------------------------
@@ -1081,78 +1010,6 @@ def create_session_for_user(user_id: uuid.UUID):
 # ---------------------------
 
 
-@app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
-def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Request):
-    with SessionLocal() as db:
-        _ensure_session_exists(db, session_id)
-
-        uid_row = db.execute(
-            text("SELECT user_id FROM sessions WHERE id = :sid"),
-            {"sid": str(session_id)},
-        ).fetchone()
-        user_id = uuid.UUID(str(uid_row[0])) if uid_row and uid_row[0] else None
-
-        # store user message (never log it)
-        db.execute(
-            text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'user', :content)"),
-            {"id": str(uuid.uuid4()), "sid": str(session_id), "content": payload.content},
-        )
-
-        # draft witness reply
-        draft_reply = (
-            "I’m here with you. I’m going to reflect back what I heard, briefly.\n\n"
-            f"**What you said:** {payload.content}\n\n"
-            "One question: what feels most important in this right now?"
-        )
-
-        # governance gate
-        final_reply, _decision, audit = govern_output(
-            user_text=payload.content,
-            assistant_text=draft_reply,
-            user_id=user_id,
-            session_id=session_id,
-            mode="witness",
-            debug=False,
-        )
-
-        
-        # M2 Step 2 — governance decision summary log (no content)
-        try:
-            req_id = _get_request_id(request)
-            gov_fields = _extract_governance_log_fields(audit if isinstance(audit, dict) else {}, db=db)
-            log_event(
-                logging.INFO,
-                "governance.decision",
-                request_id=req_id,
-                user_id=str(user_id) if user_id else None,
-                session_id=str(session_id),
-                mode="witness",
-                **gov_fields,
-            )
-        except Exception:
-            pass
-
-        
-        # store governed assistant message ONCE ✅
-        db.execute(
-            text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'assistant', :content)"),
-            {"id": str(uuid.uuid4()), "sid": str(session_id), "content": final_reply},
-        )
-
-        # persist audit event (same transaction)
-        _insert_governance_event(
-            db,
-            user_id=user_id,
-            session_id=session_id,
-            mode="witness",
-            audit=audit if isinstance(audit, dict) else {},
-        )
-
-        db.commit()
-
-    return SendMessageResponse(session_id=session_id, role="assistant", content=final_reply)
-
-
 def _extract_governance_log_fields(audit: Dict[str, Any], db=None) -> Dict[str, Any]:
     """
     Produce a compact, safe governance summary for logging.
@@ -1163,10 +1020,6 @@ def _extract_governance_log_fields(audit: Dict[str, Any], db=None) -> Dict[str, 
     decision = a.get("decision")
     if not isinstance(decision, dict):
         decision = {}
-
-    notes = a.get("notes")
-    if not isinstance(notes, dict):
-        notes = {}
 
     findings = a.get("findings")
     if not isinstance(findings, list):
@@ -1211,6 +1064,111 @@ def _extract_governance_log_fields(audit: Dict[str, Any], db=None) -> Dict[str, 
         "policy_version": policy_version,
         "neutrality_version": neutrality_version,
     }
+
+
+@app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
+def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Request):
+    handler_start_ns = time.time_ns()
+    req_id = _get_request_id(request)
+
+    with SessionLocal() as db:
+        _ensure_session_exists(db, session_id)
+
+        uid_row = db.execute(
+            text("SELECT user_id FROM sessions WHERE id = :sid"),
+            {"sid": str(session_id)},
+        ).fetchone()
+        user_id = uuid.UUID(str(uid_row[0])) if uid_row and uid_row[0] else None
+
+        # store user message (never log it)
+        db.execute(
+            text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'user', :content)"),
+            {"id": str(uuid.uuid4()), "sid": str(session_id), "content": payload.content},
+        )
+
+        # draft witness reply
+        draft_reply = (
+            "I’m here with you. I’m going to reflect back what I heard, briefly.\n\n"
+            f"**What you said:** {payload.content}\n\n"
+            "One question: what feels most important in this right now?"
+        )
+
+        # governance gate
+        final_reply, _decision, audit = govern_output(
+            user_text=payload.content,
+            assistant_text=draft_reply,
+            user_id=user_id,
+            session_id=session_id,
+            mode="witness",
+            debug=False,
+        )
+
+        # M2 Step 2 — governance decision summary log (no content, no DB dependency)
+        try:
+            dur_ms = int((time.time_ns() - handler_start_ns) / 1_000_000)
+
+            a = audit if isinstance(audit, dict) else {}
+            decision = a.get("decision") if isinstance(a.get("decision"), dict) else {}
+            findings = a.get("findings") if isinstance(a.get("findings"), list) else []
+
+            # Extract triggered rule IDs safely (no raw findings body)
+            triggered_rule_ids: List[str] = []
+            for f in findings:
+                if isinstance(f, dict):
+                    rid = f.get("rule_id")
+                    if isinstance(rid, str) and rid.strip():
+                        triggered_rule_ids.append(rid.strip())
+            triggered_rule_ids = sorted(set(triggered_rule_ids))[:25]
+
+            log_event(
+                logging.INFO,
+                "governance.decision",
+                request_id=req_id,
+                user_id=str(user_id) if user_id else None,
+                session_id=str(session_id),
+                mode="witness",
+                route="/v1/sessions/{session_id}/messages",
+                duration_ms=dur_ms,
+                allowed=bool(decision.get("allowed", True)),
+                replaced=bool(decision.get("replaced", False)),
+                score=int(decision.get("score", 0) or 0),
+                grade=str(decision.get("grade", "unknown") or "unknown"),
+                findings_count=len(findings),
+                triggered_rule_ids=triggered_rule_ids,
+            )
+        except Exception as e:
+            # last-resort fallback so *something* lands in logs
+            try:
+                log_event(
+                    logging.INFO,
+                    "governance.decision",
+                    request_id=req_id,
+                    session_id=str(session_id),
+                    mode="witness",
+                    note="log_fallback",
+                    error_type=type(e).__name__,
+                )
+            except Exception:
+                pass
+
+        # store governed assistant message ONCE ✅
+        db.execute(
+            text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'assistant', :content)"),
+            {"id": str(uuid.uuid4()), "sid": str(session_id), "content": final_reply},
+        )
+
+        # persist audit event (same transaction)
+        _insert_governance_event(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            mode="witness",
+            audit=audit if isinstance(audit, dict) else {},
+        )
+
+        db.commit()
+
+    return SendMessageResponse(session_id=session_id, role="assistant", content=final_reply)
 
 
 @app.get("/v1/sessions/{session_id}/messages")
