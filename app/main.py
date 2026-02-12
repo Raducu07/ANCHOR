@@ -669,6 +669,11 @@ def _gov_has_a4_cols(db) -> bool:
     return {"policy_version", "neutrality_version", "decision_trace"}.issubset(cols)
 
 
+def _has_cols(db, *cols: str) -> bool:
+    existing = _get_governance_events_colset(db)
+    return set(cols).issubset(existing)
+
+
 def _insert_governance_event(
     db,
     *,
@@ -719,6 +724,7 @@ def _insert_governance_event(
             "reason": reason,
         }
 
+        # Pull policy versions if available (optional)
         policy_version = "gov-v1.0"
         neutrality_version = "n-v1.1"
         try:
@@ -732,6 +738,83 @@ def _insert_governance_event(
                     neutrality_version = nv.strip()
         except Exception:
             pass
+
+        cols = _get_governance_events_colset(db)
+
+        # Build dynamic insert columns based on what exists in DB
+        insert_cols: List[str] = ["id", "user_id", "session_id", "mode"]
+        params: Dict[str, Any] = {
+            "id": str(uuid.uuid4()),
+            "user_id": str(user_id),
+            "session_id": str(session_id) if session_id else None,
+            "mode": mode,
+        }
+
+        def add_col(name: str, value_key: str, value: Any) -> None:
+            if name in cols:
+                insert_cols.append(name)
+                params[value_key] = value
+
+        add_col("allowed", "allowed", allowed)
+        add_col("replaced", "replaced", replaced)
+        add_col("score", "score", score)
+        add_col("grade", "grade", grade)
+
+        # reason/findings/audit are optional in your current DB schema
+        add_col("reason", "reason", reason)
+
+        if "findings" in cols:
+            insert_cols.append("findings")
+            params["findings"] = json.dumps(findings)
+
+        if "audit" in cols:
+            insert_cols.append("audit")
+            params["audit"] = json.dumps(a)
+
+        # A4 optional fields (only if present)
+        add_col("policy_version", "policy_version", policy_version)
+        add_col("neutrality_version", "neutrality_version", neutrality_version)
+
+        if "decision_trace" in cols:
+            insert_cols.append("decision_trace")
+            params["decision_trace"] = json.dumps(decision_trace)
+
+        # Build SQL
+        sql_cols = ", ".join(insert_cols)
+
+        values_expr: List[str] = []
+        for c in insert_cols:
+            if c in {"findings", "audit", "decision_trace"}:
+                values_expr.append(f"CAST(:{c} AS jsonb)")
+            else:
+                values_expr.append(f":{c}")
+
+        sql_vals = ", ".join(values_expr)
+
+        db.execute(
+            text(
+                f"""
+                INSERT INTO governance_events ({sql_cols})
+                VALUES ({sql_vals})
+                """
+            ),
+            params,
+        )
+
+    except Exception as e:
+        try:
+            log_event(
+                logging.ERROR,
+                "governance.event.insert_failed",
+                error_type=type(e).__name__,
+                error=_truncate(str(e), 240),
+                user_id=str(user_id) if user_id else None,
+                session_id=str(session_id) if session_id else None,
+                mode=mode,
+            )
+        except Exception:
+            pass
+
 
         has_a4 = _gov_has_a4_cols(db)
 
