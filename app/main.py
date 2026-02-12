@@ -6,6 +6,7 @@ import json
 import time
 import logging
 import traceback
+import hashlib
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Set
 from contextlib import asynccontextmanager
@@ -52,12 +53,83 @@ from app.schemas import (
 )
 
 # ---------------------------
-# Logging — structured, safe-by-default (M7.4)
+# Logging — structured, safe-by-default (M2 Step 1)
 # JSON-only lines, never log request bodies or secrets.
+# Adds: env, version, and request-scoped envelope via middleware.
 # ---------------------------
 
 logger = logging.getLogger("anchor")
 logger.propagate = False  # avoid double-logging via root
+
+
+# --- Service/version fields (M2 Step 1) ---
+
+def _get_service_name() -> str:
+    # stable, overridable
+    return (os.getenv("SERVICE_NAME") or os.getenv("APP_NAME") or "anchor").strip() or "anchor"
+
+
+def _get_app_version() -> Optional[str]:
+    # prefer an explicit version, else fall back to common build vars
+    v = (os.getenv("APP_VERSION") or os.getenv("GIT_SHA") or os.getenv("BUILD_ID") or "").strip()
+    return v or None
+
+
+# --- HMAC hashing helpers (no raw PII in logs) ---
+
+_HMAC_KEY_CACHE: Optional[bytes] = None
+
+
+def _get_log_hmac_key() -> bytes:
+    """
+    Returns a key for HMAC hashing.
+    - In prod: strongly recommend setting LOG_HMAC_KEY.
+    - If missing: non-breaking fallback, but logs a warning once.
+    """
+    global _HMAC_KEY_CACHE
+    if _HMAC_KEY_CACHE is not None:
+        return _HMAC_KEY_CACHE
+
+    raw = (os.getenv("LOG_HMAC_KEY") or "").strip()
+    if not raw:
+        # non-breaking fallback; warn once
+        fallback = "dev-insecure-log-hmac-key" if not is_prod() else "missing-log-hmac-key"
+        _HMAC_KEY_CACHE = fallback.encode("utf-8")
+        try:
+            log_event(logging.WARNING, "log_hmac_key_missing", env=get_app_env(), service=_get_service_name())
+        except Exception:
+            pass
+        return _HMAC_KEY_CACHE
+
+    _HMAC_KEY_CACHE = raw.encode("utf-8")
+    return _HMAC_KEY_CACHE
+
+
+def _hmac_sha256_hex(value: Optional[str]) -> Optional[str]:
+    """
+    Returns hex digest HMAC-SHA256(value). None if input empty.
+    """
+    if not value:
+        return None
+    key = _get_log_hmac_key()
+    return hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _truncate(s: str, n: int = 200) -> str:
+    s = str(s or "")
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def _trace_enabled() -> bool:
+    """
+    Support BOTH env vars:
+      - LOG_STACKTRACE
+      - LOG_STACKTRACES (legacy)
+    """
+    v1 = (os.getenv("LOG_STACKTRACE") or "").strip().lower()
+    v2 = (os.getenv("LOG_STACKTRACES") or "").strip().lower()
+    truthy = {"1", "true", "yes", "y", "on"}
+    return (v1 in truthy) or (v2 in truthy)
 
 
 def _coerce_log_level(value: str) -> int:
@@ -77,16 +149,92 @@ def _json_dumps(obj: Dict[str, Any]) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
+def get_app_env() -> str:
+    """
+    Returns a normalized environment name.
+    Preference order:
+      1) APP_ENV
+      2) ENV
+      3) 'dev'
+    """
+    v = (os.getenv("APP_ENV") or os.getenv("ENV") or "dev").strip().lower()
+    return v or "dev"
+
+
+def is_prod() -> bool:
+    return get_app_env() in {"prod", "production"}
+
+
+def _get_service_name() -> str:
+    # stable, but overridable
+    return (os.getenv("SERVICE_NAME") or os.getenv("APP_NAME") or "anchor").strip() or "anchor"
+
+
+def _get_app_version() -> Optional[str]:
+    # prefer an explicit version, else fall back to common build vars
+    v = (os.getenv("APP_VERSION") or os.getenv("GIT_SHA") or os.getenv("BUILD_ID") or "").strip()
+    return v or None
+
+
+# --- HMAC hashing helpers (no raw PII in logs) ---
+
+_HMAC_KEY_CACHE: Optional[bytes] = None
+
+
+def _get_log_hmac_key() -> bytes:
+    """
+    Returns a key for HMAC hashing.
+    - In prod: we strongly recommend setting LOG_HMAC_KEY.
+    - If missing: we still proceed (non-breaking) but log a warning once and
+      use a deterministic placeholder key (less ideal).
+    """
+    global _HMAC_KEY_CACHE
+    if _HMAC_KEY_CACHE is not None:
+        return _HMAC_KEY_CACHE
+
+    raw = (os.getenv("LOG_HMAC_KEY") or "").strip()
+    if not raw:
+        # non-breaking fallback; warn once
+        fallback = "dev-insecure-log-hmac-key" if not is_prod() else "missing-log-hmac-key"
+        _HMAC_KEY_CACHE = fallback.encode("utf-8")
+        # Emit warning (safe fields only)
+        try:
+            log_event(logging.WARNING, "log_hmac_key_missing", env=get_app_env(), service=_get_service_name())
+        except Exception:
+            pass
+        return _HMAC_KEY_CACHE
+
+    _HMAC_KEY_CACHE = raw.encode("utf-8")
+    return _HMAC_KEY_CACHE
+
+
+def _hmac_sha256_hex(value: Optional[str]) -> Optional[str]:
+    """
+    Returns hex digest HMAC-SHA256(value). None if input empty.
+    """
+    if not value:
+        return None
+    key = _get_log_hmac_key()
+    return hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _truncate(s: str, n: int = 200) -> str:
+    s = str(s or "")
+    return s if len(s) <= n else s[:n] + "…"
+
+
 def log_event(level: int, event: str, **fields: Any) -> None:
     """
     Centralized structured logging.
     - Always JSON
-    - Adds ts_utc + service
+    - Adds ts_utc + service + env + version
     - Caller decides which fields to include (never include payload.content).
     """
     payload: Dict[str, Any] = {
         "ts_utc": datetime.now(timezone.utc).isoformat(),
-        "service": "anchor",
+        "service": _get_service_name(),
+        "env": get_app_env(),
+        "version": _get_app_version(),
         "event": event,
         **fields,
     }
@@ -104,29 +252,6 @@ if not logger.handlers:
     handler.setFormatter(logging.Formatter("%(message)s"))  # message already JSON
     logger.addHandler(handler)
     logger.setLevel(level)
-
-# ---------------------------
-# Env resolution (Render compatibility)
-# - Prefer APP_ENV
-# - Fall back to ENV (Render often uses this)
-# ---------------------------
-
-
-def get_app_env() -> str:
-    """
-    Returns a normalized environment name.
-    Preference order:
-      1) APP_ENV
-      2) ENV
-      3) 'dev'
-    """
-    v = (os.getenv("APP_ENV") or os.getenv("ENV") or "dev").strip().lower()
-    return v or "dev"
-
-
-def is_prod() -> bool:
-    return get_app_env() in {"prod", "production"}
-
 
 # ---------------------------
 # CORS / TrustedHost — env-gated + safe defaults
@@ -166,7 +291,6 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
     # ----- TrustedHost (recommended first) -----
     trusted_hosts = _parse_csv_env("TRUSTED_HOSTS")
     if trusted_hosts:
-        # You can include patterns like "*.example.com" if needed.
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
         log_event(logging.INFO, "trusted_host_enabled", allowed_hosts=trusted_hosts)
     else:
@@ -223,26 +347,22 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        # Dev-only .env loading (never rely on this in prod/Render)
         if not is_prod():
             try:
                 from dotenv import load_dotenv  # type: ignore
 
                 load_dotenv()
-                log_event(logging.INFO, "dotenv_loaded", app_env=get_app_env())
+                log_event(logging.INFO, "dotenv_loaded")
             except Exception:
-                # No dotenv installed or no .env present; ignore.
-                log_event(logging.INFO, "dotenv_not_loaded", app_env=get_app_env())
+                log_event(logging.INFO, "dotenv_not_loaded")
 
-        # NOTE: do NOT add middleware here (too late).
         run_migrations()
-        log_event(logging.INFO, "startup_migrations_ok", app_env=get_app_env())
+        log_event(logging.INFO, "startup_migrations_ok")
     except Exception as e:
-        # Fail fast: migrations & security config are part of correctness.
-        log_event(logging.ERROR, "startup_failed", error_type=type(e).__name__, error=str(e), app_env=get_app_env())
+        log_event(logging.ERROR, "startup_failed", error_type=type(e).__name__, error=_truncate(str(e)))
         raise
     yield
-    log_event(logging.INFO, "shutdown", app_env=get_app_env())
+    log_event(logging.INFO, "shutdown")
 
 
 # ---------------------------
@@ -289,20 +409,64 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 # ---------------------------
-# Request logging middleware (M7.4)
-# - JSON logs only
+# Request logging middleware (M2 Step 1)
+# - start + end events
 # - request_id correlation
-# - safe exception response (no sensitive payloads)
+# - safe hashed client identity
+# - route template when available
 # ---------------------------
+
+
+def _route_template(request: Request) -> str:
+    """
+    Prefer the route template (e.g. /v1/sessions/{session_id}/messages)
+    If not available, fallback to the raw path.
+    """
+    try:
+        route = request.scope.get("route")
+        if route and getattr(route, "path", None):
+            return str(route.path)
+    except Exception:
+        pass
+    return request.url.path
+
+
+def _host(request: Request) -> Optional[str]:
+    try:
+        return request.headers.get("host")
+    except Exception:
+        return None
+
+
+def _route_template(request: Request) -> str:
+    """
+    Prefer the route template (e.g. /v1/sessions/{session_id}/messages)
+    If not available, fallback to the raw path.
+    """
+    try:
+        route = request.scope.get("route")
+        if route and getattr(route, "path", None):
+            return str(route.path)
+    except Exception:
+        pass
+    return request.url.path
+
+
+def _host(request: Request) -> Optional[str]:
+    try:
+        return request.headers.get("host")
+    except Exception:
+        return None
 
 
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.request_id = req_id
-    start = time.time()
 
-    # best-effort client identity (no secrets)
+    start_ns = time.time_ns()
+
+    # Safe client identity: hash only (never log raw IP/UA)
     client_ip = None
     try:
         if request.client:
@@ -310,42 +474,56 @@ async def request_logging_middleware(request: Request, call_next):
     except Exception:
         client_ip = None
 
+    ua = None
+    try:
+        ua = request.headers.get("user-agent")
+    except Exception:
+        ua = None
+
+    base_fields: Dict[str, Any] = {
+        "request_id": req_id,
+        "method": request.method,
+        "route": _route_template(request),
+        "path": request.url.path,
+        "host": _host(request),
+        "client_ip_hash": _hmac_sha256_hex(client_ip),
+        "user_agent_hash": _hmac_sha256_hex(ua),
+    }
+
+    # START event
+    log_event(logging.INFO, "http.request.start", **base_fields)
+
     try:
         response: Response = await call_next(request)
-        dur_ms = int((time.time() - start) * 1000)
+        dur_ms = int((time.time_ns() - start_ns) / 1_000_000)
 
         response.headers["X-Request-ID"] = req_id
 
+        # END event
         log_event(
             logging.INFO,
-            "http_request",
-            request_id=req_id,
-            method=request.method,
-            path=request.url.path,
+            "http.request.end",
+            **base_fields,
             status_code=response.status_code,
             duration_ms=dur_ms,
-            client_ip=client_ip,
         )
         return response
 
     except Exception as e:
-        dur_ms = int((time.time() - start) * 1000)
+        dur_ms = int((time.time_ns() - start_ns) / 1_000_000)
 
-        include_trace = os.getenv("LOG_STACKTRACES", "").strip().lower() in {"1", "true", "yes"}
         err_fields: Dict[str, Any] = {
-            "request_id": req_id,
-            "method": request.method,
-            "path": request.url.path,
+            **base_fields,
             "status_code": 500,
             "duration_ms": dur_ms,
-            "client_ip": client_ip,
             "error_type": type(e).__name__,
-            "error": str(e),
+            "error": _truncate(str(e), 240),
         }
-        if include_trace:
+        if _trace_enabled():
+            # Keep behind env toggle (stack traces can sometimes include data)
             err_fields["traceback"] = traceback.format_exc()
 
-        log_event(logging.ERROR, "http_exception", **err_fields)
+        log_event(logging.ERROR, "error.unhandled", **err_fields)
 
         return JSONResponse(
             status_code=500,
