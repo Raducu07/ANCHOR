@@ -293,11 +293,13 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # M2 Step 3 — Rolling HTTP metrics (in-memory)
 # ---------------------------
 
+
 class _HttpMetricStore:
     """
     Rolling store of recent request outcomes for quick ops visibility.
     Not durable; resets on deploy. Safe-by-default: no bodies, no headers.
     """
+
     def __init__(self, maxlen: int = 4000):
         self._lock = threading.Lock()
         self._items = deque(maxlen=maxlen)  # (ts_ns, method, route, status, dur_ms)
@@ -310,7 +312,9 @@ class _HttpMetricStore:
         with self._lock:
             return list(self._items)
 
+
 _HTTP_METRICS = _HttpMetricStore(maxlen=int(os.getenv("HTTP_METRICS_MAXLEN", "4000") or "4000"))
+
 
 def _percentile(values: List[int], p: float) -> int:
     if not values:
@@ -329,7 +333,10 @@ def _percentile(values: List[int], p: float) -> int:
     d1 = vs[c] * (k - f)
     return int(round(d0 + d1))
 
-def _summarize_http_metrics(items: List[Tuple[int, str, str, int, int]], window_sec: int, limit: int) -> Dict[str, Any]:
+
+def _summarize_http_metrics(
+    items: List[Tuple[int, str, str, int, int]], window_sec: int, limit: int
+) -> Dict[str, Any]:
     now_ns = time.time_ns()
     window_ns = max(1, int(window_sec)) * 1_000_000_000
     cut = now_ns - window_ns
@@ -390,11 +397,13 @@ def _summarize_http_metrics(items: List[Tuple[int, str, str, int, int]], window_
 
 _SKIP_LOG_PATHS = {"/health", "/openapi.json", "/docs"}
 
+
 def _host(request: Request) -> Optional[str]:
     try:
         return request.headers.get("host")
     except Exception:
         return None
+
 
 def _route_template_from_scope(request: Request) -> str:
     """
@@ -408,6 +417,7 @@ def _route_template_from_scope(request: Request) -> str:
     except Exception:
         pass
     return request.url.path
+
 
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
@@ -506,18 +516,22 @@ async def request_logging_middleware(request: Request, call_next):
 # Root/Health/Version
 # ---------------------------
 
+
 @app.head("/")
 def root_head():
     return Response(status_code=200)
+
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.get("/db-check")
 def db_check():
     db_ping()
     return {"db": "ok"}
+
 
 @app.get("/db-memories-check")
 def db_memories_check():
@@ -527,6 +541,7 @@ def db_memories_check():
             return {"memories_table": "ok"}
         except Exception as e:
             return {"memories_table": "error", "detail": str(e)}
+
 
 @app.get("/v1/version")
 def version():
@@ -538,6 +553,7 @@ def version():
         "now_utc": datetime.now(timezone.utc).isoformat(),
     }
 
+
 @app.get("/")
 def root():
     return {"name": "ANCHOR API", "status": "live"}
@@ -545,6 +561,7 @@ def root():
 # ---------------------------
 # A4 — Policy update schema (request)
 # ---------------------------
+
 
 class GovernancePolicyUpdateRequest(BaseModel):
     policy_version: str = Field(..., min_length=3, max_length=64)
@@ -557,6 +574,7 @@ class GovernancePolicyUpdateRequest(BaseModel):
 # ---------------------------
 # Helpers
 # ---------------------------
+
 
 def require_admin(authorization: str = Header(default="")) -> None:
     token = os.getenv("ANCHOR_ADMIN_TOKEN", "").strip()
@@ -572,18 +590,22 @@ def require_admin(authorization: str = Header(default="")) -> None:
     if not hmac.compare_digest(provided, token):
         raise HTTPException(status_code=401, detail="unauthorized")
 
+
 def _ensure_user_exists(db, user_id: uuid.UUID) -> None:
     row = db.execute(text("SELECT id FROM users WHERE id = :uid"), {"uid": str(user_id)}).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
+
 
 def _ensure_session_exists(db, session_id: uuid.UUID) -> None:
     row = db.execute(text("SELECT id FROM sessions WHERE id = :sid"), {"sid": str(session_id)}).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Session not found")
 
+
 def _norm_stmt(s: str) -> str:
     return " ".join((s or "").strip().split())
+
 
 def _validate_memory_statement(statement: str) -> None:
     s = (statement or "").strip()
@@ -591,13 +613,21 @@ def _validate_memory_statement(statement: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid memory statement")
 
     banned = [
-        "you should", "try to", "it might help", "i recommend",
-        "diagnos", "therapy", "therapist", "you need to",
-        "this will help", "you will feel",
+        "you should",
+        "try to",
+        "it might help",
+        "i recommend",
+        "diagnos",
+        "therapy",
+        "therapist",
+        "you need to",
+        "this will help",
+        "you will feel",
     ]
     low = s.lower()
     if any(b in low for b in banned):
         raise HTTPException(status_code=400, detail="Memory statement violates neutrality rules")
+
 
 def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
     try:
@@ -613,6 +643,7 @@ def _score_neutrality_safe(text_value: str, debug: bool) -> Dict[str, Any]:
 # ---------------------------
 
 _GOV_EVENTS_COLSET: Optional[Set[str]] = None
+
 
 def _get_governance_events_colset(db) -> Set[str]:
     global _GOV_EVENTS_COLSET
@@ -632,9 +663,11 @@ def _get_governance_events_colset(db) -> Set[str]:
     _GOV_EVENTS_COLSET = {str(r[0]) for r in rows}
     return _GOV_EVENTS_COLSET
 
+
 def _gov_has_a4_cols(db) -> bool:
     cols = _get_governance_events_colset(db)
     return {"policy_version", "neutrality_version", "decision_trace"}.issubset(cols)
+
 
 def _insert_governance_event(
     db,
@@ -773,16 +806,13 @@ def _insert_governance_event(
     except Exception:
         pass
 
+
 def _extract_governance_log_fields(audit: Dict[str, Any], db=None) -> Dict[str, Any]:
     a = audit or {}
 
     decision = a.get("decision")
     if not isinstance(decision, dict):
         decision = {}
-
-    notes = a.get("notes")
-    if not isinstance(notes, dict):
-        notes = {}
 
     findings = a.get("findings")
     if not isinstance(findings, list):
@@ -831,6 +861,7 @@ def _extract_governance_log_fields(audit: Dict[str, Any], db=None) -> Dict[str, 
 # M2 Step 3 — Admin endpoint for HTTP metrics
 # ---------------------------
 
+
 @app.get("/v1/admin/ops/http-metrics")
 def ops_http_metrics(window_sec: int = 900, limit: int = 50, _: None = Depends(require_admin)):
     window_sec = max(30, min(86400, int(window_sec)))
@@ -841,198 +872,241 @@ def ops_http_metrics(window_sec: int = 900, limit: int = 50, _: None = Depends(r
         "now_utc": datetime.now(timezone.utc).isoformat(),
         "metrics": _summarize_http_metrics(items, window_sec=window_sec, limit=limit),
     }
-    
- @app.get("/v1/admin/ops/http-metrics")
- def ops_http_metrics(window_sec: int = 900, limit: int = 50, _: None = Depends(require_admin)):
-     window_sec = max(30, min(86400, int(window_sec)))
-     limit = max(1, min(200, int(limit)))
-     items = _HTTP_METRICS.snapshot()
-     return {
-         "status": "ok",
-         "now_utc": datetime.now(timezone.utc).isoformat(),
-         "metrics": _summarize_http_metrics(items, window_sec=window_sec, limit=limit),
-     }
- 
-+# ---------------------------
-+# M2 Step 3 — Admin SLO metrics (minimal, JSON)
-+# - request_count
-+# - 5xx_rate
-+# - P95_latency
-+# - governance_replaced_rate
-+# Admin-only (uses require_admin)
-+# ---------------------------
-+
-+def _window_days_from_seconds(window_sec: int) -> int:
-+    """
-+    Convert a seconds window to a conservative whole-days window for DB queries.
-+    We only need approximate alignment for governance_replaced_rate.
-+    """
-+    try:
-+        ws = int(window_sec)
-+    except Exception:
-+        ws = 900
-+    ws = max(30, min(86400, ws))
-+    # round up to at least 1 day
-+    return max(1, int((ws + 86400 - 1) // 86400))
-+
-+
-+def _compute_governance_replaced_rate(db, days: int) -> Dict[str, Any]:
-+    """
-+    Returns replaced_rate and events_total for the last N days.
-+    Uses governance_events (already persisted) and does not require A4 columns.
-+    """
-+    try:
-+        d = max(1, min(365, int(days)))
-+    except Exception:
-+        d = 1
-+
-+    row = db.execute(
-+        text(
-+            """
-+            SELECT
-+              COUNT(*)::int AS events_total,
-+              COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate
-+            FROM governance_events
-+            WHERE created_at >= (NOW() - (:days || ' days')::interval)
-+            """
-+        ),
-+        {"days": d},
-+    ).fetchone()
-+
-+    if not row:
-+        return {"governance_events_total": 0, "governance_replaced_rate": 0.0, "window_days": d}
-+
-+    return {
-+        "governance_events_total": int(row[0] or 0),
-+        "governance_replaced_rate": float(row[1] or 0.0),
-+        "window_days": d,
-+    }
-+
-+
-+@app.get("/v1/admin/ops/metrics")
-+def ops_metrics(window_sec: int = 900, _: None = Depends(require_admin)):
-+    """
-+    Minimal SLO surface (JSON) for quick ops + easy alerting.
-+    Admin-only by default.
-+    """
-+    window_sec = max(30, min(86400, int(window_sec)))
-+    now_utc = datetime.now(timezone.utc).isoformat()
-+
-+    # HTTP metrics from in-memory rolling store
-+    items = _HTTP_METRICS.snapshot()
-+    http_summary = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
-+
-+    request_count = int(http_summary.get("events_total", 0) or 0)
-+    rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
-+    p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
-+
-+    # Governance replaced_rate from DB (approx window alignment via days)
-+    gov_days = _window_days_from_seconds(window_sec)
-+    with SessionLocal() as db:
-+        gov = _compute_governance_replaced_rate(db, days=gov_days)
-+
-+    return {
-+        "status": "ok",
-+        "now_utc": now_utc,
-+        "window_sec": int(window_sec),
-+        "request_count": request_count,
-+        "rate_5xx": rate_5xx,
-+        "p95_latency_ms": p95_latency_ms,
-+        "governance_replaced_rate": float(gov.get("governance_replaced_rate", 0.0) or 0.0),
-+        "governance_events_total": int(gov.get("governance_events_total", 0) or 0),
-+    }
-+
-+
-+@app.get("/v1/admin/ops/slo-check")
-+def ops_slo_check(
-+    window_sec: int = 900,
-+    max_5xx_rate: float = 0.01,
-+    max_p95_latency_ms: int = 1000,
-+    max_governance_replaced_rate: float = 0.10,
-+    min_request_count: int = 20,
-+    _: None = Depends(require_admin),
-+):
-+    """
-+    Boolean SLO status derived from thresholds.
-+    Admin-only by default.
-+
-+    Defaults (sane starters):
-+      - 5xx_rate <= 1%
-+      - P95 latency <= 1000ms
-+      - governance_replaced_rate <= 10%
-+      - require at least 20 requests in the window (avoid noisy pass/fail on tiny samples)
-+    """
-+    window_sec = max(30, min(86400, int(window_sec)))
-+    now_utc = datetime.now(timezone.utc).isoformat()
-+
-+    # HTTP summary
-+    items = _HTTP_METRICS.snapshot()
-+    http_summary = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
-+
-+    request_count = int(http_summary.get("events_total", 0) or 0)
-+    rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
-+    p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
-+
-+    # Governance summary (approx window via days)
-+    gov_days = _window_days_from_seconds(window_sec)
-+    with SessionLocal() as db:
-+        gov = _compute_governance_replaced_rate(db, days=gov_days)
-+    gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
-+    gov_total = int(gov.get("governance_events_total", 0) or 0)
-+
-+    # Gate on sample size
-+    enough_traffic = request_count >= int(min_request_count)
-+
-+    ok_5xx = (rate_5xx <= float(max_5xx_rate))
-+    ok_p95 = (p95_latency_ms <= int(max_p95_latency_ms))
-+    ok_gov = (gov_replaced <= float(max_governance_replaced_rate))
-+
-+    # If not enough traffic, return "unknown" but do not page
-+    if not enough_traffic:
-+        return {
-+            "status": "ok",
-+            "now_utc": now_utc,
-+            "window_sec": int(window_sec),
-+            "slo_ok": None,
-+            "reason": "insufficient_traffic",
-+            "request_count": request_count,
-+            "rate_5xx": rate_5xx,
-+            "p95_latency_ms": p95_latency_ms,
-+            "governance_replaced_rate": gov_replaced,
-+            "governance_events_total": gov_total,
-+            "thresholds": {
-+                "max_5xx_rate": float(max_5xx_rate),
-+                "max_p95_latency_ms": int(max_p95_latency_ms),
-+                "max_governance_replaced_rate": float(max_governance_replaced_rate),
-+                "min_request_count": int(min_request_count)}}
-+
-+    slo_ok = bool(ok_5xx and ok_p95 and ok_gov)
-+    return {
-+        "status": "ok",
-+        "now_utc": now_utc,
-+        "window_sec": int(window_sec),
-+        "slo_ok": slo_ok,
-+        "checks": {
-+            "ok_5xx": ok_5xx,
-+            "ok_p95": ok_p95,
-+            "ok_governance_replaced_rate": ok_gov,
-+        },
-+        "request_count": request_count,
-+        "rate_5xx": rate_5xx,
-+        "p95_latency_ms": p95_latency_ms,
-+        "governance_replaced_rate": gov_replaced,
-+        "governance_events_total": gov_total,
-+        "thresholds": {
-+            "max_5xx_rate": float(max_5xx_rate),
-+            "max_p95_latency_ms": int(max_p95_latency_ms),
-+            "max_governance_replaced_rate": float(max_governance_replaced_rate),
-+            "min_request_count": int(min_request_count),
-+        },
-+    }
+
+# ---------------------------
+# M2 Step 3 — Admin SLO metrics (minimal, JSON)
+# - request_count
+# - 5xx_rate
+# - P95_latency
+# - governance_replaced_rate
+# Admin-only (uses require_admin)
+# ---------------------------
+
+
+def _window_days_from_seconds(window_sec: int) -> int:
+    """
+    Convert a seconds window to a conservative whole-days window for DB queries.
+    We only need approximate alignment for governance_replaced_rate (MVP).
+    """
+    try:
+        ws = int(window_sec)
+    except Exception:
+        ws = 900
+    ws = max(30, min(86400, ws))
+    # round up to at least 1 day
+    return max(1, int((ws + 86400 - 1) // 86400))
+
+
+def _compute_governance_replaced_rate(db, days: int) -> Dict[str, Any]:
+    """
+    Returns replaced_rate and events_total for the last N days.
+    Uses governance_events (already persisted) and does not require A4 columns.
+    """
+    try:
+        d = max(1, min(365, int(days)))
+    except Exception:
+        d = 1
+
+    row = db.execute(
+        text(
+            """
+            SELECT
+              COUNT(*)::int AS events_total,
+              COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate
+            FROM governance_events
+            WHERE created_at >= (NOW() - (:days || ' days')::interval)
+            """
+        ),
+        {"days": d},
+    ).fetchone()
+
+    if not row:
+        return {"governance_events_total": 0, "governance_replaced_rate": 0.0, "window_days": d}
+
+    return {
+        "governance_events_total": int(row[0] or 0),
+        "governance_replaced_rate": float(row[1] or 0.0),
+        "window_days": d,
+    }
+
+
+@app.get("/v1/admin/ops/metrics")
+def ops_metrics(window_sec: int = 900, _: None = Depends(require_admin)):
+    """
+    Minimal SLO surface (JSON) for quick ops + easy alerting.
+    Admin-only by default.
+    """
+    window_sec = max(30, min(86400, int(window_sec)))
+    now_utc = datetime.now(timezone.utc).isoformat()
+
+    # HTTP metrics from in-memory rolling store
+    items = _HTTP_METRICS.snapshot()
+    http_summary = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
+
+    request_count = int(http_summary.get("events_total", 0) or 0)
+    rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
+    p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
+
+    # Governance replaced_rate from DB (approx window alignment via days)
+    gov_days = _window_days_from_seconds(window_sec)
+    with SessionLocal() as db:
+        gov = _compute_governance_replaced_rate(db, days=gov_days)
+
+    return {
+        "status": "ok",
+        "now_utc": now_utc,
+        "window_sec": int(window_sec),
+        "request_count": request_count,
+        "rate_5xx": rate_5xx,
+        "p95_latency_ms": p95_latency_ms,
+        "governance_replaced_rate": float(gov.get("governance_replaced_rate", 0.0) or 0.0),
+        "governance_events_total": int(gov.get("governance_events_total", 0) or 0),
+    }
+
+
+@app.get("/v1/admin/ops/slo-check")
+def ops_slo_check(
+    window_sec: int = 900,
+    max_5xx_rate: float = 0.01,
+    max_p95_latency_ms: int = 1000,
+    max_governance_replaced_rate: float = 0.10,
+    min_request_count: int = 20,
+    _: None = Depends(require_admin),
+):
+    """
+    Boolean SLO status derived from thresholds.
+    Admin-only by default.
+
+    Defaults:
+      - 5xx_rate <= 1%
+      - P95 latency <= 1000ms
+      - governance_replaced_rate <= 10%
+      - require at least 20 requests in the window
+    """
+    window_sec = max(30, min(86400, int(window_sec)))
+    now_utc = datetime.now(timezone.utc).isoformat()
+
+    items = _HTTP_METRICS.snapshot()
+    http_summary = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
+
+    request_count = int(http_summary.get("events_total", 0) or 0)
+    rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
+    p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
+
+    gov_days = _window_days_from_seconds(window_sec)
+    with SessionLocal() as db:
+        gov = _compute_governance_replaced_rate(db, days=gov_days)
+    gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
+    gov_total = int(gov.get("governance_events_total", 0) or 0)
+
+    enough_traffic = request_count >= int(min_request_count)
+
+    ok_5xx = (rate_5xx <= float(max_5xx_rate))
+    ok_p95 = (p95_latency_ms <= int(max_p95_latency_ms))
+    ok_gov = (gov_replaced <= float(max_governance_replaced_rate))
+
+    if not enough_traffic:
+        return {
+            "status": "ok",
+            "now_utc": now_utc,
+            "window_sec": int(window_sec),
+            "slo_ok": None,
+            "reason": "insufficient_traffic",
+            "request_count": request_count,
+            "rate_5xx": rate_5xx,
+            "p95_latency_ms": p95_latency_ms,
+            "governance_replaced_rate": gov_replaced,
+            "governance_events_total": gov_total,
+            "thresholds": {
+                "max_5xx_rate": float(max_5xx_rate),
+                "max_p95_latency_ms": int(max_p95_latency_ms),
+                "max_governance_replaced_rate": float(max_governance_replaced_rate),
+                "min_request_count": int(min_request_count),
+            },
+        }
+
+    slo_ok = bool(ok_5xx and ok_p95 and ok_gov)
+    return {
+        "status": "ok",
+        "now_utc": now_utc,
+        "window_sec": int(window_sec),
+        "slo_ok": slo_ok,
+        "checks": {
+            "ok_5xx": ok_5xx,
+            "ok_p95": ok_p95,
+            "ok_governance_replaced_rate": ok_gov,
+        },
+        "request_count": request_count,
+        "rate_5xx": rate_5xx,
+        "p95_latency_ms": p95_latency_ms,
+        "governance_replaced_rate": gov_replaced,
+        "governance_events_total": gov_total,
+        "thresholds": {
+            "max_5xx_rate": float(max_5xx_rate),
+            "max_p95_latency_ms": int(max_p95_latency_ms),
+            "max_governance_replaced_rate": float(max_governance_replaced_rate),
+            "min_request_count": int(min_request_count),
+        },
+    }
+
+# ---------------------------
+# Public SLO-lite (no admin) — safe external probe (optional)
+# Returns only: status, now_utc, window_sec, slo_ok (or null)
+# Default is DISABLED unless OPS_SLO_LITE_ENABLED=true
+# ---------------------------
+
+
+@app.get("/v1/ops/slo-check-lite")
+def ops_slo_check_lite(
+    window_sec: int = 900,
+    max_5xx_rate: float = 0.01,
+    max_p95_latency_ms: int = 1000,
+    max_governance_replaced_rate: float = 0.10,
+    min_request_count: int = 20,
+):
+    if not _env_truthy("OPS_SLO_LITE_ENABLED", default=False):
+        raise HTTPException(status_code=404, detail="not_found")
+
+    window_sec = max(30, min(86400, int(window_sec)))
+    now_utc = datetime.now(timezone.utc).isoformat()
+
+    items = _HTTP_METRICS.snapshot()
+    http_summary = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
+
+    request_count = int(http_summary.get("events_total", 0) or 0)
+    rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
+    p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
+
+    gov_days = _window_days_from_seconds(window_sec)
+    with SessionLocal() as db:
+        gov = _compute_governance_replaced_rate(db, days=gov_days)
+    gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
+
+    if request_count < int(min_request_count):
+        return {
+            "status": "ok",
+            "now_utc": now_utc,
+            "window_sec": int(window_sec),
+            "slo_ok": None,
+        }
+
+    slo_ok = bool(
+        (rate_5xx <= float(max_5xx_rate))
+        and (p95_latency_ms <= int(max_p95_latency_ms))
+        and (gov_replaced <= float(max_governance_replaced_rate))
+    )
+
+    return {
+        "status": "ok",
+        "now_utc": now_utc,
+        "window_sec": int(window_sec),
+        "slo_ok": slo_ok,
+    }
 
 # ---------------------------
 # Neutrality scoring (V1.1)
 # ---------------------------
+
 
 @app.post("/v1/neutrality/score", response_model=NeutralityScoreResponse)
 def neutrality_score(req: NeutralityScoreRequest):
@@ -1046,6 +1120,7 @@ def neutrality_score(req: NeutralityScoreRequest):
 # Governance policy endpoints
 # ---------------------------
 
+
 @app.get("/v1/governance/policy/current")
 def governance_policy_current():
     with SessionLocal() as db:
@@ -1053,6 +1128,7 @@ def governance_policy_current():
             return {"policy": get_current_policy(db)}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
+
 
 @app.get("/v1/governance/policy/history")
 def governance_policy_history(limit: int = 50):
@@ -1062,6 +1138,7 @@ def governance_policy_history(limit: int = 50):
             return {"history": list_policy_history(db, limit=limit)}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
+
 
 @app.post("/v1/governance/policy")
 def governance_policy_create(payload: GovernancePolicyUpdateRequest, _: None = Depends(require_admin)):
@@ -1079,6 +1156,7 @@ def governance_policy_create(payload: GovernancePolicyUpdateRequest, _: None = D
             return {"created": created}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
+
 
 @app.get("/v1/governance/policy/schema")
 def governance_policy_schema():
@@ -1105,6 +1183,7 @@ def governance_policy_schema():
 # Sessions
 # ---------------------------
 
+
 @app.post("/v1/sessions", response_model=CreateSessionResponse)
 def create_session():
     user_id = uuid.uuid4()
@@ -1119,6 +1198,7 @@ def create_session():
         db.commit()
 
     return CreateSessionResponse(user_id=user_id, session_id=session_id, mode="witness")
+
 
 @app.post("/v1/users/{user_id}/sessions", response_model=CreateSessionResponse)
 def create_session_for_user(user_id: uuid.UUID):
@@ -1137,6 +1217,7 @@ def create_session_for_user(user_id: uuid.UUID):
 # ---------------------------
 # Messages (with governance) + M2 Step 2 governance summary log
 # ---------------------------
+
 
 @app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
 def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Request):
@@ -1192,11 +1273,13 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Re
         except Exception:
             pass
 
+        # store governed assistant message ONCE ✅
         db.execute(
             text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'assistant', :content)"),
             {"id": str(uuid.uuid4()), "sid": str(session_id), "content": final_reply},
         )
 
+        # persist audit event (same transaction)
         _insert_governance_event(
             db,
             user_id=user_id,
@@ -1208,6 +1291,7 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Re
         db.commit()
 
     return SendMessageResponse(session_id=session_id, role="assistant", content=final_reply)
+
 
 @app.get("/v1/sessions/{session_id}/messages")
 def list_messages(session_id: uuid.UUID):
@@ -1237,8 +1321,8 @@ def list_messages(session_id: uuid.UUID):
 
 # ---------------------------
 # Evidence + Memory debugging + Memories
-# (kept as-is from your previous version; unchanged logic)
 # ---------------------------
+
 
 @app.get("/v1/users/{user_id}/evidence-check")
 def evidence_check(user_id: uuid.UUID):
@@ -1282,6 +1366,7 @@ def evidence_check(user_id: uuid.UUID):
         "last_sessions": [{"id": str(r[0]), "created_at": r[1].isoformat()} for r in last_sessions],
     }
 
+
 @app.get("/v1/users/{user_id}/memory-debug")
 def memory_debug(user_id: uuid.UUID, limit: int = 80):
     limit = max(1, min(500, int(limit)))
@@ -1292,13 +1377,37 @@ def memory_debug(user_id: uuid.UUID, limit: int = 80):
 
         signals = {
             "overwhelm_load": [
-                "overwhelmed","too much","can't keep up","cannot keep up","exhausted","burnt out","drained","no time","stressed","pressure",
+                "overwhelmed",
+                "too much",
+                "can't keep up",
+                "cannot keep up",
+                "exhausted",
+                "burnt out",
+                "drained",
+                "no time",
+                "stressed",
+                "pressure",
             ],
             "responsibility_conflict": [
-                "i have to","i must","obligation","obligations","responsible","expectations","expects","everyone","depend on me","duty",
+                "i have to",
+                "i must",
+                "obligation",
+                "obligations",
+                "responsible",
+                "expectations",
+                "expects",
+                "everyone",
+                "depend on me",
+                "duty",
             ],
             "control_uncertainty": [
-                "i don't know","uncertain","confused","not sure","what if","worried","anxious",
+                "i don't know",
+                "uncertain",
+                "confused",
+                "not sure",
+                "what if",
+                "worried",
+                "anxious",
             ],
         }
 
@@ -1327,11 +1436,13 @@ def memory_debug(user_id: uuid.UUID, limit: int = 80):
             "sample_last_5_texts": [t for (_, t) in items[-5:]],
         }
 
+
 @app.get("/v1/users/{user_id}/memory-offer-debug")
 def memory_offer_debug(user_id: uuid.UUID):
     with SessionLocal() as db:
         _ensure_user_exists(db, user_id)
         return compute_offer_debug(db, user_id)
+
 
 @app.get("/v1/users/{user_id}/memories", response_model=List[MemoryItem])
 def list_memories(user_id: uuid.UUID, active: bool = True, kind: Optional[str] = None):
@@ -1381,6 +1492,7 @@ def list_memories(user_id: uuid.UUID, active: bool = True, kind: Optional[str] =
             )
         )
     return result
+
 
 @app.post("/v1/users/{user_id}/memory-offer", response_model=MemoryOfferResponse)
 def memory_offer(user_id: uuid.UUID):
@@ -1466,6 +1578,7 @@ def memory_offer(user_id: uuid.UUID):
             )
         )
 
+
 @app.post("/v1/users/{user_id}/memories", response_model=MemoryItem)
 def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
     stmt = _norm_stmt(payload.statement)
@@ -1543,6 +1656,7 @@ def create_memory(user_id: uuid.UUID, payload: CreateMemoryRequest):
         created_at=row[6].isoformat() if row[6] else "",
     )
 
+
 @app.post("/v1/users/{user_id}/memories/{memory_id}/archive")
 def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
     with SessionLocal() as db:
@@ -1577,6 +1691,14 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
 # Admin HTTP SLO view (rolling in-memory):
 #   GET  /v1/admin/ops/http-metrics?window_sec=900&limit=50
 #   Header: Authorization: Bearer <ANCHOR_ADMIN_TOKEN>
+#
+# Admin minimal SLO metrics + boolean check:
+#   GET  /v1/admin/ops/metrics?window_sec=900
+#   GET  /v1/admin/ops/slo-check?window_sec=900
+#
+# Optional public SLO-lite (disabled unless enabled):
+#   GET  /v1/ops/slo-check-lite
+#   Env: OPS_SLO_LITE_ENABLED=true
 #
 # Edge security (env-gated):
 #   TRUSTED_HOSTS="anchor-api-prod.onrender.com"
