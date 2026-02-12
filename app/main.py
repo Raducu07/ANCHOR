@@ -1082,7 +1082,7 @@ def create_session_for_user(user_id: uuid.UUID):
 
 
 @app.post("/v1/sessions/{session_id}/messages", response_model=SendMessageResponse)
-def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
+def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Request):
     with SessionLocal() as db:
         _ensure_session_exists(db, session_id)
 
@@ -1115,6 +1115,24 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
             debug=False,
         )
 
+        
+        # M2 Step 2 — governance decision summary log (no content)
+        try:
+            req_id = _get_request_id(request)
+            gov_fields = _extract_governance_log_fields(audit if isinstance(audit, dict) else {}, db=db)
+            log_event(
+                logging.INFO,
+                "governance.decision",
+                request_id=req_id,
+                user_id=str(user_id) if user_id else None,
+                session_id=str(session_id),
+                mode="witness",
+                **gov_fields,
+            )
+        except Exception:
+            pass
+
+        
         # store governed assistant message ONCE ✅
         db.execute(
             text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'assistant', :content)"),
@@ -1133,6 +1151,66 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest):
         db.commit()
 
     return SendMessageResponse(session_id=session_id, role="assistant", content=final_reply)
+
+
+def _extract_governance_log_fields(audit: Dict[str, Any], db=None) -> Dict[str, Any]:
+    """
+    Produce a compact, safe governance summary for logging.
+    No user/assistant content, no raw findings bodies.
+    """
+    a = audit or {}
+
+    decision = a.get("decision")
+    if not isinstance(decision, dict):
+        decision = {}
+
+    notes = a.get("notes")
+    if not isinstance(notes, dict):
+        notes = {}
+
+    findings = a.get("findings")
+    if not isinstance(findings, list):
+        findings = []
+
+    allowed = bool(decision.get("allowed", True))
+    replaced = bool(decision.get("replaced", False))
+    score = int(decision.get("score", 0) or 0)
+    grade = str(decision.get("grade", "unknown") or "unknown")
+
+    triggered_rule_ids: List[str] = []
+    for f in findings:
+        if isinstance(f, dict):
+            rid = f.get("rule_id")
+            if isinstance(rid, str) and rid.strip():
+                triggered_rule_ids.append(rid.strip())
+    triggered_rule_ids = sorted(set(triggered_rule_ids))[:25]
+
+    # Default versions; attempt to fetch from policy if db provided
+    policy_version = "gov-v1.0"
+    neutrality_version = "n-v1.1"
+    if db is not None:
+        try:
+            pol = get_current_policy(db)
+            if isinstance(pol, dict):
+                pv = pol.get("policy_version")
+                nv = pol.get("neutrality_version")
+                if isinstance(pv, str) and pv.strip():
+                    policy_version = pv.strip()
+                if isinstance(nv, str) and nv.strip():
+                    neutrality_version = nv.strip()
+        except Exception:
+            pass
+
+    return {
+        "allowed": allowed,
+        "replaced": replaced,
+        "score": score,
+        "grade": grade,
+        "findings_count": len(findings),
+        "triggered_rule_ids": triggered_rule_ids,
+        "policy_version": policy_version,
+        "neutrality_version": neutrality_version,
+    }
 
 
 @app.get("/v1/sessions/{session_id}/messages")
