@@ -1144,7 +1144,7 @@ def ops_slo_check(
     }
 
 
- @app.get("/v1/admin/ops/slo-check")
+@app.get("/v1/admin/ops/slo-check")
  def ops_slo_check(
      window_sec: int = 900,
      max_5xx_rate: float = 0.01,
