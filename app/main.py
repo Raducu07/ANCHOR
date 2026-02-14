@@ -331,9 +331,7 @@ def _summarize_http_metrics(
     }
 
 # ---------------------------
-# M2.4b — Historical time-series + latency vs governance strictness correlation
-# - Persists aggregated buckets into ops_timeseries_buckets
-# - No content, no headers, no bodies stored.
+# M2.4b — Historical time-series worker + endpoints
 # ---------------------------
 
 _TS_STOP_EVENT: Optional[threading.Event] = None
@@ -389,6 +387,10 @@ def _safe_int(v: Any, default: int = 0) -> int:
 
 
 def _extract_policy_strictness(db) -> Dict[str, Any]:
+    """
+    Strictness inputs come from current governance policy config.
+    Stored per bucket so we can correlate with latency historically.
+    """
     policy_version = "gov-v1.0"
     neutrality_version = "n-v1.1"
     min_score_allow = 75
@@ -421,6 +423,7 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
     except Exception:
         pass
 
+    # MVP strictness score:
     strictness_score = float(min_score_allow) + (2.0 * float(hard_rules_count)) + (1.0 * float(soft_rules_count))
 
     return {
@@ -460,6 +463,10 @@ def _compute_governance_bucket_stats(db, start_ts: datetime, end_ts: datetime) -
 
 
 def _ensure_ops_timeseries_table(db) -> None:
+    """
+    Defensive: If schema migrations are missing, don't crash the service.
+    Your schema.sql already defines this table/indexes; this is idempotent.
+    """
     db.execute(
         text(
             """
@@ -503,6 +510,22 @@ def _ensure_ops_timeseries_table(db) -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_start
               ON ops_timeseries_buckets (bucket_start DESC);
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_route_sec_start
+              ON ops_timeseries_buckets (bucket_sec, route, bucket_start DESC);
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS brin_ops_timeseries_bucket_start
+              ON ops_timeseries_buckets USING BRIN (bucket_start);
             """
         )
     )
@@ -611,7 +634,7 @@ def _timeseries_worker() -> None:
                 _ensure_ops_timeseries_table(db)
                 policy_stats = _extract_policy_strictness(db)
 
-                # write buckets immediately preceding end_bucket_ns (finalized buckets only)
+                # finalize buckets strictly before current bucket start
                 for i in range(lookback_buckets, 0, -1):
                     b_start_ns = end_bucket_ns - (i * bucket_ns)
                     b_end_ns = b_start_ns + bucket_ns
@@ -659,10 +682,10 @@ def _start_timeseries_worker() -> None:
     _TS_THREAD.start()
 
 
-def _stop_timeseries_worker(join_timeout_sec: float = 1.5) -> None:
+def _stop_timeseries_worker(join_timeout_sec: float = 1.0) -> None:
     global _TS_STOP_EVENT, _TS_THREAD
-    ev = _TS_STOP_EVENT
     th = _TS_THREAD
+    ev = _TS_STOP_EVENT
     if ev:
         ev.set()
     if th and th.is_alive():
@@ -674,7 +697,7 @@ def _stop_timeseries_worker(join_timeout_sec: float = 1.5) -> None:
     _TS_THREAD = None
 
 # ---------------------------
-# Lifespan — safe startup/shutdown wiring
+# Lifespan (safe start/stop)
 # ---------------------------
 
 
@@ -693,7 +716,7 @@ async def lifespan(app: FastAPI):
         run_migrations()
         log_event(logging.INFO, "startup_migrations_ok")
 
-        # M2.4b worker (historical ops aggregation)
+        # M2.4b worker
         if _env_truthy("OPS_TS_ENABLED", default=True):
             _start_timeseries_worker()
             log_event(logging.INFO, "ops.timeseries.enabled")
@@ -705,7 +728,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log_event(logging.ERROR, "startup_failed", error_type=type(e).__name__, error=_truncate(str(e)))
         raise
-
     finally:
         try:
             _stop_timeseries_worker()
@@ -755,7 +777,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Request logging middleware (M2 Step 1) + metrics (M2 Step 3)
 # ---------------------------
 
-_SKIP_LOG_PATHS = {"/health", "/openapi.json", "/docs", "/redoc"}
+_SKIP_LOG_PATHS = {"/health", "/openapi.json", "/docs"}
 
 
 def _host(request: Request) -> Optional[str]:
@@ -1027,6 +1049,12 @@ def _insert_governance_event(
     mode: str,
     audit: Dict[str, Any],
 ) -> None:
+    """
+    Inserts a governance event if user_id exists.
+    Safe-by-default:
+      - inserts only what the current DB schema supports
+      - never throws (logs and returns)
+    """
     if not user_id:
         return
 
@@ -1224,6 +1252,10 @@ def ops_http_metrics(window_sec: int = 900, limit: int = 50, _: None = Depends(r
 
 
 def _window_days_from_seconds(window_sec: int) -> int:
+    """
+    Convert a seconds window to a conservative whole-days window for DB queries.
+    We only need approximate alignment for governance_replaced_rate (MVP).
+    """
     try:
         ws = int(window_sec)
     except Exception:
@@ -1233,6 +1265,9 @@ def _window_days_from_seconds(window_sec: int) -> int:
 
 
 def _compute_governance_replaced_rate(db, days: int) -> Dict[str, Any]:
+    """
+    Returns replaced_rate and events_total for the last N days.
+    """
     try:
         d = max(1, min(365, int(days)))
     except Exception:
@@ -1298,6 +1333,10 @@ def ops_slo_check(
     min_request_count: int = 20,
     _: None = Depends(require_admin),
 ):
+    """
+    Boolean SLO status derived from thresholds.
+    Admin-only by default.
+    """
     window_sec = max(30, min(86400, int(window_sec)))
     now_utc = datetime.now(timezone.utc).isoformat()
 
@@ -1365,8 +1404,7 @@ def ops_slo_check(
     }
 
 # ---------------------------
-# M2.4a — Admin-only error-budget endpoint
-# /v1/admin/ops/error-budget
+# M2.4a — Error-budget endpoint (/v1/admin/ops/error-budget)
 # ---------------------------
 
 
@@ -1382,15 +1420,21 @@ def _safe_div(n: float, d: float) -> float:
 @app.get("/v1/admin/ops/error-budget")
 def ops_error_budget(
     window_sec: int = 900,
+    # SLO thresholds (same defaults as slo-check)
     max_5xx_rate: float = 0.01,
     max_p95_latency_ms: int = 1000,
     max_governance_replaced_rate: float = 0.10,
-    warn_5xx_rate: float = 0.005,
-    warn_p95_latency_ms: int = 800,
-    warn_governance_replaced_rate: float = 0.05,
+    # "Yellow" pre-warning bands
+    warn_5xx_rate: float = 0.005,  # 0.5%
+    warn_p95_latency_ms: int = 800,  # 800ms
+    warn_governance_replaced_rate: float = 0.05,  # 5%
+    # avoid noisy results on tiny samples
     min_request_count: int = 20,
     _: None = Depends(require_admin),
 ):
+    """
+    Returns burn-rate style indicators + trust_state: green/yellow/red.
+    """
     window_sec = max(30, min(86400, int(window_sec)))
     now_utc = datetime.now(timezone.utc).isoformat()
 
@@ -1495,7 +1539,7 @@ def ops_error_budget(
     }
 
 # ---------------------------
-# M2.4b endpoints
+# M2.4b — Historical endpoints
 # ---------------------------
 
 
@@ -1625,11 +1669,11 @@ def ops_latency_strictness_correlation(
         "route": route,
         "points_used": len(scatter),
         "pearson_r_strictness_vs_p95": r_val,
-        "scatter": scatter[-500:],
+        "scatter": scatter[-500:],  # cap payload
     }
 
 # ---------------------------
-# Public SLO-lite (optional)
+# Public SLO-lite (optional; disabled unless OPS_SLO_LITE_ENABLED=true)
 # ---------------------------
 
 
@@ -1739,10 +1783,7 @@ def governance_policy_schema():
                     """
                 )
             ).fetchone()
-            return {
-                "governance_config_table": "ok",
-                "latest_updated_at": row[0].isoformat() if row and row[0] else None,
-            }
+            return {"governance_config_table": "ok", "latest_updated_at": row[0].isoformat() if row and row[0] else None}
         except Exception as e:
             return {"governance_config_table": "error", "detail": str(e)}
 
@@ -1799,11 +1840,13 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Re
         ).fetchone()
         user_id = uuid.UUID(str(uid_row[0])) if uid_row and uid_row[0] else None
 
+        # store user message (never log it)
         db.execute(
             text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'user', :content)"),
             {"id": str(uuid.uuid4()), "sid": str(session_id), "content": payload.content},
         )
 
+        # draft witness reply (ASCII to avoid encoding artifacts)
         draft_reply = (
             "I'm here with you. I'm going to reflect back what I heard, briefly.\n\n"
             f"**What you said:** {payload.content}\n\n"
@@ -1819,6 +1862,7 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Re
             debug=False,
         )
 
+        # M2 Step 2 — governance decision summary log (no content)
         try:
             req_id = _get_request_id(request)
             dur_ms = int((time.time_ns() - handler_start_ns) / 1_000_000)
@@ -1837,11 +1881,13 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Re
         except Exception:
             pass
 
+        # store governed assistant message ONCE ✅
         db.execute(
             text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'assistant', :content)"),
             {"id": str(uuid.uuid4()), "sid": str(session_id), "content": final_reply},
         )
 
+        # persist audit event (same transaction)
         _insert_governance_event(
             db,
             user_id=user_id,
@@ -2262,8 +2308,8 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
 #   GET  /v1/admin/ops/error-budget?window_sec=900
 #
 # M2.4b historical:
-#   GET /v1/admin/ops/timeseries?hours=24&bucket_sec=300
-#   GET /v1/admin/ops/latency-strictness?hours=72&bucket_sec=300
+#   GET  /v1/admin/ops/timeseries?hours=24&bucket_sec=300&route=__all__
+#   GET  /v1/admin/ops/latency-strictness?hours=72&bucket_sec=300
 #
 # Optional public SLO-lite (disabled unless enabled):
 #   GET  /v1/ops/slo-check-lite
