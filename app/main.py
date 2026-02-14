@@ -1143,6 +1143,181 @@ def ops_slo_check(
         },
     }
 
+
+ @app.get("/v1/admin/ops/slo-check")
+ def ops_slo_check(
+     window_sec: int = 900,
+     max_5xx_rate: float = 0.01,
+     max_p95_latency_ms: int = 1000,
+     max_governance_replaced_rate: float = 0.10,
+     min_request_count: int = 20,
+     _: None = Depends(require_admin),
+ ):
+
+     return {
+         "status": "ok",
+         "now_utc": now_utc,
+         "window_sec": int(window_sec),
+         "slo_ok": slo_ok,
+
+         },
+     }
++
++
++# ---------------------------
++# M2.4a — Error-budget / "burning trust" view (conceptual, no UI)
++# Admin-only. Uses:
++#   - in-memory HTTP rolling metrics for 5xx + latency
++#   - DB governance_events for replaced-rate (coarse window alignment via days)
++#
++# Goal: one endpoint that tells you if you're burning trust *right now*.
++# ---------------------------
++
++def _safe_div(n: float, d: float) -> float:
++    try:
++        if d == 0:
++            return 0.0
++        return float(n) / float(d)
++    except Exception:
++        return 0.0
++
++
++@app.get("/v1/admin/ops/error-budget")
++def ops_error_budget(
++    window_sec: int = 900,
++    # SLO thresholds (same defaults as slo-check)
++    max_5xx_rate: float = 0.01,
++    max_p95_latency_ms: int = 1000,
++    max_governance_replaced_rate: float = 0.10,
++    # "Yellow" pre-warning bands (how close to threshold before warning)
++    warn_5xx_rate: float = 0.005,          # 0.5%
++    warn_p95_latency_ms: int = 800,        # 800ms
++    warn_governance_replaced_rate: float = 0.05,  # 5%
++    # avoid noisy results on tiny samples
++    min_request_count: int = 20,
++    _: None = Depends(require_admin),
++):
++    """
++    Returns burn-rate style indicators + a simple trust_state:
++      - green: safely within warning bands
++      - yellow: approaching SLO limits (pre-breach)
++      - red: breaching SLO limits OR burning >1x on any axis (with enough traffic)
++    """
++    window_sec = max(30, min(86400, int(window_sec)))
++    now_utc = datetime.now(timezone.utc).isoformat()
++
++    # HTTP summary (in-memory rolling)
++    items = _HTTP_METRICS.snapshot()
++    http_summary = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
++    request_count = int(http_summary.get("events_total", 0) or 0)
++    rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
++    p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
++
++    # Governance summary (DB; coarse window in days, MVP)
++    gov_days = _window_days_from_seconds(window_sec)
++    with SessionLocal() as db:
++        gov = _compute_governance_replaced_rate(db, days=gov_days)
++    gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
++    gov_total = int(gov.get("governance_events_total", 0) or 0)
++
++    enough_traffic = request_count >= int(min_request_count)
++
++    # "Burn" = observed / budget-threshold (1.0 means exactly at the SLO threshold)
++    burn_5xx = _safe_div(rate_5xx, float(max_5xx_rate))
++    burn_p95 = _safe_div(float(p95_latency_ms), float(max_p95_latency_ms))
++    burn_gov = _safe_div(gov_replaced, float(max_governance_replaced_rate))
++
++    reason_codes: List[str] = []
++
++    # If insufficient traffic, we report metrics but do not call red/yellow aggressively.
++    if not enough_traffic:
++        return {
++            "status": "ok",
++            "now_utc": now_utc,
++            "window_sec": int(window_sec),
++            "trust_state": "green",
++            "reason_codes": ["insufficient_traffic"],
++            "request_count": request_count,
++            "rate_5xx": rate_5xx,
++            "p95_latency_ms": p95_latency_ms,
++            "governance_replaced_rate": gov_replaced,
++            "governance_events_total": gov_total,
++            "burn": {
++                "burn_5xx": burn_5xx,
++                "burn_p95_latency": burn_p95,
++                "burn_governance_replaced": burn_gov,
++            },
++            "thresholds": {
++                "max_5xx_rate": float(max_5xx_rate),
++                "max_p95_latency_ms": int(max_p95_latency_ms),
++                "max_governance_replaced_rate": float(max_governance_replaced_rate),
++                "warn_5xx_rate": float(warn_5xx_rate),
++                "warn_p95_latency_ms": int(warn_p95_latency_ms),
++                "warn_governance_replaced_rate": float(warn_governance_replaced_rate),
++                "min_request_count": int(min_request_count),
++            },
++        }
++
++    # RED conditions (breach)
++    if rate_5xx > float(max_5xx_rate):
++        reason_codes.append("breach_5xx")
++    if p95_latency_ms > int(max_p95_latency_ms):
++        reason_codes.append("breach_p95_latency")
++    if gov_replaced > float(max_governance_replaced_rate):
++        reason_codes.append("breach_governance_replaced")
++
++    # YELLOW conditions (near-breach)
++    near = False
++    if rate_5xx > float(warn_5xx_rate):
++        near = True
++        reason_codes.append("warn_5xx")
++    if p95_latency_ms > int(warn_p95_latency_ms):
++        near = True
++        reason_codes.append("warn_p95_latency")
++    if gov_replaced > float(warn_governance_replaced_rate):
++        near = True
++        reason_codes.append("warn_governance_replaced")
++
++    # burn-based red (burning > 1x on any axis)
++    burn_red = (burn_5xx > 1.0) or (burn_p95 > 1.0) or (burn_gov > 1.0)
++    if burn_red and not any(rc.startswith("breach_") for rc in reason_codes):
++        reason_codes.append("burn_gt_1x")
++
++    # decide trust_state
++    if any(rc.startswith("breach_") for rc in reason_codes) or burn_red:
++        trust_state = "red"
++    elif near:
++        trust_state = "yellow"
++    else:
++        trust_state = "green"
++
++    return {
++        "status": "ok",
++        "now_utc": now_utc,
++        "window_sec": int(window_sec),
++        "trust_state": trust_state,
++        "reason_codes": reason_codes,
++        "request_count": request_count,
++        "rate_5xx": rate_5xx,
++        "p95_latency_ms": p95_latency_ms,
++        "governance_replaced_rate": gov_replaced,
++        "governance_events_total": gov_total,
++        "burn": {
++            "burn_5xx": burn_5xx,
++            "burn_p95_latency": burn_p95,
++            "burn_governance_replaced": burn_gov,
++        },
++        "thresholds": {
++            "max_5xx_rate": float(max_5xx_rate),
++            "max_p95_latency_ms": int(max_p95_latency_ms),
++            "max_governance_replaced_rate": float(max_governance_replaced_rate),
++            "warn_5xx_rate": float(warn_5xx_rate),
++            "warn_p95_latency_ms": int(warn_p95_latency_ms),
++            "warn_governance_replaced_rate": float(warn_governance_replaced_rate),
++            "min_request_count": int(min_request_count),
++        },
++    }
+
 # ---------------------------
 # Public SLO-lite (no admin) — safe external probe (optional)
 # Returns only: status, now_utc, window_sec, slo_ok (or null)
