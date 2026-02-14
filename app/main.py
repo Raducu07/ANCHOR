@@ -944,6 +944,8 @@ class GovernancePolicyUpdateRequest(BaseModel):
     hard_block_rules: List[str] = Field(default_factory=lambda: ["jailbreak", "therapy", "promise"])
     soft_rules: List[str] = Field(default_factory=lambda: ["direct_advice", "coercion"])
     max_findings: int = Field(default=10, ge=1, le=50)
+
+    
     def require_admin(authorization: str = Header(default="")) -> None:
     token = os.getenv("ANCHOR_ADMIN_TOKEN", "").strip()
     if not token:
@@ -1214,6 +1216,11 @@ def _extract_governance_log_fields(audit: Dict[str, Any], db=None) -> Dict[str, 
         "policy_version": policy_version,
         "neutrality_version": neutrality_version,
     }
+
+
+@app.get("/v1/admin/auth-check")
+def admin_auth_check(_: None = Depends(require_admin)):
+    return {"status": "ok"}
 
 # ============================================================
 # M2 Step 3 — Admin endpoint for HTTP metrics
