@@ -946,7 +946,7 @@ class GovernancePolicyUpdateRequest(BaseModel):
     max_findings: int = Field(default=10, ge=1, le=50)
 
     
-    def require_admin(authorization: str = Header(default="")) -> None:
+def require_admin(authorization: str = Header(default="")) -> None:
     token = os.getenv("ANCHOR_ADMIN_TOKEN", "").strip()
     if not token:
         raise HTTPException(status_code=500, detail="server_misconfig: ANCHOR_ADMIN_TOKEN is not set")
@@ -956,7 +956,7 @@ class GovernancePolicyUpdateRequest(BaseModel):
     if not auth.startswith(prefix):
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    provided = auth[len(prefix) :].strip()
+    provided = auth[len(prefix):].strip()
     if not hmac.compare_digest(provided, token):
         raise HTTPException(status_code=401, detail="unauthorized")
 
