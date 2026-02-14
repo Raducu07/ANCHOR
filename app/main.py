@@ -403,6 +403,33 @@ def _safe_int(v: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _as_str_list(v: Any) -> List[str]:
+    """
+    Accept list[str] OR JSON string OR comma-separated string.
+    Always return clean list[str].
+    """
+    if v is None:
+        return []
+
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return []
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except Exception:
+            pass
+        # fallback: comma-separated
+        return [p.strip() for p in s.split(",") if p.strip()]
+
+    return []
+
+
 def _extract_policy_strictness(db) -> Dict[str, Any]:
     policy_version = "gov-v1.0"
     neutrality_version = "n-v1.1"
@@ -416,13 +443,11 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
             pv = pol.get("policy_version")
             nv = pol.get("neutrality_version")
             msa = pol.get("min_score_allow")
-            hard = pol.get("hard_block_rules")
-            soft = pol.get("soft_rules")
+            hard_list = _as_str_list(pol.get("hard_block_rules"))
+            soft_list = _as_str_list(pol.get("soft_rules"))
 
-            if isinstance(pv, str) and pv.strip():
-                policy_version = pv.strip()
-            if isinstance(nv, str) and nv.strip():
-                neutrality_version = nv.strip()
+            hard_rules_count = len(hard_list)
+            soft_rules_count = len(soft_list)
 
             try:
                 min_score_allow = int(msa)
