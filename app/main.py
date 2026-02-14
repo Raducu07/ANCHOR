@@ -1249,11 +1249,16 @@ def _window_days_from_seconds(window_sec: int) -> int:
     return max(1, int((ws + 86400 - 1) // 86400))
 
 
-def _compute_governance_replaced_rate(db, days: int) -> Dict[str, Any]:
+def _compute_governance_replaced_rate(db, window_sec: int) -> Dict[str, Any]:
+    """
+    Returns replaced_rate and events_total for the last window_sec seconds.
+    """
     try:
-        d = max(1, min(365, int(days)))
+        ws = int(window_sec)
     except Exception:
-        d = 1
+        ws = 900
+
+    ws = max(30, min(86400, ws))
 
     row = db.execute(
         text(
@@ -1262,19 +1267,23 @@ def _compute_governance_replaced_rate(db, days: int) -> Dict[str, Any]:
               COUNT(*)::int AS events_total,
               COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate
             FROM governance_events
-            WHERE created_at >= (NOW() - (:days || ' days')::interval)
+            WHERE created_at >= (NOW() - (:window_sec || ' seconds')::interval)
             """
         ),
-        {"days": d},
+        {"window_sec": ws},
     ).fetchone()
 
     if not row:
-        return {"governance_events_total": 0, "governance_replaced_rate": 0.0, "window_days": d}
+        return {
+            "governance_events_total": 0,
+            "governance_replaced_rate": 0.0,
+            "window_sec": ws,
+        }
 
     return {
         "governance_events_total": int(row[0] or 0),
         "governance_replaced_rate": float(row[1] or 0.0),
-        "window_days": d,
+        "window_sec": ws,
     }
 
 
@@ -1290,9 +1299,8 @@ def ops_metrics(window_sec: int = 900, _: None = Depends(require_admin)):
     rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
     p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
 
-    gov_days = _window_days_from_seconds(window_sec)
-    with SessionLocal() as db:
-        gov = _compute_governance_replaced_rate(db, days=gov_days)
+with SessionLocal() as db:
+    gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
 
     return {
         "status": "ok",
@@ -1325,9 +1333,8 @@ def ops_slo_check(
     rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
     p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
 
-    gov_days = _window_days_from_seconds(window_sec)
-    with SessionLocal() as db:
-        gov = _compute_governance_replaced_rate(db, days=gov_days)
+with SessionLocal() as db:
+    gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
     gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
     gov_total = int(gov.get("governance_events_total", 0) or 0)
 
@@ -1405,6 +1412,7 @@ def ops_error_budget(
     warn_p95_latency_ms: int = 800,
     warn_governance_replaced_rate: float = 0.05,
     min_request_count: int = 20,
+    min_governance_events_total: int = 50,
     _: None = Depends(require_admin),
 ):
     window_sec = max(30, min(86400, int(window_sec)))
@@ -1417,13 +1425,13 @@ def ops_error_budget(
     rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
     p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
 
-    gov_days = _window_days_from_seconds(window_sec)
     with SessionLocal() as db:
-        gov = _compute_governance_replaced_rate(db, days=gov_days)
+    gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
     gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
     gov_total = int(gov.get("governance_events_total", 0) or 0)
 
     enough_traffic = request_count >= int(min_request_count)
+    enough_gov = gov_total >= int(min_governance_events_total)
 
     burn_5xx = _safe_div(rate_5xx, float(max_5xx_rate))
     burn_p95 = _safe_div(float(p95_latency_ms), float(max_p95_latency_ms))
@@ -1466,9 +1474,12 @@ def ops_error_budget(
     if p95_latency_ms > int(max_p95_latency_ms):
         breach = True
         reason_codes.append("breach_p95_latency")
+    if enough_gov:
     if gov_replaced > float(max_governance_replaced_rate):
         breach = True
         reason_codes.append("breach_governance_replaced")
+else:
+    reason_codes.append("insufficient_governance_events")
 
     near = False
     if rate_5xx > float(warn_5xx_rate):
@@ -1477,6 +1488,7 @@ def ops_error_budget(
     if p95_latency_ms > int(warn_p95_latency_ms):
         near = True
         reason_codes.append("warn_p95_latency")
+    if enough_gov:
     if gov_replaced > float(warn_governance_replaced_rate):
         near = True
         reason_codes.append("warn_governance_replaced")
@@ -1507,6 +1519,7 @@ def ops_error_budget(
             "warn_p95_latency_ms": int(warn_p95_latency_ms),
             "warn_governance_replaced_rate": float(warn_governance_replaced_rate),
             "min_request_count": int(min_request_count),
+            "min_governance_events_total": int(min_governance_events_total),
         },
     }
 
@@ -1670,9 +1683,8 @@ def ops_slo_check_lite(
     rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
     p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
 
-    gov_days = _window_days_from_seconds(window_sec)
     with SessionLocal() as db:
-        gov = _compute_governance_replaced_rate(db, days=gov_days)
+    gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
     gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
 
     if request_count < int(min_request_count):
