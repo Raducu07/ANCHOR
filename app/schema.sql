@@ -217,7 +217,6 @@ WHERE NOT EXISTS (SELECT 1 FROM governance_config);
 
 -- =========================
 -- Optional performance: A4-only GIN index on decision_trace
--- (safe because we check column existence)
 -- =========================
 
 DO $$
@@ -269,6 +268,14 @@ CREATE TABLE IF NOT EXISTS ops_timeseries_buckets (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_timeseries_unique
   ON ops_timeseries_buckets (bucket_start, bucket_sec, route);
 
--- query helpers
+-- query helpers (your endpoints filter by bucket_start + bucket_sec + route)
 CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_start
   ON ops_timeseries_buckets (bucket_start DESC);
+
+-- Speeds common WHERE bucket_sec = X AND route = Y AND bucket_start >= ...
+CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_route_sec_start
+  ON ops_timeseries_buckets (bucket_sec, route, bucket_start DESC);
+
+-- Large-history acceleration for time scans (optional but safe)
+CREATE INDEX IF NOT EXISTS brin_ops_timeseries_bucket_start
+  ON ops_timeseries_buckets USING BRIN (bucket_start);
