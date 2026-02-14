@@ -53,6 +53,10 @@ from app.schemas import (
     MemoryOfferResponse,
     NeutralityScoreRequest,
     NeutralityScoreResponse,
+    SessionExportResponse,
+    ExportMessage,
+    ExportMemory,
+    ExportGovernanceEvent,
 )
 
 # ============================================================
@@ -1888,6 +1892,192 @@ def list_messages(session_id: uuid.UUID):
         ).fetchall()
 
     return [{"role": r[0], "content": r[1], "created_at": r[2].isoformat() if r[2] else None} for r in rows]
+
+
+@app.get("/v1/admin/sessions/{session_id}/export", response_model=SessionExportResponse)
+def admin_session_export(
+    session_id: uuid.UUID,
+    include_governance: bool = True,
+    include_memories: bool = True,
+    limit_messages: int = 2000,
+    limit_governance: int = 2000,
+    _: None = Depends(require_admin),
+):
+    limit_messages = max(1, min(5000, int(limit_messages)))
+    limit_governance = max(1, min(5000, int(limit_governance)))
+
+    now_utc = datetime.now(timezone.utc).isoformat()
+
+    with SessionLocal() as db:
+        # session + user
+        srow = db.execute(
+            text(
+                """
+                SELECT id, user_id, mode, created_at
+                FROM sessions
+                WHERE id = :sid
+                """
+            ),
+            {"sid": str(session_id)},
+        ).fetchone()
+
+        if not srow:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        user_id = uuid.UUID(str(srow[1])) if srow[1] else None
+        session_mode = str(srow[2] or "witness")
+        session_created_at = srow[3].isoformat() if srow[3] else None
+
+        # messages
+        mrows = db.execute(
+            text(
+                """
+                SELECT id, role, content, created_at
+                FROM messages
+                WHERE session_id = :sid
+                ORDER BY
+                    created_at ASC,
+                    CASE role
+                        WHEN 'user' THEN 0
+                        WHEN 'assistant' THEN 1
+                        ELSE 2
+                    END ASC,
+                    id ASC
+                LIMIT :lim
+                """
+            ),
+            {"sid": str(session_id), "lim": int(limit_messages)},
+        ).fetchall()
+
+        messages = [
+            {
+                "id": uuid.UUID(str(r[0])),
+                "role": str(r[1]),
+                "content": str(r[2] or ""),
+                "created_at": r[3].isoformat() if r[3] else None,
+            }
+            for r in mrows
+        ]
+
+        # memories (active) for that user
+        memories_active = []
+        if include_memories and user_id:
+            mem_rows = db.execute(
+                text(
+                    """
+                    SELECT id, kind, statement, confidence, active, evidence_session_ids, created_at
+                    FROM memories
+                    WHERE user_id = :uid AND active = true
+                    ORDER BY created_at DESC
+                    LIMIT 50
+                    """
+                ),
+                {"uid": str(user_id)},
+            ).fetchall()
+
+            for r in mem_rows:
+                evidence_ids = []
+                for x in (r[5] or []):
+                    try:
+                        evidence_ids.append(uuid.UUID(str(x)))
+                    except Exception:
+                        pass
+
+                memories_active.append(
+                    {
+                        "id": uuid.UUID(str(r[0])),
+                        "kind": str(r[1]),
+                        "statement": str(r[2]),
+                        "confidence": str(r[3]),
+                        "active": bool(r[4]),
+                        "evidence_session_ids": evidence_ids,
+                        "created_at": r[6].isoformat() if r[6] else "",
+                    }
+                )
+
+        # governance events for that session
+        governance_events = []
+        if include_governance and user_id:
+            # Use decision_trace if present to extract triggered_rule_ids safely
+            grows = db.execute(
+                text(
+                    """
+                    SELECT id, created_at, mode, allowed, replaced, score, grade, reason,
+                           policy_version, neutrality_version, decision_trace
+                    FROM governance_events
+                    WHERE session_id = :sid
+                    ORDER BY created_at ASC
+                    LIMIT :lim
+                    """
+                ),
+                {"sid": str(session_id), "lim": int(limit_governance)},
+            ).fetchall()
+
+            for r in grows:
+                triggered = []
+                try:
+                    dt = r[10]
+                    # dt can be jsonb already or string depending on driver
+                    if isinstance(dt, str):
+                        dt = json.loads(dt)
+                    if isinstance(dt, dict):
+                        tri = dt.get("triggered_rule_ids")
+                        if isinstance(tri, list):
+                            triggered = [str(x) for x in tri if isinstance(x, str)][:25]
+                except Exception:
+                    triggered = []
+
+                governance_events.append(
+                    {
+                        "id": uuid.UUID(str(r[0])),
+                        "created_at": r[1].isoformat() if r[1] else "",
+                        "mode": str(r[2] or ""),
+                        "allowed": (None if r[3] is None else bool(r[3])),
+                        "replaced": (None if r[4] is None else bool(r[4])),
+                        "score": (None if r[5] is None else int(r[5])),
+                        "grade": (None if r[6] is None else str(r[6])),
+                        "reason": (None if r[7] is None else str(r[7])),
+                        "policy_version": (None if r[8] is None else str(r[8])),
+                        "neutrality_version": (None if r[9] is None else str(r[9])),
+                        "triggered_rule_ids": triggered,
+                    }
+                )
+
+    # simple summary
+    total_msgs = len(messages)
+    user_msgs = sum(1 for m in messages if m["role"] == "user")
+    assistant_msgs = sum(1 for m in messages if m["role"] == "assistant")
+
+    replaced_rate = None
+    avg_score = None
+    if governance_events:
+        scores = [e["score"] for e in governance_events if isinstance(e.get("score"), int)]
+        replaced = [e["replaced"] for e in governance_events if isinstance(e.get("replaced"), bool)]
+        if replaced:
+            replaced_rate = float(sum(1 for x in replaced if x) / len(replaced))
+        if scores:
+            avg_score = float(sum(scores) / len(scores))
+
+    return {
+        "export_version": "export-v1",
+        "now_utc": now_utc,
+        "user_id": user_id,
+        "session_id": session_id,
+        "session_mode": session_mode,
+        "session_created_at": session_created_at,
+        "messages": messages,
+        "memories_active": memories_active,
+        "governance_events": governance_events,
+        "summary": {
+            "message_counts": {"total": total_msgs, "user": user_msgs, "assistant": assistant_msgs},
+            "governance": {
+                "events_total": len(governance_events),
+                "avg_score": avg_score,
+                "replaced_rate": replaced_rate,
+            },
+            "memories_active_count": len(memories_active),
+        },
+    }
 
 # ============================================================
 # Evidence + Memory debugging + Memories
