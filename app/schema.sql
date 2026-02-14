@@ -234,3 +234,41 @@ BEGIN
       USING GIN (decision_trace);
   END IF;
 END $$;
+
+-- ===========================
+-- M2.4b — Ops time-series buckets (historical)
+-- Aggregated only. No content.
+-- ===========================
+
+CREATE TABLE IF NOT EXISTS ops_timeseries_buckets (
+  id uuid PRIMARY KEY,
+  bucket_start timestamptz NOT NULL,
+  bucket_sec int NOT NULL,
+  route text NOT NULL DEFAULT '__all__',
+
+  request_count int NOT NULL DEFAULT 0,
+  rate_5xx double precision NOT NULL DEFAULT 0,
+  p95_latency_ms int NOT NULL DEFAULT 0,
+  avg_latency_ms double precision NOT NULL DEFAULT 0,
+
+  gov_events_total int NOT NULL DEFAULT 0,
+  gov_replaced_rate double precision NOT NULL DEFAULT 0,
+  gov_avg_score double precision NOT NULL DEFAULT 0,
+
+  policy_version text,
+  neutrality_version text,
+  min_score_allow int,
+  hard_rules_count int,
+  soft_rules_count int,
+  strictness_score double precision NOT NULL DEFAULT 0,
+
+  created_at timestamptz NOT NULL DEFAULT NOW()
+);
+
+-- prevent duplicates for same bucket+route
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_timeseries_unique
+  ON ops_timeseries_buckets (bucket_start, bucket_sec, route);
+
+-- query helpers
+CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_start
+  ON ops_timeseries_buckets (bucket_start DESC);
