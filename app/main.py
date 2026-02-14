@@ -188,7 +188,7 @@ def _env_truthy(name: str, default: bool = False) -> bool:
 
 def _ops_ts_enabled() -> bool:
     """
-    Recommended path:
+    Your current semantics:
       - default ENABLED in prod if OPS_TS_ENABLED is unset
       - default DISABLED in non-prod if unset
       - explicit OPS_TS_ENABLED=true/false always wins
@@ -420,13 +420,10 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
             if isinstance(nv, str) and nv.strip():
                 neutrality_version = nv.strip()
 
-            if isinstance(msa, int):
+            try:
                 min_score_allow = int(msa)
-            else:
-                try:
-                    min_score_allow = int(msa)
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
             if isinstance(hard, list):
                 hard_rules_count = len([x for x in hard if isinstance(x, str) and x.strip()])
@@ -704,10 +701,10 @@ def _stop_timeseries_worker() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        # Optional: local dev dotenv
         if not is_prod():
             try:
                 from dotenv import load_dotenv  # type: ignore
+
                 load_dotenv()
                 log_event(logging.INFO, "dotenv_loaded")
             except Exception:
@@ -716,12 +713,21 @@ async def lifespan(app: FastAPI):
         run_migrations()
         log_event(logging.INFO, "startup_migrations_ok")
 
-        # M2.4b worker enablement (recommended default: ON in prod)
         if _ops_ts_enabled():
             _start_timeseries_worker()
-            log_event(logging.INFO, "ops.timeseries.enabled", enabled=True, default_prod=is_prod() and os.getenv("OPS_TS_ENABLED") is None)
+            log_event(
+                logging.INFO,
+                "ops.timeseries.enabled",
+                enabled=True,
+                default_prod=is_prod() and os.getenv("OPS_TS_ENABLED") is None,
+            )
         else:
-            log_event(logging.INFO, "ops.timeseries.disabled", enabled=False, default_prod=is_prod() and os.getenv("OPS_TS_ENABLED") is None)
+            log_event(
+                logging.INFO,
+                "ops.timeseries.disabled",
+                enabled=False,
+                default_prod=is_prod() and os.getenv("OPS_TS_ENABLED") is None,
+            )
 
     except Exception as e:
         log_event(logging.ERROR, "startup_failed", error_type=type(e).__name__, error=_truncate(str(e)))
@@ -930,10 +936,6 @@ def version():
 def root():
     return {"name": "ANCHOR API", "status": "live"}
 
-# ============================================================
-# A4 — Policy update schema (request)
-# ============================================================
-
 
 class GovernancePolicyUpdateRequest(BaseModel):
     policy_version: str = Field(..., min_length=3, max_length=64)
@@ -942,13 +944,7 @@ class GovernancePolicyUpdateRequest(BaseModel):
     hard_block_rules: List[str] = Field(default_factory=lambda: ["jailbreak", "therapy", "promise"])
     soft_rules: List[str] = Field(default_factory=lambda: ["direct_advice", "coercion"])
     max_findings: int = Field(default=10, ge=1, le=50)
-
-# ============================================================
-# Helpers
-# ============================================================
-
-
-def require_admin(authorization: str = Header(default="")) -> None:
+    def require_admin(authorization: str = Header(default="")) -> None:
     token = os.getenv("ANCHOR_ADMIN_TOKEN", "").strip()
     if not token:
         raise HTTPException(status_code=500, detail="server_misconfig: ANCHOR_ADMIN_TOKEN is not set")
@@ -1240,15 +1236,6 @@ def ops_http_metrics(window_sec: int = 900, limit: int = 50, _: None = Depends(r
 # ============================================================
 
 
-def _window_days_from_seconds(window_sec: int) -> int:
-    try:
-        ws = int(window_sec)
-    except Exception:
-        ws = 900
-    ws = max(30, min(86400, ws))
-    return max(1, int((ws + 86400 - 1) // 86400))
-
-
 def _compute_governance_replaced_rate(db, window_sec: int) -> Dict[str, Any]:
     """
     Returns replaced_rate and events_total for the last window_sec seconds.
@@ -1274,11 +1261,7 @@ def _compute_governance_replaced_rate(db, window_sec: int) -> Dict[str, Any]:
     ).fetchone()
 
     if not row:
-        return {
-            "governance_events_total": 0,
-            "governance_replaced_rate": 0.0,
-            "window_sec": ws,
-        }
+        return {"governance_events_total": 0, "governance_replaced_rate": 0.0, "window_sec": ws}
 
     return {
         "governance_events_total": int(row[0] or 0),
@@ -1299,8 +1282,8 @@ def ops_metrics(window_sec: int = 900, _: None = Depends(require_admin)):
     rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
     p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
 
-with SessionLocal() as db:
-    gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
+    with SessionLocal() as db:
+        gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
 
     return {
         "status": "ok",
@@ -1333,8 +1316,9 @@ def ops_slo_check(
     rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
     p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
 
-with SessionLocal() as db:
-    gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
+    with SessionLocal() as db:
+        gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
+
     gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
     gov_total = int(gov.get("governance_events_total", 0) or 0)
 
@@ -1370,11 +1354,7 @@ with SessionLocal() as db:
         "now_utc": now_utc,
         "window_sec": int(window_sec),
         "slo_ok": slo_ok,
-        "checks": {
-            "ok_5xx": ok_5xx,
-            "ok_p95": ok_p95,
-            "ok_governance_replaced_rate": ok_gov,
-        },
+        "checks": {"ok_5xx": ok_5xx, "ok_p95": ok_p95, "ok_governance_replaced_rate": ok_gov},
         "request_count": request_count,
         "rate_5xx": rate_5xx,
         "p95_latency_ms": p95_latency_ms,
@@ -1426,7 +1406,8 @@ def ops_error_budget(
     p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
 
     with SessionLocal() as db:
-    gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
+        gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
+
     gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
     gov_total = int(gov.get("governance_events_total", 0) or 0)
 
@@ -1451,11 +1432,7 @@ def ops_error_budget(
             "p95_latency_ms": p95_latency_ms,
             "governance_replaced_rate": gov_replaced,
             "governance_events_total": gov_total,
-            "burn_rates": {
-                "burn_5xx": burn_5xx,
-                "burn_p95_latency": burn_p95,
-                "burn_governance_replaced": burn_gov,
-            },
+            "burn_rates": {"burn_5xx": burn_5xx, "burn_p95_latency": burn_p95, "burn_governance_replaced": burn_gov},
             "thresholds": {
                 "max_5xx_rate": float(max_5xx_rate),
                 "max_p95_latency_ms": int(max_p95_latency_ms),
@@ -1464,6 +1441,7 @@ def ops_error_budget(
                 "warn_p95_latency_ms": int(warn_p95_latency_ms),
                 "warn_governance_replaced_rate": float(warn_governance_replaced_rate),
                 "min_request_count": int(min_request_count),
+                "min_governance_events_total": int(min_governance_events_total),
             },
         }
 
@@ -1474,12 +1452,13 @@ def ops_error_budget(
     if p95_latency_ms > int(max_p95_latency_ms):
         breach = True
         reason_codes.append("breach_p95_latency")
+
     if enough_gov:
-    if gov_replaced > float(max_governance_replaced_rate):
-        breach = True
-        reason_codes.append("breach_governance_replaced")
-else:
-    reason_codes.append("insufficient_governance_events")
+        if gov_replaced > float(max_governance_replaced_rate):
+            breach = True
+            reason_codes.append("breach_governance_replaced")
+    else:
+        reason_codes.append("insufficient_governance_events")
 
     near = False
     if rate_5xx > float(warn_5xx_rate):
@@ -1489,9 +1468,9 @@ else:
         near = True
         reason_codes.append("warn_p95_latency")
     if enough_gov:
-    if gov_replaced > float(warn_governance_replaced_rate):
-        near = True
-        reason_codes.append("warn_governance_replaced")
+        if gov_replaced > float(warn_governance_replaced_rate):
+            near = True
+            reason_codes.append("warn_governance_replaced")
 
     trust_state = "red" if breach else ("yellow" if near else "green")
 
@@ -1506,11 +1485,7 @@ else:
         "p95_latency_ms": p95_latency_ms,
         "governance_replaced_rate": gov_replaced,
         "governance_events_total": gov_total,
-        "burn_rates": {
-            "burn_5xx": burn_5xx,
-            "burn_p95_latency": burn_p95,
-            "burn_governance_replaced": burn_gov,
-        },
+        "burn_rates": {"burn_5xx": burn_5xx, "burn_p95_latency": burn_p95, "burn_governance_replaced": burn_gov},
         "thresholds": {
             "max_5xx_rate": float(max_5xx_rate),
             "max_p95_latency_ms": int(max_p95_latency_ms),
@@ -1536,7 +1511,7 @@ def ops_timeseries(
     limit: int = 500,
     _: None = Depends(require_admin),
 ):
-    hours = max(1, min(24 * 60, int(hours)))  # up to 60 days
+    hours = max(1, min(24 * 60, int(hours)))
     bucket_sec = max(60, min(3600, int(bucket_sec)))
     limit = max(1, min(5000, int(limit)))
 
@@ -1684,7 +1659,8 @@ def ops_slo_check_lite(
     p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
 
     with SessionLocal() as db:
-    gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
+        gov = _compute_governance_replaced_rate(db, window_sec=window_sec)
+
     gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
 
     if request_count < int(min_request_count):
@@ -1821,13 +1797,9 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Re
     with SessionLocal() as db:
         _ensure_session_exists(db, session_id)
 
-        uid_row = db.execute(
-            text("SELECT user_id FROM sessions WHERE id = :sid"),
-            {"sid": str(session_id)},
-        ).fetchone()
+        uid_row = db.execute(text("SELECT user_id FROM sessions WHERE id = :sid"), {"sid": str(session_id)}).fetchone()
         user_id = uuid.UUID(str(uid_row[0])) if uid_row and uid_row[0] else None
 
-        # store user message (never log it)
         db.execute(
             text("INSERT INTO messages (id, session_id, role, content) VALUES (:id, :sid, 'user', :content)"),
             {"id": str(uuid.uuid4()), "sid": str(session_id), "content": payload.content},
@@ -1848,7 +1820,6 @@ def send_message(session_id: uuid.UUID, payload: SendMessageRequest, request: Re
             debug=False,
         )
 
-        # M2 Step 2 — governance decision summary log (no content)
         try:
             req_id = _get_request_id(request)
             dur_ms = int((time.time_ns() - handler_start_ns) / 1_000_000)
@@ -2273,6 +2244,7 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
 
     return {"archived": True}
 
+    
 # ===========================
 # RUNBOOK — Ops / Debugging
 # ===========================
