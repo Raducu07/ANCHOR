@@ -1,6 +1,8 @@
 -- =========================
--- ANCHOR schema.sql (corrected)
+-- ANCHOR schema.sql (ready copy/paste)
 -- PostgreSQL
+-- Includes: core tables, memories, memory_offers handshake/audit, governance audit + config,
+-- ops time-series buckets (aggregated), and a few safe performance indexes.
 -- =========================
 
 -- Needed for gen_random_uuid() used in the seed.
@@ -35,14 +37,15 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_sessions_user_created_at
   ON sessions(user_id, created_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_sessions_created_at
+  ON sessions(created_at DESC);
+
+-- If you always fetch session messages in chronological order:
 CREATE INDEX IF NOT EXISTS idx_messages_session_created_at
   ON messages(session_id, created_at ASC);
 
 CREATE INDEX IF NOT EXISTS idx_messages_created_at
   ON messages(created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_sessions_created_at
-  ON sessions(created_at DESC);
 
 -- =========================
 -- ANCHOR v1: memories table
@@ -75,6 +78,10 @@ CREATE INDEX IF NOT EXISTS idx_memories_user_active
 
 CREATE INDEX IF NOT EXISTS idx_memories_user_kind
   ON memories(user_id, kind);
+
+-- Helps if you often list only active memories by created_at DESC
+CREATE INDEX IF NOT EXISTS idx_memories_user_active_created
+  ON memories(user_id, active, created_at DESC);
 
 -- =========================
 -- M8.1/M8.2: memory offers (handshake + audit)
@@ -111,6 +118,10 @@ CREATE INDEX IF NOT EXISTS idx_memory_offers_user_created
 
 CREATE INDEX IF NOT EXISTS idx_memory_offers_user_status_created
   ON memory_offers(user_id, status, created_at DESC);
+
+-- Small but useful: fast lookups when accepting/rejecting a proposed offer
+CREATE INDEX IF NOT EXISTS idx_memory_offers_user_id_status
+  ON memory_offers(user_id, status);
 
 -- =========================
 -- ANCHOR A3: governance audit table
@@ -168,6 +179,22 @@ CREATE INDEX IF NOT EXISTS idx_governance_events_policy_version
 CREATE INDEX IF NOT EXISTS idx_governance_events_neutrality_version
   ON governance_events(neutrality_version, created_at DESC);
 
+-- Optional performance: A4-only GIN index on decision_trace
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'governance_events'
+      AND column_name = 'decision_trace'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS idx_governance_events_decision_trace_gin
+      ON governance_events
+      USING GIN (decision_trace);
+  END IF;
+END $$;
+
 -- =========================
 -- A4: governance config (institution-friendly, auditable settings)
 -- =========================
@@ -214,25 +241,6 @@ SELECT
   '["direct_advice","coercion"]'::jsonb,
   10
 WHERE NOT EXISTS (SELECT 1 FROM governance_config);
-
--- =========================
--- Optional performance: A4-only GIN index on decision_trace
--- =========================
-
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-    FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = 'governance_events'
-      AND column_name = 'decision_trace'
-  ) THEN
-    CREATE INDEX IF NOT EXISTS idx_governance_events_decision_trace_gin
-      ON governance_events
-      USING GIN (decision_trace);
-  END IF;
-END $$;
 
 -- ===========================
 -- M2.4b — Ops time-series buckets (historical)
