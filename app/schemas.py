@@ -80,3 +80,53 @@ class NeutralityScoreResponse(BaseModel):
     findings: List[NeutralityFinding] = Field(default_factory=list)
     debug: Optional[Any] = None
 
+# ---------------------------
+# Value artifacts — Session Export (M4.5)
+# ---------------------------
+
+class ExportMessage(BaseModel):
+    id: uuid.UUID
+    role: str
+    content: str
+    created_at: str
+
+
+class ExportMemory(BaseModel):
+    id: uuid.UUID
+    kind: str
+    statement: str
+    confidence: str
+    active: bool
+    evidence_session_ids: List[uuid.UUID] = Field(default_factory=list)
+    created_at: str
+
+
+class ExportGovernanceEvent(BaseModel):
+    id: uuid.UUID
+    created_at: str
+    mode: str
+    allowed: Optional[bool] = None
+    replaced: Optional[bool] = None
+    score: Optional[int] = None
+    grade: Optional[str] = None
+    reason: Optional[str] = None
+    policy_version: Optional[str] = None
+    neutrality_version: Optional[str] = None
+    triggered_rule_ids: List[str] = Field(default_factory=list)
+
+
+class SessionExportResponse(BaseModel):
+    export_version: str = "export-v1"
+    now_utc: str
+    user_id: uuid.UUID
+    session_id: uuid.UUID
+    session_mode: str
+    session_created_at: Optional[str] = None
+
+    messages: List[ExportMessage] = Field(default_factory=list)
+    memories_active: List[ExportMemory] = Field(default_factory=list)
+
+    governance_events: List[ExportGovernanceEvent] = Field(default_factory=list)
+
+    # lightweight computed summary (cheap + useful)
+    summary: dict = Field(default_factory=dict)
