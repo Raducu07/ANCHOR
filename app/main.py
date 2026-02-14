@@ -5,6 +5,7 @@ import uuid
 import json
 import time
 import logging
+import math
 import traceback
 import hashlib
 import threading
@@ -106,6 +107,7 @@ def _trace_enabled() -> bool:
 
 
 _HMAC_KEY_CACHE: Optional[bytes] = None
+_WARNED_HMAC_MISSING = False
 
 
 def _get_log_hmac_key() -> bytes:
@@ -114,7 +116,7 @@ def _get_log_hmac_key() -> bytes:
     - In prod: strongly recommend setting LOG_HMAC_KEY.
     - If missing: non-breaking fallback, but logs a warning once.
     """
-    global _HMAC_KEY_CACHE
+    global _HMAC_KEY_CACHE, _WARNED_HMAC_MISSING
     if _HMAC_KEY_CACHE is not None:
         return _HMAC_KEY_CACHE
 
@@ -122,10 +124,12 @@ def _get_log_hmac_key() -> bytes:
     if not raw:
         fallback = "dev-insecure-log-hmac-key" if not is_prod() else "missing-log-hmac-key"
         _HMAC_KEY_CACHE = fallback.encode("utf-8")
-        try:
-            log_event(logging.WARNING, "log_hmac_key_missing", env=get_app_env(), service=_get_service_name())
-        except Exception:
-            pass
+        if not _WARNED_HMAC_MISSING:
+            _WARNED_HMAC_MISSING = True
+            try:
+                log_event(logging.WARNING, "log_hmac_key_missing", env=get_app_env(), service=_get_service_name())
+            except Exception:
+                pass
         return _HMAC_KEY_CACHE
 
     _HMAC_KEY_CACHE = raw.encode("utf-8")
@@ -194,9 +198,7 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
     if allow_origins:
         allow_credentials = _env_truthy("CORS_ALLOW_CREDENTIALS", default=False)
         if allow_credentials and any(o == "*" for o in allow_origins):
-            raise RuntimeError(
-                "CORS misconfig: cannot use '*' in CORS_ALLOW_ORIGINS when CORS_ALLOW_CREDENTIALS=true"
-            )
+            raise RuntimeError("CORS misconfig: cannot use '*' in CORS_ALLOW_ORIGINS when CORS_ALLOW_CREDENTIALS=true")
 
         allow_methods = _parse_csv_env("CORS_ALLOW_METHODS") or ["GET", "POST", "OPTIONS"]
         allow_headers = _parse_csv_env("CORS_ALLOW_HEADERS") or ["Authorization", "Content-Type", "X-Request-ID"]
@@ -243,13 +245,25 @@ async def lifespan(app: FastAPI):
             except Exception:
                 log_event(logging.INFO, "dotenv_not_loaded")
 
-        run_migrations()
-        log_event(logging.INFO, "startup_migrations_ok")
+run_migrations()
+log_event(logging.INFO, "startup_migrations_ok")
+
+# M2.4b worker (historical ops aggregation)
+if _env_truthy("OPS_TS_ENABLED", default=True):
+    _start_timeseries_worker()
+    log_event(logging.INFO, "ops.timeseries.enabled")
+else:
+    log_event(logging.INFO, "ops.timeseries.disabled")
+
     except Exception as e:
         log_event(logging.ERROR, "startup_failed", error_type=type(e).__name__, error=_truncate(str(e)))
         raise
-    yield
-    log_event(logging.INFO, "shutdown")
+yield
+try:
+    _stop_timeseries_worker()
+except Exception:
+    pass
+log_event(logging.INFO, "shutdown")
 
 # ---------------------------
 # App
@@ -424,7 +438,6 @@ async def request_logging_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.request_id = req_id
 
-    # capture safe client identity (hashed only)
     client_ip = None
     try:
         if request.client:
@@ -440,7 +453,6 @@ async def request_logging_middleware(request: Request, call_next):
 
     start_ns = time.time_ns()
 
-    # Start event: route template not reliably available yet (routing happens inside call_next)
     if request.url.path not in _SKIP_LOG_PATHS:
         log_event(
             logging.INFO,
@@ -459,10 +471,8 @@ async def request_logging_middleware(request: Request, call_next):
         dur_ms = int((time.time_ns() - start_ns) / 1_000_000)
         response.headers["X-Request-ID"] = req_id
 
-        # Now route template should be available
         route_tmpl = _route_template_from_scope(request)
 
-        # Record in rolling metrics (M2 Step 3)
         _HTTP_METRICS.add(start_ns, request.method, route_tmpl, response.status_code, dur_ms)
 
         if request.url.path not in _SKIP_LOG_PATHS:
@@ -485,7 +495,6 @@ async def request_logging_middleware(request: Request, call_next):
         dur_ms = int((time.time_ns() - start_ns) / 1_000_000)
         route_tmpl = _route_template_from_scope(request)
 
-        # Record failure as 500
         _HTTP_METRICS.add(start_ns, request.method, route_tmpl, 500, dur_ms)
 
         err_fields: Dict[str, Any] = {
@@ -586,7 +595,7 @@ def require_admin(authorization: str = Header(default="")) -> None:
     if not auth.startswith(prefix):
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    provided = auth[len(prefix):].strip()
+    provided = auth[len(prefix) :].strip()
     if not hmac.compare_digest(provided, token):
         raise HTTPException(status_code=401, detail="unauthorized")
 
@@ -664,16 +673,6 @@ def _get_governance_events_colset(db) -> Set[str]:
     return _GOV_EVENTS_COLSET
 
 
-def _gov_has_a4_cols(db) -> bool:
-    cols = _get_governance_events_colset(db)
-    return {"policy_version", "neutrality_version", "decision_trace"}.issubset(cols)
-
-
-def _has_cols(db, *cols: str) -> bool:
-    existing = _get_governance_events_colset(db)
-    return set(cols).issubset(existing)
-
-
 def _insert_governance_event(
     db,
     *,
@@ -682,9 +681,17 @@ def _insert_governance_event(
     mode: str,
     audit: Dict[str, Any],
 ) -> None:
+    """
+    Inserts a governance event if user_id exists.
+    Safe-by-default:
+      - inserts only what the current DB schema supports
+      - never throws (logs and returns)
+    """
+    if not user_id:
+        return
+
     try:
-        if not user_id:
-            return
+        cols = _get_governance_events_colset(db)
 
         a = audit or {}
         decision = a.get("decision")
@@ -724,7 +731,6 @@ def _insert_governance_event(
             "reason": reason,
         }
 
-        # Pull policy versions if available (optional)
         policy_version = "gov-v1.0"
         neutrality_version = "n-v1.1"
         try:
@@ -739,9 +745,6 @@ def _insert_governance_event(
         except Exception:
             pass
 
-        cols = _get_governance_events_colset(db)
-
-        # Build dynamic insert columns based on what exists in DB
         insert_cols: List[str] = ["id", "user_id", "session_id", "mode"]
         params: Dict[str, Any] = {
             "id": str(uuid.uuid4()),
@@ -750,18 +753,18 @@ def _insert_governance_event(
             "mode": mode,
         }
 
-        def add_col(name: str, value_key: str, value: Any) -> None:
-            if name in cols:
-                insert_cols.append(name)
-                params[value_key] = value
+        def add_scalar(col: str, value: Any) -> None:
+            if col in cols:
+                insert_cols.append(col)
+                params[col] = value
 
-        add_col("allowed", "allowed", allowed)
-        add_col("replaced", "replaced", replaced)
-        add_col("score", "score", score)
-        add_col("grade", "grade", grade)
-
-        # reason/findings/audit are optional in your current DB schema
-        add_col("reason", "reason", reason)
+        add_scalar("allowed", allowed)
+        add_scalar("replaced", replaced)
+        add_scalar("score", score)
+        add_scalar("grade", grade)
+        add_scalar("reason", reason)
+        add_scalar("policy_version", policy_version)
+        add_scalar("neutrality_version", neutrality_version)
 
         if "findings" in cols:
             insert_cols.append("findings")
@@ -771,24 +774,17 @@ def _insert_governance_event(
             insert_cols.append("audit")
             params["audit"] = json.dumps(a)
 
-        # A4 optional fields (only if present)
-        add_col("policy_version", "policy_version", policy_version)
-        add_col("neutrality_version", "neutrality_version", neutrality_version)
-
         if "decision_trace" in cols:
             insert_cols.append("decision_trace")
             params["decision_trace"] = json.dumps(decision_trace)
 
-        # Build SQL
         sql_cols = ", ".join(insert_cols)
-
         values_expr: List[str] = []
         for c in insert_cols:
             if c in {"findings", "audit", "decision_trace"}:
                 values_expr.append(f"CAST(:{c} AS jsonb)")
             else:
                 values_expr.append(f":{c}")
-
         sql_vals = ", ".join(values_expr)
 
         db.execute(
@@ -801,91 +797,6 @@ def _insert_governance_event(
             params,
         )
 
-    except Exception as e:
-        try:
-            log_event(
-                logging.ERROR,
-                "governance.event.insert_failed",
-                error_type=type(e).__name__,
-                error=_truncate(str(e), 240),
-                user_id=str(user_id) if user_id else None,
-                session_id=str(session_id) if session_id else None,
-                mode=mode,
-            )
-        except Exception:
-            pass
-
-
-        has_a4 = _gov_has_a4_cols(db)
-
-        if has_a4:
-            db.execute(
-                text(
-                    """
-                    INSERT INTO governance_events (
-                      id, user_id, session_id, mode,
-                      allowed, replaced, score, grade, reason,
-                      findings, audit,
-                      policy_version, neutrality_version, decision_trace
-                    )
-                    VALUES (
-                      :id, :user_id, :session_id, :mode,
-                      :allowed, :replaced, :score, :grade, :reason,
-                      CAST(:findings AS jsonb),
-                      CAST(:audit AS jsonb),
-                      :policy_version, :neutrality_version,
-                      CAST(:decision_trace AS jsonb)
-                    )
-                    """
-                ),
-                {
-                    "id": str(uuid.uuid4()),
-                    "user_id": str(user_id),
-                    "session_id": str(session_id) if session_id else None,
-                    "mode": mode,
-                    "allowed": allowed,
-                    "replaced": replaced,
-                    "score": score,
-                    "grade": grade,
-                    "reason": reason,
-                    "findings": json.dumps(findings),
-                    "audit": json.dumps(a),
-                    "policy_version": policy_version,
-                    "neutrality_version": neutrality_version,
-                    "decision_trace": json.dumps(decision_trace),
-                },
-            )
-        else:
-            db.execute(
-                text(
-                    """
-                    INSERT INTO governance_events (
-                      id, user_id, session_id, mode,
-                      allowed, replaced, score, grade, reason,
-                      findings, audit
-                    )
-                    VALUES (
-                      :id, :user_id, :session_id, :mode,
-                      :allowed, :replaced, :score, :grade, :reason,
-                      CAST(:findings AS jsonb),
-                      CAST(:audit AS jsonb)
-                    )
-                    """
-                ),
-                {
-                    "id": str(uuid.uuid4()),
-                    "user_id": str(user_id),
-                    "session_id": str(session_id) if session_id else None,
-                    "mode": mode,
-                    "allowed": allowed,
-                    "replaced": replaced,
-                    "score": score,
-                    "grade": grade,
-                    "reason": reason,
-                    "findings": json.dumps(findings),
-                    "audit": json.dumps(a),
-                },
-            )
     except Exception as e:
         try:
             log_event(
@@ -987,7 +898,6 @@ def _window_days_from_seconds(window_sec: int) -> int:
     except Exception:
         ws = 900
     ws = max(30, min(86400, ws))
-    # round up to at least 1 day
     return max(1, int((ws + 86400 - 1) // 86400))
 
 
@@ -1033,7 +943,6 @@ def ops_metrics(window_sec: int = 900, _: None = Depends(require_admin)):
     window_sec = max(30, min(86400, int(window_sec)))
     now_utc = datetime.now(timezone.utc).isoformat()
 
-    # HTTP metrics from in-memory rolling store
     items = _HTTP_METRICS.snapshot()
     http_summary = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
 
@@ -1041,7 +950,6 @@ def ops_metrics(window_sec: int = 900, _: None = Depends(require_admin)):
     rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
     p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
 
-    # Governance replaced_rate from DB (approx window alignment via days)
     gov_days = _window_days_from_seconds(window_sec)
     with SessionLocal() as db:
         gov = _compute_governance_replaced_rate(db, days=gov_days)
@@ -1095,9 +1003,9 @@ def ops_slo_check(
 
     enough_traffic = request_count >= int(min_request_count)
 
-    ok_5xx = (rate_5xx <= float(max_5xx_rate))
-    ok_p95 = (p95_latency_ms <= int(max_p95_latency_ms))
-    ok_gov = (gov_replaced <= float(max_governance_replaced_rate))
+    ok_5xx = rate_5xx <= float(max_5xx_rate)
+    ok_p95 = p95_latency_ms <= int(max_p95_latency_ms)
+    ok_gov = gov_replaced <= float(max_governance_replaced_rate)
 
     if not enough_traffic:
         return {
@@ -1143,180 +1051,654 @@ def ops_slo_check(
         },
     }
 
+# ---------------------------
+# M2.4a — Error-budget / "burning trust" view
+# Admin-only. Uses:
+#   - in-memory HTTP rolling metrics for 5xx + latency
+#   - DB governance_events for replaced-rate (coarse window alignment via days)
+# Goal: one endpoint that tells you if you're burning trust right now.
+# ---------------------------
 
-@app.get("/v1/admin/ops/slo-check")
- def ops_slo_check(
-     window_sec: int = 900,
-     max_5xx_rate: float = 0.01,
-     max_p95_latency_ms: int = 1000,
-     max_governance_replaced_rate: float = 0.10,
-     min_request_count: int = 20,
-     _: None = Depends(require_admin),
- ):
 
-     return {
-         "status": "ok",
-         "now_utc": now_utc,
-         "window_sec": int(window_sec),
-         "slo_ok": slo_ok,
+def _safe_div(n: float, d: float) -> float:
+    try:
+        if d == 0:
+            return 0.0
+        return float(n) / float(d)
+    except Exception:
+        return 0.0
 
-         },
-     }
-+
-+
-+# ---------------------------
-+# M2.4a — Error-budget / "burning trust" view (conceptual, no UI)
-+# Admin-only. Uses:
-+#   - in-memory HTTP rolling metrics for 5xx + latency
-+#   - DB governance_events for replaced-rate (coarse window alignment via days)
-+#
-+# Goal: one endpoint that tells you if you're burning trust *right now*.
-+# ---------------------------
-+
-+def _safe_div(n: float, d: float) -> float:
-+    try:
-+        if d == 0:
-+            return 0.0
-+        return float(n) / float(d)
-+    except Exception:
-+        return 0.0
-+
-+
-+@app.get("/v1/admin/ops/error-budget")
-+def ops_error_budget(
-+    window_sec: int = 900,
-+    # SLO thresholds (same defaults as slo-check)
-+    max_5xx_rate: float = 0.01,
-+    max_p95_latency_ms: int = 1000,
-+    max_governance_replaced_rate: float = 0.10,
-+    # "Yellow" pre-warning bands (how close to threshold before warning)
-+    warn_5xx_rate: float = 0.005,          # 0.5%
-+    warn_p95_latency_ms: int = 800,        # 800ms
-+    warn_governance_replaced_rate: float = 0.05,  # 5%
-+    # avoid noisy results on tiny samples
-+    min_request_count: int = 20,
-+    _: None = Depends(require_admin),
-+):
-+    """
-+    Returns burn-rate style indicators + a simple trust_state:
-+      - green: safely within warning bands
-+      - yellow: approaching SLO limits (pre-breach)
-+      - red: breaching SLO limits OR burning >1x on any axis (with enough traffic)
-+    """
-+    window_sec = max(30, min(86400, int(window_sec)))
-+    now_utc = datetime.now(timezone.utc).isoformat()
-+
-+    # HTTP summary (in-memory rolling)
-+    items = _HTTP_METRICS.snapshot()
-+    http_summary = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
-+    request_count = int(http_summary.get("events_total", 0) or 0)
-+    rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
-+    p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
-+
-+    # Governance summary (DB; coarse window in days, MVP)
-+    gov_days = _window_days_from_seconds(window_sec)
-+    with SessionLocal() as db:
-+        gov = _compute_governance_replaced_rate(db, days=gov_days)
-+    gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
-+    gov_total = int(gov.get("governance_events_total", 0) or 0)
-+
-+    enough_traffic = request_count >= int(min_request_count)
-+
-+    # "Burn" = observed / budget-threshold (1.0 means exactly at the SLO threshold)
-+    burn_5xx = _safe_div(rate_5xx, float(max_5xx_rate))
-+    burn_p95 = _safe_div(float(p95_latency_ms), float(max_p95_latency_ms))
-+    burn_gov = _safe_div(gov_replaced, float(max_governance_replaced_rate))
-+
-+    reason_codes: List[str] = []
-+
-+    # If insufficient traffic, we report metrics but do not call red/yellow aggressively.
-+    if not enough_traffic:
-+        return {
-+            "status": "ok",
-+            "now_utc": now_utc,
-+            "window_sec": int(window_sec),
-+            "trust_state": "green",
-+            "reason_codes": ["insufficient_traffic"],
-+            "request_count": request_count,
-+            "rate_5xx": rate_5xx,
-+            "p95_latency_ms": p95_latency_ms,
-+            "governance_replaced_rate": gov_replaced,
-+            "governance_events_total": gov_total,
-+            "burn": {
-+                "burn_5xx": burn_5xx,
-+                "burn_p95_latency": burn_p95,
-+                "burn_governance_replaced": burn_gov,
-+            },
-+            "thresholds": {
-+                "max_5xx_rate": float(max_5xx_rate),
-+                "max_p95_latency_ms": int(max_p95_latency_ms),
-+                "max_governance_replaced_rate": float(max_governance_replaced_rate),
-+                "warn_5xx_rate": float(warn_5xx_rate),
-+                "warn_p95_latency_ms": int(warn_p95_latency_ms),
-+                "warn_governance_replaced_rate": float(warn_governance_replaced_rate),
-+                "min_request_count": int(min_request_count),
-+            },
-+        }
-+
-+    # RED conditions (breach)
-+    if rate_5xx > float(max_5xx_rate):
-+        reason_codes.append("breach_5xx")
-+    if p95_latency_ms > int(max_p95_latency_ms):
-+        reason_codes.append("breach_p95_latency")
-+    if gov_replaced > float(max_governance_replaced_rate):
-+        reason_codes.append("breach_governance_replaced")
-+
-+    # YELLOW conditions (near-breach)
-+    near = False
-+    if rate_5xx > float(warn_5xx_rate):
-+        near = True
-+        reason_codes.append("warn_5xx")
-+    if p95_latency_ms > int(warn_p95_latency_ms):
-+        near = True
-+        reason_codes.append("warn_p95_latency")
-+    if gov_replaced > float(warn_governance_replaced_rate):
-+        near = True
-+        reason_codes.append("warn_governance_replaced")
-+
-+    # burn-based red (burning > 1x on any axis)
-+    burn_red = (burn_5xx > 1.0) or (burn_p95 > 1.0) or (burn_gov > 1.0)
-+    if burn_red and not any(rc.startswith("breach_") for rc in reason_codes):
-+        reason_codes.append("burn_gt_1x")
-+
-+    # decide trust_state
-+    if any(rc.startswith("breach_") for rc in reason_codes) or burn_red:
-+        trust_state = "red"
-+    elif near:
-+        trust_state = "yellow"
-+    else:
-+        trust_state = "green"
-+
-+    return {
-+        "status": "ok",
-+        "now_utc": now_utc,
-+        "window_sec": int(window_sec),
-+        "trust_state": trust_state,
-+        "reason_codes": reason_codes,
-+        "request_count": request_count,
-+        "rate_5xx": rate_5xx,
-+        "p95_latency_ms": p95_latency_ms,
-+        "governance_replaced_rate": gov_replaced,
-+        "governance_events_total": gov_total,
-+        "burn": {
-+            "burn_5xx": burn_5xx,
-+            "burn_p95_latency": burn_p95,
-+            "burn_governance_replaced": burn_gov,
-+        },
-+        "thresholds": {
-+            "max_5xx_rate": float(max_5xx_rate),
-+            "max_p95_latency_ms": int(max_p95_latency_ms),
-+            "max_governance_replaced_rate": float(max_governance_replaced_rate),
-+            "warn_5xx_rate": float(warn_5xx_rate),
-+            "warn_p95_latency_ms": int(warn_p95_latency_ms),
-+            "warn_governance_replaced_rate": float(warn_governance_replaced_rate),
-+            "min_request_count": int(min_request_count),
-+        },
-+    }
+
+@app.get("/v1/admin/ops/error-budget")
+def ops_error_budget(
+    window_sec: int = 900,
+    # SLO thresholds (same defaults as slo-check)
+    max_5xx_rate: float = 0.01,
+    max_p95_latency_ms: int = 1000,
+    max_governance_replaced_rate: float = 0.10,
+    # "Yellow" pre-warning bands
+    warn_5xx_rate: float = 0.005,  # 0.5%
+    warn_p95_latency_ms: int = 800,  # 800ms
+    warn_governance_replaced_rate: float = 0.05,  # 5%
+    # avoid noisy results on tiny samples
+    min_request_count: int = 20,
+    _: None = Depends(require_admin),
+):
+    """
+    Returns burn-rate style indicators + a simple trust_state:
+      - green: safely within warning bands
+      - yellow: approaching SLO limits (pre-breach)
+      - red: breaching SLO limits (with enough traffic)
+    """
+    window_sec = max(30, min(86400, int(window_sec)))
+    now_utc = datetime.now(timezone.utc).isoformat()
+
+    items = _HTTP_METRICS.snapshot()
+    http_summary = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
+
+    request_count = int(http_summary.get("events_total", 0) or 0)
+    rate_5xx = float(http_summary.get("rate_5xx", 0.0) or 0.0)
+    p95_latency_ms = int(http_summary.get("p95_ms", 0) or 0)
+
+    gov_days = _window_days_from_seconds(window_sec)
+    with SessionLocal() as db:
+        gov = _compute_governance_replaced_rate(db, days=gov_days)
+    gov_replaced = float(gov.get("governance_replaced_rate", 0.0) or 0.0)
+    gov_total = int(gov.get("governance_events_total", 0) or 0)
+
+    enough_traffic = request_count >= int(min_request_count)
+
+    burn_5xx = _safe_div(rate_5xx, float(max_5xx_rate))
+    burn_p95 = _safe_div(float(p95_latency_ms), float(max_p95_latency_ms))
+    burn_gov = _safe_div(gov_replaced, float(max_governance_replaced_rate))
+
+    reason_codes: List[str] = []
+
+    if not enough_traffic:
+        return {
+            "status": "ok",
+            "now_utc": now_utc,
+            "window_sec": int(window_sec),
+            "trust_state": "green",
+            "reason_codes": ["insufficient_traffic"],
+            "request_count": request_count,
+            "rate_5xx": rate_5xx,
+            "p95_latency_ms": p95_latency_ms,
+            "governance_replaced_rate": gov_replaced,
+            "governance_events_total": gov_total,
+            "burn_rates": {
+                "burn_5xx": burn_5xx,
+                "burn_p95_latency": burn_p95,
+                "burn_governance_replaced": burn_gov,
+            },
+            "thresholds": {
+                "max_5xx_rate": float(max_5xx_rate),
+                "max_p95_latency_ms": int(max_p95_latency_ms),
+                "max_governance_replaced_rate": float(max_governance_replaced_rate),
+                "warn_5xx_rate": float(warn_5xx_rate),
+                "warn_p95_latency_ms": int(warn_p95_latency_ms),
+                "warn_governance_replaced_rate": float(warn_governance_replaced_rate),
+                "min_request_count": int(min_request_count),
+            },
+        }
+
+    # RED = any breach
+    breach = False
+    if rate_5xx > float(max_5xx_rate):
+        breach = True
+        reason_codes.append("breach_5xx")
+    if p95_latency_ms > int(max_p95_latency_ms):
+        breach = True
+        reason_codes.append("breach_p95_latency")
+    if gov_replaced > float(max_governance_replaced_rate):
+        breach = True
+        reason_codes.append("breach_governance_replaced")
+
+    # YELLOW = near breach (warning bands)
+    near = False
+    if rate_5xx > float(warn_5xx_rate):
+        near = True
+        reason_codes.append("warn_5xx")
+    if p95_latency_ms > int(warn_p95_latency_ms):
+        near = True
+        reason_codes.append("warn_p95_latency")
+    if gov_replaced > float(warn_governance_replaced_rate):
+        near = True
+        reason_codes.append("warn_governance_replaced")
+
+    trust_state = "red" if breach else ("yellow" if near else "green")
+
+    return {
+        "status": "ok",
+        "now_utc": now_utc,
+        "window_sec": int(window_sec),
+        "trust_state": trust_state,
+        "reason_codes": reason_codes,
+        "request_count": request_count,
+        "rate_5xx": rate_5xx,
+        "p95_latency_ms": p95_latency_ms,
+        "governance_replaced_rate": gov_replaced,
+        "governance_events_total": gov_total,
+        "burn_rates": {
+            "burn_5xx": burn_5xx,
+            "burn_p95_latency": burn_p95,
+            "burn_governance_replaced": burn_gov,
+        },
+        "thresholds": {
+            "max_5xx_rate": float(max_5xx_rate),
+            "max_p95_latency_ms": int(max_p95_latency_ms),
+            "max_governance_replaced_rate": float(max_governance_replaced_rate),
+            "warn_5xx_rate": float(warn_5xx_rate),
+            "warn_p95_latency_ms": int(warn_p95_latency_ms),
+            "warn_governance_replaced_rate": float(warn_governance_replaced_rate),
+            "min_request_count": int(min_request_count),
+        },
+    }
+    
+# ---------------------------
+# M2.4b — Historical time-series + latency vs governance strictness correlation
+# - Persists aggregated buckets into ops_timeseries_buckets
+# - No content, no headers, no bodies stored.
+# ---------------------------
+
+_TS_STOP_EVENT: Optional[threading.Event] = None
+_TS_THREAD: Optional[threading.Thread] = None
+
+
+def _bucket_floor(ts_ns: int, bucket_sec: int) -> int:
+    bucket_ns = int(bucket_sec) * 1_000_000_000
+    return int(ts_ns // bucket_ns) * bucket_ns
+
+
+def _summarize_http_metrics_range(
+    items: List[Tuple[int, str, str, int, int]],
+    start_ns: int,
+    end_ns: int,
+    route: str = "__all__",
+) -> Dict[str, Any]:
+    # filter to bucket window
+    filtered = [x for x in items if start_ns <= x[0] < end_ns]
+    if route != "__all__":
+        filtered = [x for x in filtered if f"{x[1]} {x[2]}" == route]
+
+    total = len(filtered)
+    if total <= 0:
+        return {"request_count": 0, "rate_5xx": 0.0, "p95_latency_ms": 0, "avg_latency_ms": 0.0}
+
+    durations = [int(x[4]) for x in filtered]
+    s5xx = sum(1 for x in filtered if 500 <= int(x[3]) <= 599)
+
+    return {
+        "request_count": int(total),
+        "rate_5xx": float(s5xx / total) if total else 0.0,
+        "p95_latency_ms": int(_percentile(durations, 95)),
+        "avg_latency_ms": float(sum(durations) / len(durations)) if durations else 0.0,
+    }
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    try:
+        if v is None:
+            return float(default)
+        return float(v)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(v: Any, default: int = 0) -> int:
+    try:
+        if v is None:
+            return int(default)
+        return int(v)
+    except Exception:
+        return int(default)
+
+
+def _extract_policy_strictness(db) -> Dict[str, Any]:
+    """
+    Strictness inputs come from current governance policy config.
+    Stored per bucket so we can correlate with latency historically.
+    """
+    policy_version = "gov-v1.0"
+    neutrality_version = "n-v1.1"
+    min_score_allow = 75
+    hard_rules_count = 0
+    soft_rules_count = 0
+
+    try:
+        pol = get_current_policy(db)
+        if isinstance(pol, dict):
+            pv = pol.get("policy_version")
+            nv = pol.get("neutrality_version")
+            msa = pol.get("min_score_allow")
+            hard = pol.get("hard_block_rules")
+            soft = pol.get("soft_rules")
+
+            if isinstance(pv, str) and pv.strip():
+                policy_version = pv.strip()
+            if isinstance(nv, str) and nv.strip():
+                neutrality_version = nv.strip()
+
+            if isinstance(msa, int):
+                min_score_allow = int(msa)
+            else:
+                try:
+                    min_score_allow = int(msa)
+                except Exception:
+                    pass
+
+            if isinstance(hard, list):
+                hard_rules_count = len([x for x in hard if isinstance(x, str) and x.strip()])
+            if isinstance(soft, list):
+                soft_rules_count = len([x for x in soft if isinstance(x, str) and x.strip()])
+    except Exception:
+        pass
+
+    # simple tunable strictness score (MVP):
+    # - min_score_allow dominates
+    # - hard rules weigh more than soft rules
+    strictness_score = float(min_score_allow) + (2.0 * float(hard_rules_count)) + (1.0 * float(soft_rules_count))
+
+    return {
+        "policy_version": policy_version,
+        "neutrality_version": neutrality_version,
+        "min_score_allow": int(min_score_allow),
+        "hard_rules_count": int(hard_rules_count),
+        "soft_rules_count": int(soft_rules_count),
+        "strictness_score": float(strictness_score),
+    }
+
+
+def _compute_governance_bucket_stats(db, start_ts: datetime, end_ts: datetime) -> Dict[str, Any]:
+    """
+    Governance stats per bucket from governance_events:
+      - events_total
+      - replaced_rate
+      - avg_score
+    """
+    row = db.execute(
+        text(
+            """
+            SELECT
+              COUNT(*)::int AS events_total,
+              COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate,
+              COALESCE(AVG(score), 0)::float AS avg_score
+            FROM governance_events
+            WHERE created_at >= :start_ts
+              AND created_at <  :end_ts
+            """
+        ),
+        {"start_ts": start_ts, "end_ts": end_ts},
+    ).fetchone()
+
+    if not row:
+        return {"gov_events_total": 0, "gov_replaced_rate": 0.0, "gov_avg_score": 0.0}
+
+    return {
+        "gov_events_total": int(row[0] or 0),
+        "gov_replaced_rate": float(row[1] or 0.0),
+        "gov_avg_score": float(row[2] or 0.0),
+    }
+
+
+def _ensure_ops_timeseries_table(db) -> None:
+    """
+    Defensive: in case schema.sql not applied yet, we don't crash the service.
+    Creates table/indexes if missing.
+    """
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS ops_timeseries_buckets (
+              id uuid PRIMARY KEY,
+              bucket_start timestamptz NOT NULL,
+              bucket_sec int NOT NULL,
+              route text NOT NULL DEFAULT '__all__',
+
+              request_count int NOT NULL DEFAULT 0,
+              rate_5xx double precision NOT NULL DEFAULT 0,
+              p95_latency_ms int NOT NULL DEFAULT 0,
+              avg_latency_ms double precision NOT NULL DEFAULT 0,
+
+              gov_events_total int NOT NULL DEFAULT 0,
+              gov_replaced_rate double precision NOT NULL DEFAULT 0,
+              gov_avg_score double precision NOT NULL DEFAULT 0,
+
+              policy_version text,
+              neutrality_version text,
+              min_score_allow int,
+              hard_rules_count int,
+              soft_rules_count int,
+              strictness_score double precision NOT NULL DEFAULT 0,
+
+              created_at timestamptz NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_timeseries_unique
+              ON ops_timeseries_buckets (bucket_start, bucket_sec, route);
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_start
+              ON ops_timeseries_buckets (bucket_start DESC);
+            """
+        )
+    )
+
+
+def _upsert_timeseries_bucket(
+    db,
+    *,
+    bucket_start: datetime,
+    bucket_sec: int,
+    route: str,
+    http_stats: Dict[str, Any],
+    gov_stats: Dict[str, Any],
+    policy_stats: Dict[str, Any],
+) -> None:
+    db.execute(
+        text(
+            """
+            INSERT INTO ops_timeseries_buckets (
+              id, bucket_start, bucket_sec, route,
+              request_count, rate_5xx, p95_latency_ms, avg_latency_ms,
+              gov_events_total, gov_replaced_rate, gov_avg_score,
+              policy_version, neutrality_version, min_score_allow,
+              hard_rules_count, soft_rules_count, strictness_score
+            )
+            VALUES (
+              :id, :bucket_start, :bucket_sec, :route,
+              :request_count, :rate_5xx, :p95_latency_ms, :avg_latency_ms,
+              :gov_events_total, :gov_replaced_rate, :gov_avg_score,
+              :policy_version, :neutrality_version, :min_score_allow,
+              :hard_rules_count, :soft_rules_count, :strictness_score
+            )
+            ON CONFLICT (bucket_start, bucket_sec, route)
+            DO UPDATE SET
+              request_count = EXCLUDED.request_count,
+              rate_5xx = EXCLUDED.rate_5xx,
+              p95_latency_ms = EXCLUDED.p95_latency_ms,
+              avg_latency_ms = EXCLUDED.avg_latency_ms,
+              gov_events_total = EXCLUDED.gov_events_total,
+              gov_replaced_rate = EXCLUDED.gov_replaced_rate,
+              gov_avg_score = EXCLUDED.gov_avg_score,
+              policy_version = EXCLUDED.policy_version,
+              neutrality_version = EXCLUDED.neutrality_version,
+              min_score_allow = EXCLUDED.min_score_allow,
+              hard_rules_count = EXCLUDED.hard_rules_count,
+              soft_rules_count = EXCLUDED.soft_rules_count,
+              strictness_score = EXCLUDED.strictness_score;
+            """
+        ),
+        {
+            "id": str(uuid.uuid4()),
+            "bucket_start": bucket_start,
+            "bucket_sec": int(bucket_sec),
+            "route": str(route),
+            "request_count": _safe_int(http_stats.get("request_count")),
+            "rate_5xx": _safe_float(http_stats.get("rate_5xx")),
+            "p95_latency_ms": _safe_int(http_stats.get("p95_latency_ms")),
+            "avg_latency_ms": _safe_float(http_stats.get("avg_latency_ms")),
+            "gov_events_total": _safe_int(gov_stats.get("gov_events_total")),
+            "gov_replaced_rate": _safe_float(gov_stats.get("gov_replaced_rate")),
+            "gov_avg_score": _safe_float(gov_stats.get("gov_avg_score")),
+            "policy_version": policy_stats.get("policy_version"),
+            "neutrality_version": policy_stats.get("neutrality_version"),
+            "min_score_allow": _safe_int(policy_stats.get("min_score_allow")),
+            "hard_rules_count": _safe_int(policy_stats.get("hard_rules_count")),
+            "soft_rules_count": _safe_int(policy_stats.get("soft_rules_count")),
+            "strictness_score": _safe_float(policy_stats.get("strictness_score")),
+        },
+    )
+
+
+def _pearson_corr(xs: List[float], ys: List[float]) -> Optional[float]:
+    """
+    Pearson correlation r in [-1, 1]. Returns None if insufficient variance/points.
+    """
+    if len(xs) != len(ys) or len(xs) < 3:
+        return None
+    n = float(len(xs))
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    vx = sum((x - mx) ** 2 for x in xs)
+    vy = sum((y - my) ** 2 for y in ys)
+    if vx <= 0 or vy <= 0:
+        return None
+    cov = sum((xs[i] - mx) * (ys[i] - my) for i in range(len(xs)))
+    return float(cov / math.sqrt(vx * vy))
+
+
+def _timeseries_worker() -> None:
+    """
+    Periodically flushes aggregated bucket(s) into DB.
+    - Uses rolling in-memory HTTP metrics.
+    - Pulls governance bucket stats from DB.
+    - Stores current policy strictness snapshot per bucket.
+    """
+    interval_sec = max(10, min(300, int(os.getenv("OPS_TS_FLUSH_INTERVAL_SEC", "30") or "30")))
+    bucket_sec = max(60, min(3600, int(os.getenv("OPS_TS_BUCKET_SEC", "300") or "300")))  # default 5 minutes
+    lookback_buckets = max(1, min(12, int(os.getenv("OPS_TS_LOOKBACK_BUCKETS", "2") or "2")))
+
+    stop_ev = _TS_STOP_EVENT
+    if stop_ev is None:
+        return
+
+    log_event(logging.INFO, "ops.timeseries.worker_start", interval_sec=interval_sec, bucket_sec=bucket_sec)
+
+    while not stop_ev.is_set():
+        try:
+            now_ns = time.time_ns()
+            end_bucket_ns = _bucket_floor(now_ns, bucket_sec)  # current bucket start
+            # We finalize buckets strictly before current bucket start (avoid partial-bucket churn).
+            # We'll write lookback_buckets buckets immediately preceding end_bucket_ns.
+            bucket_ns = bucket_sec * 1_000_000_000
+
+            items = _HTTP_METRICS.snapshot()
+
+            with SessionLocal() as db:
+                _ensure_ops_timeseries_table(db)
+
+                policy_stats = _extract_policy_strictness(db)
+
+                for i in range(lookback_buckets, 0, -1):
+                    b_start_ns = end_bucket_ns - (i * bucket_ns)
+                    b_end_ns = b_start_ns + bucket_ns
+
+                    b_start_dt = datetime.fromtimestamp(b_start_ns / 1_000_000_000, tz=timezone.utc)
+                    b_end_dt = datetime.fromtimestamp(b_end_ns / 1_000_000_000, tz=timezone.utc)
+
+                    http_stats = _summarize_http_metrics_range(items, b_start_ns, b_end_ns, route="__all__")
+                    gov_stats = _compute_governance_bucket_stats(db, b_start_dt, b_end_dt)
+
+                    _upsert_timeseries_bucket(
+                        db,
+                        bucket_start=b_start_dt,
+                        bucket_sec=bucket_sec,
+                        route="__all__",
+                        http_stats=http_stats,
+                        gov_stats=gov_stats,
+                        policy_stats=policy_stats,
+                    )
+
+                db.commit()
+
+        except Exception as e:
+            try:
+                log_event(
+                    logging.ERROR,
+                    "ops.timeseries.worker_error",
+                    error_type=type(e).__name__,
+                    error=_truncate(str(e), 240),
+                )
+            except Exception:
+                pass
+
+        stop_ev.wait(interval_sec)
+
+    log_event(logging.INFO, "ops.timeseries.worker_stop")
+
+
+def _start_timeseries_worker() -> None:
+    global _TS_STOP_EVENT, _TS_THREAD
+    if _TS_THREAD and _TS_THREAD.is_alive():
+        return
+    _TS_STOP_EVENT = threading.Event()
+    _TS_THREAD = threading.Thread(target=_timeseries_worker, name="ops-timeseries", daemon=True)
+    _TS_THREAD.start()
+
+
+def _stop_timeseries_worker() -> None:
+    global _TS_STOP_EVENT, _TS_THREAD
+    if _TS_STOP_EVENT:
+        _TS_STOP_EVENT.set()
+    _TS_STOP_EVENT = None
+    _TS_THREAD = None
+
+
+@app.get("/v1/admin/ops/timeseries")
+def ops_timeseries(
+    hours: int = 24,
+    bucket_sec: int = 300,
+    route: str = "__all__",
+    limit: int = 500,
+    _: None = Depends(require_admin),
+):
+    """
+    Returns historical aggregated buckets (no content).
+    """
+    hours = max(1, min(24 * 60, int(hours)))  # up to 60 days
+    bucket_sec = max(60, min(3600, int(bucket_sec)))
+    limit = max(1, min(5000, int(limit)))
+
+    with SessionLocal() as db:
+        _ensure_ops_timeseries_table(db)
+
+        rows = db.execute(
+            text(
+                """
+                SELECT
+                  bucket_start, bucket_sec, route,
+                  request_count, rate_5xx, p95_latency_ms, avg_latency_ms,
+                  gov_events_total, gov_replaced_rate, gov_avg_score,
+                  policy_version, neutrality_version,
+                  min_score_allow, hard_rules_count, soft_rules_count, strictness_score
+                FROM ops_timeseries_buckets
+                WHERE bucket_start >= (NOW() - (:hours || ' hours')::interval)
+                  AND bucket_sec = :bucket_sec
+                  AND route = :route
+                ORDER BY bucket_start ASC
+                LIMIT :limit
+                """
+            ),
+            {"hours": hours, "bucket_sec": bucket_sec, "route": route, "limit": limit},
+        ).fetchall()
+
+    return {
+        "status": "ok",
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+        "hours": hours,
+        "bucket_sec": bucket_sec,
+        "route": route,
+        "points": [
+            {
+                "bucket_start": r[0].isoformat() if r[0] else None,
+                "bucket_sec": int(r[1]),
+                "route": r[2],
+                "request_count": int(r[3]),
+                "rate_5xx": float(r[4]),
+                "p95_latency_ms": int(r[5]),
+                "avg_latency_ms": float(r[6]),
+                "gov_events_total": int(r[7]),
+                "gov_replaced_rate": float(r[8]),
+                "gov_avg_score": float(r[9]),
+                "policy_version": r[10],
+                "neutrality_version": r[11],
+                "min_score_allow": r[12],
+                "hard_rules_count": r[13],
+                "soft_rules_count": r[14],
+                "strictness_score": float(r[15]),
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/v1/admin/ops/latency-strictness")
+def ops_latency_strictness_correlation(
+    hours: int = 72,
+    bucket_sec: int = 300,
+    route: str = "__all__",
+    _: None = Depends(require_admin),
+):
+    """
+    Computes correlation between strictness_score and p95_latency_ms over historical buckets.
+    """
+    hours = max(1, min(24 * 60, int(hours)))
+    bucket_sec = max(60, min(3600, int(bucket_sec)))
+
+    with SessionLocal() as db:
+        _ensure_ops_timeseries_table(db)
+
+        rows = db.execute(
+            text(
+                """
+                SELECT bucket_start, strictness_score, p95_latency_ms, request_count, rate_5xx, gov_replaced_rate
+                FROM ops_timeseries_buckets
+                WHERE bucket_start >= (NOW() - (:hours || ' hours')::interval)
+                  AND bucket_sec = :bucket_sec
+                  AND route = :route
+                ORDER BY bucket_start ASC
+                """
+            ),
+            {"hours": hours, "bucket_sec": bucket_sec, "route": route},
+        ).fetchall()
+
+    xs: List[float] = []
+    ys: List[float] = []
+    scatter: List[Dict[str, Any]] = []
+
+    for r in rows:
+        b = r[0]
+        strict = _safe_float(r[1])
+        p95 = _safe_float(r[2])
+        reqc = _safe_int(r[3])
+        # guard: ignore empty buckets (noise)
+        if reqc <= 0:
+            continue
+        xs.append(strict)
+        ys.append(p95)
+        scatter.append(
+            {
+                "bucket_start": b.isoformat() if b else None,
+                "strictness_score": strict,
+                "p95_latency_ms": p95,
+                "request_count": reqc,
+                "rate_5xx": _safe_float(r[4]),
+                "gov_replaced_rate": _safe_float(r[5]),
+            }
+        )
+
+    r_val = _pearson_corr(xs, ys)
+
+    return {
+        "status": "ok",
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+        "hours": hours,
+        "bucket_sec": bucket_sec,
+        "route": route,
+        "points_used": len(scatter),
+        "pearson_r_strictness_vs_p95": r_val,
+        "scatter": scatter[-500:],  # cap payload
+    }
 
 # ---------------------------
 # Public SLO-lite (no admin) — safe external probe (optional)
@@ -1964,6 +2346,9 @@ def archive_memory(user_id: uuid.UUID, memory_id: uuid.UUID):
 # Admin minimal SLO metrics + boolean check:
 #   GET  /v1/admin/ops/metrics?window_sec=900
 #   GET  /v1/admin/ops/slo-check?window_sec=900
+#
+# Admin error-budget / trust-state:
+#   GET  /v1/admin/ops/error-budget?window_sec=900
 #
 # Optional public SLO-lite (disabled unless enabled):
 #   GET  /v1/ops/slo-check-lite
