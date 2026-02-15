@@ -773,6 +773,125 @@ def _pearson_corr(xs: List[float], ys: List[float]) -> Optional[float]:
     return float(cov / math.sqrt(vx * vy))
 
 
+def _compute_trust_state_from_windows(
+    *,
+    request_count: int,
+    rate_5xx: float,
+    p95_latency_ms: int,
+    gov_replaced_rate: float,
+    gov_events_total: int,
+    max_5xx_rate: float = 0.01,
+    max_p95_latency_ms: int = 1000,
+    max_governance_replaced_rate: float = 0.10,
+    warn_5xx_rate: float = 0.005,
+    warn_p95_latency_ms: int = 800,
+    warn_governance_replaced_rate: float = 0.05,
+    min_request_count: int = 20,
+    min_governance_events_total: int = 50,
+) -> Dict[str, Any]:
+    """
+    Produces a trust_state (green/yellow/red) + reason_codes + burn_rates
+    using the same semantics as /v1/admin/ops/error-budget.
+
+    NOTE: If insufficient traffic, returns green + reason_codes=["insufficient_traffic"].
+          If insufficient governance events, does not breach on governance but adds a reason code.
+    """
+
+    request_count = int(request_count or 0)
+    rate_5xx = float(rate_5xx or 0.0)
+    p95_latency_ms = int(p95_latency_ms or 0)
+    gov_replaced_rate = float(gov_replaced_rate or 0.0)
+    gov_events_total = int(gov_events_total or 0)
+
+    enough_traffic = request_count >= int(min_request_count)
+    enough_gov = gov_events_total >= int(min_governance_events_total)
+
+    burn_5xx = _safe_div(rate_5xx, float(max_5xx_rate))
+    burn_p95 = _safe_div(float(p95_latency_ms), float(max_p95_latency_ms))
+    burn_gov = _safe_div(gov_replaced_rate, float(max_governance_replaced_rate))
+
+    reason_codes: List[str] = []
+
+    if not enough_traffic:
+        return {
+            "trust_state": "green",
+            "reason_codes": ["insufficient_traffic"],
+            "burn_rates": {
+                "burn_5xx": burn_5xx,
+                "burn_p95_latency": burn_p95,
+                "burn_governance_replaced": burn_gov,
+            },
+            "checks": None,
+            "thresholds": {
+                "max_5xx_rate": float(max_5xx_rate),
+                "max_p95_latency_ms": int(max_p95_latency_ms),
+                "max_governance_replaced_rate": float(max_governance_replaced_rate),
+                "warn_5xx_rate": float(warn_5xx_rate),
+                "warn_p95_latency_ms": int(warn_p95_latency_ms),
+                "warn_governance_replaced_rate": float(warn_governance_replaced_rate),
+                "min_request_count": int(min_request_count),
+                "min_governance_events_total": int(min_governance_events_total),
+            },
+        }
+
+    breach = False
+    ok_5xx = True
+    ok_p95 = True
+    ok_gov = True
+
+    if rate_5xx > float(max_5xx_rate):
+        breach = True
+        ok_5xx = False
+        reason_codes.append("breach_5xx")
+
+    if p95_latency_ms > int(max_p95_latency_ms):
+        breach = True
+        ok_p95 = False
+        reason_codes.append("breach_p95_latency")
+
+    if enough_gov:
+        if gov_replaced_rate > float(max_governance_replaced_rate):
+            breach = True
+            ok_gov = False
+            reason_codes.append("breach_governance_replaced")
+    else:
+        reason_codes.append("insufficient_governance_events")
+
+    near = False
+    if rate_5xx > float(warn_5xx_rate):
+        near = True
+        reason_codes.append("warn_5xx")
+    if p95_latency_ms > int(warn_p95_latency_ms):
+        near = True
+        reason_codes.append("warn_p95_latency")
+    if enough_gov and (gov_replaced_rate > float(warn_governance_replaced_rate)):
+        near = True
+        reason_codes.append("warn_governance_replaced")
+
+    trust_state = "red" if breach else ("yellow" if near else "green")
+
+    return {
+        "trust_state": trust_state,
+        "reason_codes": reason_codes,
+        "burn_rates": {
+            "burn_5xx": burn_5xx,
+            "burn_p95_latency": burn_p95,
+            "burn_governance_replaced": burn_gov,
+        },
+        "checks": {"ok_5xx": ok_5xx, "ok_p95": ok_p95, "ok_governance_replaced_rate": ok_gov},
+        "thresholds": {
+            "max_5xx_rate": float(max_5xx_rate),
+            "max_p95_latency_ms": int(max_p95_latency_ms),
+            "max_governance_replaced_rate": float(max_governance_replaced_rate),
+            "warn_5xx_rate": float(warn_5xx_rate),
+            "warn_p95_latency_ms": int(warn_p95_latency_ms),
+            "warn_governance_replaced_rate": float(warn_governance_replaced_rate),
+            "min_request_count": int(min_request_count),
+            "min_governance_events_total": int(min_governance_events_total),
+        },
+    }
+
+
 def _timeseries_worker() -> None:
     interval_sec = max(10, min(300, int(os.getenv("OPS_TS_FLUSH_INTERVAL_SEC", "30") or "30")))
     bucket_sec = max(60, min(3600, int(os.getenv("OPS_TS_BUCKET_SEC", "300") or "300")))  # default 5 minutes
@@ -818,6 +937,60 @@ def _timeseries_worker() -> None:
                     )
 
                 db.commit()
+                
+                # --- ops.trust_state heartbeat (rolling window) ---
+                try:
+                    window_sec = max(30, min(86400, int(os.getenv("OPS_TRUST_WINDOW_SEC", "900") or "900")))
+
+                    http_roll = _summarize_http_metrics(items, window_sec=window_sec, limit=1)
+                    request_count = int(http_roll.get("events_total", 0) or 0)
+                    rate_5xx = float(http_roll.get("rate_5xx", 0.0) or 0.0)
+                    p95_latency_ms = int(http_roll.get("p95_ms", 0) or 0)
+
+                    gov_roll = _compute_governance_replaced_rate(db, window_sec=window_sec)
+                    gov_replaced_rate = float(gov_roll.get("governance_replaced_rate", 0.0) or 0.0)
+                    gov_events_total = int(gov_roll.get("governance_events_total", 0) or 0)
+
+                    trust = _compute_trust_state_from_windows(
+                        request_count=request_count,
+                        rate_5xx=rate_5xx,
+                        p95_latency_ms=p95_latency_ms,
+                        gov_replaced_rate=gov_replaced_rate,
+                        gov_events_total=gov_events_total,
+                        # thresholds can be overridden via env for ops tuning
+                        max_5xx_rate=float(os.getenv("OPS_TRUST_MAX_5XX_RATE", "0.01") or "0.01"),
+                        max_p95_latency_ms=int(os.getenv("OPS_TRUST_MAX_P95_MS", "1000") or "1000"),
+                        max_governance_replaced_rate=float(os.getenv("OPS_TRUST_MAX_GOV_REPLACED", "0.10") or "0.10"),
+                        warn_5xx_rate=float(os.getenv("OPS_TRUST_WARN_5XX_RATE", "0.005") or "0.005"),
+                        warn_p95_latency_ms=int(os.getenv("OPS_TRUST_WARN_P95_MS", "800") or "800"),
+                        warn_governance_replaced_rate=float(os.getenv("OPS_TRUST_WARN_GOV_REPLACED", "0.05") or "0.05"),
+                        min_request_count=int(os.getenv("OPS_TRUST_MIN_REQ", "20") or "20"),
+                        min_governance_events_total=int(os.getenv("OPS_TRUST_MIN_GOV", "50") or "50"),
+                    )
+
+                    log_event(
+                        logging.INFO,
+                        "ops.trust_state",
+                        window_sec=window_sec,
+                        request_count=request_count,
+                        rate_5xx=rate_5xx,
+                        p95_latency_ms=p95_latency_ms,
+                        governance_replaced_rate=gov_replaced_rate,
+                        governance_events_total=gov_events_total,
+                        trust_state=trust.get("trust_state"),
+                        reason_codes=trust.get("reason_codes"),
+                        burn_rates=trust.get("burn_rates"),
+                        thresholds=trust.get("thresholds"),
+                        # policy strictness context is useful for later correlation in logs
+                        policy_strictness=policy_stats,
+                    )
+                except Exception as e:
+                    log_event(
+                        logging.ERROR,
+                        "ops.trust_state.error",
+                        error_type=type(e).__name__,
+                        error=_truncate(str(e), 240),
+                    )
 
         except Exception as e:
             try:
