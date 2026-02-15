@@ -534,8 +534,8 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
     soft_rules_count = 0
 
     try:
-pol = get_current_policy(db)
-pol_dict = _policy_to_dict(pol)
+        pol = get_current_policy(db)
+        pol_dict = _policy_to_dict(pol)
 
 # handle if some callers wrap as {"policy": {...}}
 if isinstance(pol_dict.get("policy"), dict):
