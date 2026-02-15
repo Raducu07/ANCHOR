@@ -1512,6 +1512,18 @@ def ops_slo_check(
             "min_request_count": int(min_request_count),
         },
     }
+    
+# ===========================
+# M2.4 — Policy Strictness Debug (admin only)
+# ===========================
+
+@app.get("/v1/admin/ops/policy-strictness")
+def ops_policy_strictness(_: None = Depends(require_admin)):
+    with SessionLocal() as db:
+        return {
+            "status": "ok",
+            "policy_strictness": _extract_policy_strictness(db),
+        }
 
 # ============================================================
 # M2.4a — Error-budget / "burning trust" view
