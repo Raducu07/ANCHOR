@@ -478,9 +478,58 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
     hard_rules_count = 0
     soft_rules_count = 0
 
+    def _coerce_policy_dict(obj: Any) -> Dict[str, Any]:
+        # already dict
+        if isinstance(obj, dict):
+            return obj
+
+        # SQLAlchemy Row / RowMapping patterns
+        try:
+            m = getattr(obj, "_mapping", None)
+            if m is not None:
+                return dict(m)
+        except Exception:
+            pass
+
+        # Pydantic model
+        try:
+            if hasattr(obj, "dict"):
+                d = obj.dict()
+                if isinstance(d, dict):
+                    return d
+        except Exception:
+            pass
+
+        # JSON string fallback
+        try:
+            if isinstance(obj, str):
+                j = json.loads(obj)
+                if isinstance(j, dict):
+                    return j
+        except Exception:
+            pass
+
+        return {}
+
+    def _as_str_list(v: Any) -> List[str]:
+        # already a list
+        if isinstance(v, list):
+            return [x.strip() for x in v if isinstance(x, str) and x.strip()]
+
+        # json-encoded list
+        if isinstance(v, str) and v.strip():
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return [x.strip() for x in parsed if isinstance(x, str) and x.strip()]
+            except Exception:
+                return []
+
+        return []
+
     try:
         pol_raw = get_current_policy(db)
-        pol = _to_dict(pol_raw)
+        pol = _coerce_policy_dict(pol_raw)
 
         pv = pol.get("policy_version")
         nv = pol.get("neutrality_version")
@@ -488,7 +537,6 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
 
         if isinstance(pv, str) and pv.strip():
             policy_version = pv.strip()
-
         if isinstance(nv, str) and nv.strip():
             neutrality_version = nv.strip()
 
@@ -497,30 +545,25 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
         except Exception:
             pass
 
-        hard = pol.get("hard_block_rules")
-        soft = pol.get("soft_rules")
+        hard = (
+            pol.get("hard_block_rules")
+            or pol.get("hard_block_rules_json")
+            or pol.get("hard_rules")
+        )
+        soft = (
+            pol.get("soft_rules")
+            or pol.get("soft_rules_json")
+            or pol.get("soft_rules_list")
+        )
 
-        if isinstance(hard, list):
-            hard_rules_count = len([x for x in hard if isinstance(x, str) and x.strip()])
-        elif isinstance(hard, str):
-            try:
-                parsed = json.loads(hard)
-                if isinstance(parsed, list):
-                    hard_rules_count = len([x for x in parsed if isinstance(x, str) and x.strip()])
-            except Exception:
-                pass
+        hard_list = _as_str_list(hard)
+        soft_list = _as_str_list(soft)
 
-        if isinstance(soft, list):
-            soft_rules_count = len([x for x in soft if isinstance(x, str) and x.strip()])
-        elif isinstance(soft, str):
-            try:
-                parsed = json.loads(soft)
-                if isinstance(parsed, list):
-                    soft_rules_count = len([x for x in parsed if isinstance(x, str) and x.strip()])
-            except Exception:
-                pass
+        hard_rules_count = len(hard_list)
+        soft_rules_count = len(soft_list)
 
     except Exception:
+        # keep defaults
         pass
 
     strictness_score = (
