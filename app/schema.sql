@@ -2,10 +2,11 @@
 -- ANCHOR schema.sql (ready copy/paste)
 -- PostgreSQL
 -- Includes: core tables, memories, memory_offers handshake/audit, governance audit + config,
--- ops time-series buckets (aggregated), and a few safe performance indexes.
+-- ops time-series buckets (aggregated, mode-aware), and safe performance indexes.
+-- Idempotent: safe to run repeatedly.
 -- =========================
 
--- Needed for gen_random_uuid() used in the seed.
+-- Needed for gen_random_uuid()
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- =========================
@@ -40,7 +41,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user_created_at
 CREATE INDEX IF NOT EXISTS idx_sessions_created_at
   ON sessions(created_at DESC);
 
--- If you always fetch session messages in chronological order:
 CREATE INDEX IF NOT EXISTS idx_messages_session_created_at
   ON messages(session_id, created_at ASC);
 
@@ -48,7 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_created_at
   ON messages(created_at DESC);
 
 -- =========================
--- ANCHOR v1: memories table
+-- Memories
 -- =========================
 
 CREATE TABLE IF NOT EXISTS memories (
@@ -79,12 +79,11 @@ CREATE INDEX IF NOT EXISTS idx_memories_user_active
 CREATE INDEX IF NOT EXISTS idx_memories_user_kind
   ON memories(user_id, kind);
 
--- Helps if you often list only active memories by created_at DESC
 CREATE INDEX IF NOT EXISTS idx_memories_user_active_created
   ON memories(user_id, active, created_at DESC);
 
 -- =========================
--- M8.1/M8.2: memory offers (handshake + audit)
+-- Memory offers (handshake + audit)
 -- =========================
 
 CREATE TABLE IF NOT EXISTS memory_offers (
@@ -119,12 +118,11 @@ CREATE INDEX IF NOT EXISTS idx_memory_offers_user_created
 CREATE INDEX IF NOT EXISTS idx_memory_offers_user_status_created
   ON memory_offers(user_id, status, created_at DESC);
 
--- Small but useful: fast lookups when accepting/rejecting a proposed offer
 CREATE INDEX IF NOT EXISTS idx_memory_offers_user_id_status
   ON memory_offers(user_id, status);
 
 -- =========================
--- ANCHOR A3: governance audit table
+-- Governance audit table (A3/A4)
 -- =========================
 
 CREATE TABLE IF NOT EXISTS governance_events (
@@ -144,6 +142,11 @@ CREATE TABLE IF NOT EXISTS governance_events (
   findings JSONB NOT NULL DEFAULT '[]'::jsonb,
   audit JSONB NOT NULL DEFAULT '{}'::jsonb,
 
+  -- A4: versioning + deterministic decision trace
+  policy_version TEXT NOT NULL DEFAULT 'gov-v1.0',
+  neutrality_version TEXT NOT NULL DEFAULT 'n-v1.1',
+  decision_trace JSONB NOT NULL DEFAULT '{}'::jsonb,
+
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -156,22 +159,8 @@ CREATE INDEX IF NOT EXISTS idx_governance_events_session_created
 CREATE INDEX IF NOT EXISTS idx_governance_events_created
   ON governance_events(created_at DESC);
 
--- If governance_events gets huge, BRIN can be extremely efficient for time-based pruning:
 CREATE INDEX IF NOT EXISTS brin_governance_events_created_at
   ON governance_events USING BRIN (created_at);
-
--- =========================
--- A4: policy/versioning + deterministic decision trace
--- =========================
-
-ALTER TABLE governance_events
-  ADD COLUMN IF NOT EXISTS policy_version TEXT NOT NULL DEFAULT 'gov-v1.0';
-
-ALTER TABLE governance_events
-  ADD COLUMN IF NOT EXISTS neutrality_version TEXT NOT NULL DEFAULT 'n-v1.1';
-
-ALTER TABLE governance_events
-  ADD COLUMN IF NOT EXISTS decision_trace JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE INDEX IF NOT EXISTS idx_governance_events_policy_version
   ON governance_events(policy_version, created_at DESC);
@@ -179,24 +168,13 @@ CREATE INDEX IF NOT EXISTS idx_governance_events_policy_version
 CREATE INDEX IF NOT EXISTS idx_governance_events_neutrality_version
   ON governance_events(neutrality_version, created_at DESC);
 
--- Optional performance: A4-only GIN index on decision_trace
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-    FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = 'governance_events'
-      AND column_name = 'decision_trace'
-  ) THEN
-    CREATE INDEX IF NOT EXISTS idx_governance_events_decision_trace_gin
-      ON governance_events
-      USING GIN (decision_trace);
-  END IF;
-END $$;
+-- Optional performance: GIN index on decision_trace (safe + idempotent)
+CREATE INDEX IF NOT EXISTS idx_governance_events_decision_trace_gin
+  ON governance_events
+  USING GIN (decision_trace);
 
 -- =========================
--- A4: governance config (institution-friendly, auditable settings)
+-- Governance config (institution-friendly, auditable settings)
 -- =========================
 
 CREATE TABLE IF NOT EXISTS governance_config (
@@ -218,11 +196,7 @@ CREATE TABLE IF NOT EXISTS governance_config (
 CREATE INDEX IF NOT EXISTS idx_governance_config_updated
   ON governance_config(updated_at DESC);
 
--- =========================
--- Seed: ensure at least one policy row exists
--- (idempotent; safe for repeated runs)
--- =========================
-
+-- Seed: ensure at least one policy row exists (idempotent)
 INSERT INTO governance_config (
   id,
   policy_version,
@@ -243,67 +217,66 @@ SELECT
 WHERE NOT EXISTS (SELECT 1 FROM governance_config);
 
 -- ===========================
--- M2.4b — Ops time-series buckets (historical)
+-- Ops time-series buckets (M2.4b/M2.5) — mode-aware
 -- Aggregated only. No content.
 -- ===========================
 
 CREATE TABLE IF NOT EXISTS ops_timeseries_buckets (
-  id uuid PRIMARY KEY,
-  bucket_start timestamptz NOT NULL,
-  bucket_sec int NOT NULL,
-  route text NOT NULL DEFAULT '__all__',
+  id UUID PRIMARY KEY,
+  bucket_start TIMESTAMPTZ NOT NULL,
+  bucket_sec INT NOT NULL,
+  route TEXT NOT NULL DEFAULT '__all__',
+  mode TEXT NOT NULL DEFAULT '__all__',
 
-  request_count int NOT NULL DEFAULT 0,
-  rate_5xx double precision NOT NULL DEFAULT 0,
-  p95_latency_ms int NOT NULL DEFAULT 0,
-  avg_latency_ms double precision NOT NULL DEFAULT 0,
+  request_count INT NOT NULL DEFAULT 0,
+  rate_5xx DOUBLE PRECISION NOT NULL DEFAULT 0,
+  p95_latency_ms INT NOT NULL DEFAULT 0,
+  avg_latency_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
 
-  gov_events_total int NOT NULL DEFAULT 0,
-  gov_replaced_rate double precision NOT NULL DEFAULT 0,
-  gov_avg_score double precision NOT NULL DEFAULT 0,
+  gov_events_total INT NOT NULL DEFAULT 0,
+  gov_replaced_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+  gov_avg_score DOUBLE PRECISION NOT NULL DEFAULT 0,
 
-  policy_version text,
-  neutrality_version text,
-  min_score_allow int,
-  hard_rules_count int,
-  soft_rules_count int,
-  strictness_score double precision NOT NULL DEFAULT 0,
+  policy_version TEXT,
+  neutrality_version TEXT,
+  min_score_allow INT,
+  hard_rules_count INT,
+  soft_rules_count INT,
+  strictness_score DOUBLE PRECISION NOT NULL DEFAULT 0,
 
-  created_at timestamptz NOT NULL DEFAULT NOW()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- prevent duplicates for same bucket+route
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_timeseries_unique
-  ON ops_timeseries_buckets (bucket_start, bucket_sec, route);
+-- Uniqueness for bucket aggregation (mode-aware)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_timeseries_unique_mode
+  ON ops_timeseries_buckets (bucket_start, bucket_sec, route, mode);
 
--- query helpers (your endpoints filter by bucket_start + bucket_sec + route)
+-- Query helpers
 CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_start
   ON ops_timeseries_buckets (bucket_start DESC);
 
--- Speeds common WHERE bucket_sec = X AND route = Y AND bucket_start >= ...
-CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_route_sec_start
-  ON ops_timeseries_buckets (bucket_sec, route, bucket_start DESC);
+CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_route_mode_sec_start
+  ON ops_timeseries_buckets (bucket_sec, route, mode, bucket_start DESC);
 
--- Large-history acceleration for time scans (optional but safe)
+CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_mode_sec_start
+  ON ops_timeseries_buckets (bucket_sec, mode, bucket_start DESC);
+
 CREATE INDEX IF NOT EXISTS brin_ops_timeseries_bucket_start
   ON ops_timeseries_buckets USING BRIN (bucket_start);
 
--- ============================================================
--- M2.5 — Mode-aware ops time-series buckets (schema upgrade)
--- Adds 'mode' dimension, and upgrades uniqueness/indexes.
--- Idempotent and safe for repeated runs.
--- ============================================================
+-- ===========================
+-- Back-compat upgrades (safe if running on older DBs)
+-- ===========================
 
--- 1) Add column
+-- If ops_timeseries_buckets existed without mode before, ensure column exists + backfill
 ALTER TABLE ops_timeseries_buckets
-  ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT '__all__';
+  ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT '__all__';
 
--- 2) Backfill any NULLs (defensive)
 UPDATE ops_timeseries_buckets
 SET mode = '__all__'
 WHERE mode IS NULL;
 
--- 3) Drop old unique index if it exists (bucket_start, bucket_sec, route)
+-- If old unique index exists (bucket_start, bucket_sec, route) drop it
 DO $$
 BEGIN
   IF EXISTS (
@@ -316,11 +289,7 @@ BEGIN
   END IF;
 END $$;
 
--- 4) Create new unique index including mode
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_timeseries_unique_mode
-  ON ops_timeseries_buckets (bucket_start, bucket_sec, route, mode);
-
--- 5) Drop old helper index if it exists (bucket_sec, route, bucket_start)
+-- If old helper index exists (bucket_sec, route, bucket_start) drop it
 DO $$
 BEGIN
   IF EXISTS (
@@ -332,12 +301,3 @@ BEGIN
     EXECUTE 'DROP INDEX IF EXISTS idx_ops_timeseries_bucket_route_sec_start';
   END IF;
 END $$;
-
--- 6) Create new helper index with mode
-CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_route_mode_sec_start
-  ON ops_timeseries_buckets (bucket_sec, route, mode, bucket_start DESC);
-
--- Optional: if you want querying by mode fast even without route filter
-CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_mode_sec_start
-  ON ops_timeseries_buckets (bucket_sec, mode, bucket_start DESC);
-
