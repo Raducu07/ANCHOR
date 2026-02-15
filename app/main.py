@@ -433,20 +433,31 @@ def _as_str_list(v: Any) -> List[str]:
 def _to_dict(obj: Any) -> Dict[str, Any]:
     if obj is None:
         return {}
+
     if isinstance(obj, dict):
         return obj
+
+    # SQLAlchemy Row / RowMapping
+    if hasattr(obj, "_mapping"):
+        try:
+            return dict(obj._mapping)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
     # Pydantic v2
     if hasattr(obj, "model_dump"):
         try:
             return obj.model_dump()
         except Exception:
             pass
+
     # Pydantic v1
     if hasattr(obj, "dict"):
         try:
             return obj.dict()
         except Exception:
             pass
+
     # JSON string
     if isinstance(obj, str):
         s = obj.strip()
@@ -456,6 +467,7 @@ def _to_dict(obj: Any) -> Dict[str, Any]:
                 return parsed if isinstance(parsed, dict) else {}
             except Exception:
                 return {}
+
     return {}
 
 
@@ -483,8 +495,8 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
         except Exception:
             pass
 
-        hard = pol.get("hard_block_rules")
-        soft = pol.get("soft_rules")
+hard = pol.get("hard_block_rules") or pol.get("hard_block_rules_json") or pol.get("hard_rules")
+soft = pol.get("soft_rules") or pol.get("soft_rules_json") or pol.get("soft_rules_list")
 
         # Accept list[str] directly (your posted shape)
         if isinstance(hard, list):
