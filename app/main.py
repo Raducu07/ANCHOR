@@ -99,21 +99,19 @@ def _load_admin_tokens() -> Tuple[Set[str], Dict[str, ParsedToken]]:
     parts = [p.strip() for p in raw.split(",") if p.strip()]
     for p in parts:
         if "|" in p:
-            tok, exp = p.split("|", 1)
-            tok = tok.strip()
-            exp = exp.strip()
-            if not tok:
-                continue
-                
-            try:
-                
-    expires_at = _parse_iso_z(exp)
-except Exception:
-    # Bad expiry format should not brick deployment; ignore this token entry
-    continue
+    tok, exp = p.split("|", 1)
+    tok = tok.strip()
+    exp = exp.strip()
+    if not tok:
+        continue
 
-tokens.add(tok)
-parsed[tok] = ParsedToken(token=tok, expires_at=expires_at)
+    try:
+        expires_at = _parse_iso_z(exp)
+    except Exception:
+        continue
+
+    tokens.add(tok)
+    parsed[tok] = ParsedToken(token=tok, expires_at=expires_at)
 
         else:
             tok = p.strip()
