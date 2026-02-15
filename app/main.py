@@ -59,6 +59,175 @@ from app.schemas import (
     ExportGovernanceEvent,
 )
 
+# ---------------------------
+# M3: Admin security hardening
+# - Multi-token admin auth (rotation-ready)
+# - Optional per-token expiry
+# - Optional IP allowlist
+# - In-memory rate limiting (per IP + endpoint)
+# - Structured audit logs via log_event (JSON-only discipline)
+# ---------------------------
+
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class ParsedToken:
+    token: str
+    expires_at: Optional[datetime]  # UTC
+
+
+def _parse_iso_z(dt_str: str) -> datetime:
+    # Expect e.g. "2026-12-31T23:59:59Z"
+    if not dt_str.endswith("Z"):
+        raise ValueError("expiry must end with 'Z'")
+    return datetime.fromisoformat(dt_str.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _load_admin_tokens() -> Tuple[Set[str], Dict[str, ParsedToken]]:
+    """
+    Supports:
+      ANCHOR_ADMIN_TOKENS="tokenA,tokenB"
+      ANCHOR_ADMIN_TOKENS="tokenA|2026-12-31T23:59:59Z,tokenB"
+    """
+    raw = (os.getenv("ANCHOR_ADMIN_TOKENS", "") or "").strip()
+    tokens: Set[str] = set()
+    parsed: Dict[str, ParsedToken] = {}
+
+    if not raw:
+        return tokens, parsed
+
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    for p in parts:
+        if "|" in p:
+            tok, exp = p.split("|", 1)
+            tok = tok.strip()
+            exp = exp.strip()
+            if not tok:
+                continue
+            expires_at = _parse_iso_z(exp)
+            tokens.add(tok)
+            parsed[tok] = ParsedToken(token=tok, expires_at=expires_at)
+        else:
+            tok = p.strip()
+            if not tok:
+                continue
+            tokens.add(tok)
+            parsed[tok] = ParsedToken(token=tok, expires_at=None)
+
+    return tokens, parsed
+
+
+ADMIN_IPS: Set[str] = {ip.strip() for ip in os.getenv("ADMIN_IP_ALLOWLIST", "").split(",") if ip.strip()}
+ADMIN_RATE_LIMIT_RPM: int = int(os.getenv("ADMIN_RATE_LIMIT_RPM", "120") or "120")
+
+_ADMIN_TOKENS, _ADMIN_TOKENS_PARSED = _load_admin_tokens()
+
+# Back-compat: include old single token automatically if present
+_old = (os.getenv("ANCHOR_ADMIN_TOKEN", "") or "").strip()
+if _old and _old not in _ADMIN_TOKENS:
+    _ADMIN_TOKENS.add(_old)
+    _ADMIN_TOKENS_PARSED[_old] = ParsedToken(token=_old, expires_at=None)
+
+# key = (client_ip, endpoint_path) -> (window_start_epoch, count)
+_ADMIN_RL: Dict[Tuple[str, str], Tuple[int, int]] = {}
+
+
+def _token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _admin_audit(event: str, request: Request, level: int = logging.INFO, **fields: Any) -> None:
+    """
+    Structured audit via your JSON log_event().
+    Metadata only. Never log secrets or payloads.
+    """
+    try:
+        client_ip = request.client.host if request.client else None
+    except Exception:
+        client_ip = None
+
+    base = {
+        "method": request.method,
+        "path": request.url.path,
+        "client_ip_hash": _hmac_sha256_hex(client_ip),
+    }
+    base.update(fields)
+
+    try:
+        log_event(level, event, **base)
+    except Exception:
+        # Never fail a request because logging failed
+        pass
+
+
+def _rate_limit_admin(request: Request) -> None:
+    if ADMIN_RATE_LIMIT_RPM <= 0:
+        return
+
+    try:
+        client_ip = request.client.host if request.client else "unknown"
+    except Exception:
+        client_ip = "unknown"
+
+    key = (client_ip, request.url.path)
+    now = int(time.time())
+    window = now - (now % 60)
+
+    window_start, count = _ADMIN_RL.get(key, (window, 0))
+    if window_start != window:
+        window_start, count = window, 0
+
+    count += 1
+    _ADMIN_RL[key] = (window_start, count)
+
+    if count > ADMIN_RATE_LIMIT_RPM:
+        _admin_audit("admin_rate_limited", request, level=logging.WARNING, rpm=ADMIN_RATE_LIMIT_RPM, count=count)
+        raise HTTPException(status_code=429, detail="Too many requests")
+
+
+def _validate_admin_ip(request: Request) -> None:
+    if not ADMIN_IPS:
+        return
+    try:
+        client_ip = request.client.host if request.client else None
+    except Exception:
+        client_ip = None
+
+    if not client_ip or client_ip not in ADMIN_IPS:
+        _admin_audit("admin_ip_blocked", request, level=logging.WARNING, allowlist_size=len(ADMIN_IPS))
+        raise HTTPException(status_code=403, detail="IP not allowed")
+
+
+def _validate_admin_token(request: Request, token: Optional[str]) -> str:
+    """
+    Returns token fingerprint on success.
+    """
+    if not token:
+        _admin_audit("admin_auth_failure", request, level=logging.WARNING, reason="missing_token")
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    match = None
+    for valid in _ADMIN_TOKENS:
+        if hmac.compare_digest(token, valid):
+            match = valid
+            break
+
+    if not match:
+        _admin_audit("admin_auth_failure", request, level=logging.WARNING, reason="invalid_token")
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    parsed = _ADMIN_TOKENS_PARSED.get(match)
+    if parsed and parsed.expires_at is not None:
+        if _utc_now() >= parsed.expires_at:
+            _admin_audit("admin_auth_failure", request, level=logging.WARNING, reason="expired_token")
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
+    return _token_fingerprint(match)
+
 # ============================================================
 # Logging — structured, safe-by-default (M2 Step 1)
 # JSON-only lines, never log request bodies or secrets.
@@ -1423,19 +1592,16 @@ class GovernancePolicyUpdateRequest(BaseModel):
     max_findings: int = Field(default=10, ge=1, le=50)
 
     
-def require_admin(authorization: str = Header(default="")) -> None:
-    token = os.getenv("ANCHOR_ADMIN_TOKEN", "").strip()
-    if not token:
-        raise HTTPException(status_code=500, detail="server_misconfig: ANCHOR_ADMIN_TOKEN is not set")
+def require_admin(
+    request: Request,
+    x_anchor_admin_token: str | None = Header(default=None, alias="X-ANCHOR-ADMIN-TOKEN"),
+) -> dict:
+    _rate_limit_admin(request)
+    _validate_admin_ip(request)
+    fp = _validate_admin_token(request, x_anchor_admin_token)
 
-    auth = (authorization or "").strip()
-    prefix = "Bearer "
-    if not auth.startswith(prefix):
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-    provided = auth[len(prefix):].strip()
-    if not hmac.compare_digest(provided, token):
-        raise HTTPException(status_code=401, detail="unauthorized")
+    _admin_audit("admin_access", request, level=logging.INFO, token_fp=fp)
+    return {"token_fp": fp}
 
 
 def _ensure_user_exists(db, user_id: uuid.UUID) -> None:
@@ -2250,7 +2416,11 @@ def governance_policy_history(limit: int = 50):
 
 
 @app.post("/v1/governance/policy")
-def governance_policy_create(payload: GovernancePolicyUpdateRequest, _: None = Depends(require_admin)):
+def governance_policy_create(
+    payload: GovernancePolicyUpdateRequest,
+    request: Request,
+    admin: dict = Depends(require_admin),
+):
     with SessionLocal() as db:
         try:
             created = create_new_policy(
@@ -2262,6 +2432,26 @@ def governance_policy_create(payload: GovernancePolicyUpdateRequest, _: None = D
                 soft_rules=list(payload.soft_rules or []),
                 max_findings=int(payload.max_findings),
             )
+
+            # Extract a stable version identifier safely (works if created is dict or model)
+            created_version = None
+            if isinstance(created, dict):
+                created_version = created.get("policy_version") or created.get("version")
+            else:
+                created_version = getattr(created, "policy_version", None) or getattr(created, "version", None)
+
+            _admin_audit(
+                "policy_change",
+                request,
+                level=logging.INFO,
+                token_fp=admin.get("token_fp"),
+                policy_version=created_version,
+                neutrality_version=payload.neutrality_version,
+                min_score_allow=int(payload.min_score_allow),
+                hard_rules_count=len(list(payload.hard_block_rules or [])),
+                soft_rules_count=len(list(payload.soft_rules or [])),
+            )
+
             return {"created": created}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"policy_error: {type(e).__name__}: {e}")
