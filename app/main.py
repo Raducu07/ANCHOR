@@ -488,21 +488,21 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
 
         if isinstance(pv, str) and pv.strip():
             policy_version = pv.strip()
+
         if isinstance(nv, str) and nv.strip():
             neutrality_version = nv.strip()
+
         try:
             min_score_allow = int(msa)
         except Exception:
             pass
 
-hard = pol.get("hard_block_rules") or pol.get("hard_block_rules_json") or pol.get("hard_rules")
-soft = pol.get("soft_rules") or pol.get("soft_rules_json") or pol.get("soft_rules_list")
+        hard = pol.get("hard_block_rules")
+        soft = pol.get("soft_rules")
 
-        # Accept list[str] directly (your posted shape)
         if isinstance(hard, list):
             hard_rules_count = len([x for x in hard if isinstance(x, str) and x.strip()])
         elif isinstance(hard, str):
-            # Accept JSON string fallback if ever returned differently
             try:
                 parsed = json.loads(hard)
                 if isinstance(parsed, list):
@@ -520,18 +520,14 @@ soft = pol.get("soft_rules") or pol.get("soft_rules_json") or pol.get("soft_rule
             except Exception:
                 pass
 
-        # Optional: TEMP debug (safe — no content)
-        # log_event(logging.INFO, "ops.policy_shape",
-        #          pol_type=str(type(pol_raw).__name__),
-        #          hard_type=str(type(hard).__name__),
-        #          soft_type=str(type(soft).__name__),
-        #          hard_rules_count=hard_rules_count,
-        #          soft_rules_count=soft_rules_count)
-
     except Exception:
         pass
 
-    strictness_score = float(min_score_allow) + (2.0 * float(hard_rules_count)) + (1.0 * float(soft_rules_count))
+    strictness_score = (
+        float(min_score_allow)
+        + (2.0 * float(hard_rules_count))
+        + (1.0 * float(soft_rules_count))
+    )
 
     return {
         "policy_version": policy_version,
