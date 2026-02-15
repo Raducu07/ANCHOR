@@ -488,6 +488,44 @@ def _to_dict(obj: Any) -> Dict[str, Any]:
     return {}
 
 
+def _policy_to_dict(pol: Any) -> Dict[str, Any]:
+    """
+    Normalizes policy objects into a plain dict.
+    Supports:
+      - dict
+      - Pydantic v2 models (model_dump)
+      - Pydantic v1 models (dict)
+      - fallback via __dict__
+    """
+    if pol is None:
+        return {}
+
+    if isinstance(pol, dict):
+        return pol
+
+    # Pydantic v2
+    md = getattr(pol, "model_dump", None)
+    if callable(md):
+        try:
+            return md()
+        except Exception:
+            return {}
+
+    # Pydantic v1
+    d = getattr(pol, "dict", None)
+    if callable(d):
+        try:
+            return d()
+        except Exception:
+            return {}
+
+    # last resort
+    try:
+        return dict(getattr(pol, "__dict__", {}) or {})
+    except Exception:
+        return {}
+
+
 def _extract_policy_strictness(db) -> Dict[str, Any]:
     policy_version = "gov-v1.0"
     neutrality_version = "n-v1.1"
@@ -496,16 +534,33 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
     soft_rules_count = 0
 
     try:
-        pol = get_current_policy(db)
-        if isinstance(pol, dict):
-            pv = pol.get("policy_version")
-            nv = pol.get("neutrality_version")
-            msa = pol.get("min_score_allow")
+pol = get_current_policy(db)
+pol_dict = _policy_to_dict(pol)
 
-            if isinstance(pv, str) and pv.strip():
-                policy_version = pv.strip()
-            if isinstance(nv, str) and nv.strip():
-                neutrality_version = nv.strip()
+# handle if some callers wrap as {"policy": {...}}
+if isinstance(pol_dict.get("policy"), dict):
+    pol_dict = pol_dict["policy"]
+
+pv = pol_dict.get("policy_version")
+nv = pol_dict.get("neutrality_version")
+msa = pol_dict.get("min_score_allow")
+hard = pol_dict.get("hard_block_rules") or pol_dict.get("hard_rules")
+soft = pol_dict.get("soft_rules")
+
+if isinstance(pv, str) and pv.strip():
+    policy_version = pv.strip()
+if isinstance(nv, str) and nv.strip():
+    neutrality_version = nv.strip()
+
+try:
+    min_score_allow = int(msa)
+except Exception:
+    pass
+
+if isinstance(hard, list):
+    hard_rules_count = len([x for x in hard if isinstance(x, str) and x.strip()])
+if isinstance(soft, list):
+    soft_rules_count = len([x for x in soft if isinstance(x, str) and x.strip()])
 
             try:
                 min_score_allow = int(msa)
