@@ -89,7 +89,7 @@ def _load_admin_tokens() -> Tuple[Set[str], Dict[str, ParsedToken]]:
       ANCHOR_ADMIN_TOKENS="tokenA,tokenB"
       ANCHOR_ADMIN_TOKENS="tokenA|2026-12-31T23:59:59Z,tokenB"
     """
-    raw = (os.getenv("ANCHOR_ADMIN_TOKENS", "") or "").strip()
+    raw = os.getenv("ANCHOR_ADMIN_TOKENS", "").strip()
     tokens: Set[str] = set()
     parsed: Dict[str, ParsedToken] = {}
 
@@ -97,28 +97,38 @@ def _load_admin_tokens() -> Tuple[Set[str], Dict[str, ParsedToken]]:
         return tokens, parsed
 
     parts = [p.strip() for p in raw.split(",") if p.strip()]
+
     for p in parts:
         if "|" in p:
-    tok, exp = p.split("|", 1)
-    tok = tok.strip()
-    exp = exp.strip()
-    if not tok:
-        continue
+            tok, exp = p.split("|", 1)
+            tok = tok.strip()
+            exp = exp.strip()
 
-    try:
-        expires_at = _parse_iso_z(exp)
-    except Exception:
-        continue
+            if not tok:
+                continue
 
-    tokens.add(tok)
-    parsed[tok] = ParsedToken(token=tok, expires_at=expires_at)
+            try:
+                expires_at = _parse_iso_z(exp)
+            except Exception:
+                # Ignore malformed expiry instead of breaking startup
+                continue
+
+            tokens.add(tok)
+            parsed[tok] = ParsedToken(token=tok, expires_at=expires_at)
 
         else:
             tok = p.strip()
             if not tok:
                 continue
+
             tokens.add(tok)
             parsed[tok] = ParsedToken(token=tok, expires_at=None)
+
+    # Back-compat support for old single-token env var
+    old = (os.getenv("ANCHOR_ADMIN_TOKEN") or "").strip()
+    if old and old not in tokens:
+        tokens.add(old)
+        parsed[old] = ParsedToken(token=old, expires_at=None)
 
     return tokens, parsed
 
