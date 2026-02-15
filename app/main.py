@@ -104,9 +104,15 @@ def _load_admin_tokens() -> Tuple[Set[str], Dict[str, ParsedToken]]:
             exp = exp.strip()
             if not tok:
                 continue
-            expires_at = _parse_iso_z(exp)
-            tokens.add(tok)
-            parsed[tok] = ParsedToken(token=tok, expires_at=expires_at)
+            try:
+    expires_at = _parse_iso_z(exp)
+except Exception:
+    # Bad expiry format should not brick deployment; ignore this token entry
+    continue
+
+tokens.add(tok)
+parsed[tok] = ParsedToken(token=tok, expires_at=expires_at)
+
         else:
             tok = p.strip()
             if not tok:
@@ -118,12 +124,11 @@ def _load_admin_tokens() -> Tuple[Set[str], Dict[str, ParsedToken]]:
 
 
 ADMIN_IPS: Set[str] = {ip.strip() for ip in os.getenv("ADMIN_IP_ALLOWLIST", "").split(",") if ip.strip()}
-ADMIN_RATE_LIMIT_RPM: int = int(os.getenv("ADMIN_RATE_LIMIT_RPM", "120") or "120")
-
+ADMIN_RATE_LIMIT_RPM: int = int(os.getenv("ADMIN_RATE_LIMIT_RPM", "120") or "120")  # req/min per IP+endpoint
 _ADMIN_TOKENS, _ADMIN_TOKENS_PARSED = _load_admin_tokens()
 
-# Back-compat: include old single token automatically if present
-_old = (os.getenv("ANCHOR_ADMIN_TOKEN", "") or "").strip()
+# Back-compat: if old single-token env var is still used, include it
+_old = (os.getenv("ANCHOR_ADMIN_TOKEN") or "").strip()
 if _old and _old not in _ADMIN_TOKENS:
     _ADMIN_TOKENS.add(_old)
     _ADMIN_TOKENS_PARSED[_old] = ParsedToken(token=_old, expires_at=None)
@@ -138,6 +143,36 @@ def _token_fingerprint(token: str) -> str:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _admin_log_fields(request: Request, **fields: Any) -> Dict[str, Any]:
+    # Metadata only. Never include content/payload/tokens.
+    try:
+        client_ip = request.client.host if request.client else None
+    except Exception:
+        client_ip = None
+
+    return {
+        "method": request.method,
+        "path": request.url.path,
+        "client_ip_hash": _hmac_sha256_hex(client_ip),
+        **fields,
+    }
+
+
+def _admin_log(event: str, request: Request, **fields: Any) -> None:
+    # Use the same JSON discipline as the rest of ANCHOR
+    try:
+        log_event(logging.INFO, event, **_admin_log_fields(request, **fields))
+    except Exception:
+        pass
+
+
+def _admin_log_warn(event: str, request: Request, **fields: Any) -> None:
+    try:
+        log_event(logging.WARNING, event, **_admin_log_fields(request, **fields))
+    except Exception:
+        pass
 
 
 def _admin_audit(event: str, request: Request, level: int = logging.INFO, **fields: Any) -> None:
@@ -2433,23 +2468,23 @@ def governance_policy_create(
                 max_findings=int(payload.max_findings),
             )
 
-            # Extract a stable version identifier safely (works if created is dict or model)
+            # derive a stable version identifier safely
             created_version = None
             if isinstance(created, dict):
                 created_version = created.get("policy_version") or created.get("version")
             else:
                 created_version = getattr(created, "policy_version", None) or getattr(created, "version", None)
 
-            _admin_audit(
+            _admin_log(
                 "policy_change",
                 request,
-                level=logging.INFO,
                 token_fp=admin.get("token_fp"),
                 policy_version=created_version,
                 neutrality_version=payload.neutrality_version,
                 min_score_allow=int(payload.min_score_allow),
                 hard_rules_count=len(list(payload.hard_block_rules or [])),
                 soft_rules_count=len(list(payload.soft_rules or [])),
+                max_findings=int(payload.max_findings),
             )
 
             return {"created": created}
