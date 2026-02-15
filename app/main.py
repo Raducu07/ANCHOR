@@ -406,45 +406,31 @@ def _safe_int(v: Any, default: int = 0) -> int:
 def _as_str_list(v: Any) -> List[str]:
     """
     Accepts:
-      - python list/tuple/set of strings
+      - list[str]
       - JSON string like '["a","b"]'
-      - comma-separated string like 'a,b'
-      - None/other -> []
+      - comma-separated string "a,b"
+      - None
     Returns a clean list[str].
     """
     if v is None:
         return []
-
-    # Already a list-like
-    if isinstance(v, (list, tuple, set)):
-        out: List[str] = []
-        for x in v:
-            if isinstance(x, str) and x.strip():
-                out.append(x.strip())
-        return out
-
-    # JSON string or plain string
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if isinstance(x, (str, int, float)) and str(x).strip()]
     if isinstance(v, str):
         s = v.strip()
         if not s:
             return []
-        # Try JSON first
-        try:
-            parsed = json.loads(s)
-            if isinstance(parsed, list):
-                return [str(x).strip() for x in parsed if str(x).strip()]
-        except Exception:
-            pass
-        # Fall back to comma-separated
-        if "," in s:
-            return [p.strip() for p in s.split(",") if p.strip()]
-        return [s]  # single token string
-
-    # Unknown type
-    try:
-        return [str(v).strip()] if str(v).strip() else []
-    except Exception:
-        return []
+        # try JSON
+        if (s.startswith("[") and s.endswith("]")) or (s.startswith("{") and s.endswith("}")):
+            try:
+                obj = json.loads(s)
+                if isinstance(obj, list):
+                    return [str(x).strip() for x in obj if str(x).strip()]
+            except Exception:
+                pass
+        # fall back to CSV
+        return [p.strip() for p in s.split(",") if p.strip()]
+    return []
 
 
 def _to_dict(obj: Any) -> Dict[str, Any]:
@@ -536,25 +522,34 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
     try:
         pol = get_current_policy(db)
 
-        # Normalize Pydantic model / dict
+        # Prefer dict-like view if available
+        pol_dict: Dict[str, Any] = {}
         if hasattr(pol, "model_dump"):
-            pol_dict = pol.model_dump()
+            dumped = pol.model_dump()
+            if isinstance(dumped, dict):
+                pol_dict = dumped
         elif hasattr(pol, "dict"):
-            pol_dict = pol.dict()
+            dumped = pol.dict()
+            if isinstance(dumped, dict):
+                pol_dict = dumped
         elif isinstance(pol, dict):
             pol_dict = pol
-        else:
-            pol_dict = {}
 
-        # Handle nested shape {"policy": {...}}
+        # Some implementations return {"policy": {...}}
         if isinstance(pol_dict.get("policy"), dict):
             pol_dict = pol_dict["policy"]
 
-        pv = pol_dict.get("policy_version")
-        nv = pol_dict.get("neutrality_version")
-        msa = pol_dict.get("min_score_allow")
-        hard = pol_dict.get("hard_block_rules") or pol_dict.get("hard_rules")
-        soft = pol_dict.get("soft_rules")
+        # Read version + threshold (dict OR attrs)
+        pv = pol_dict.get("policy_version") if isinstance(pol_dict, dict) else None
+        nv = pol_dict.get("neutrality_version") if isinstance(pol_dict, dict) else None
+        msa = pol_dict.get("min_score_allow") if isinstance(pol_dict, dict) else None
+
+        if not pv and hasattr(pol, "policy_version"):
+            pv = getattr(pol, "policy_version", None)
+        if not nv and hasattr(pol, "neutrality_version"):
+            nv = getattr(pol, "neutrality_version", None)
+        if msa is None and hasattr(pol, "min_score_allow"):
+            msa = getattr(pol, "min_score_allow", None)
 
         if isinstance(pv, str) and pv.strip():
             policy_version = pv.strip()
@@ -566,11 +561,31 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
         except Exception:
             pass
 
-        if isinstance(hard, list):
-            hard_rules_count = len([x for x in hard if isinstance(x, str) and x.strip()])
+        # Read hard/soft rules (dict OR attrs, multiple possible field names)
+        hard_raw = (
+            pol_dict.get("hard_block_rules")
+            or pol_dict.get("hard_block_rules_json")
+            or pol_dict.get("hard_rules")
+            if isinstance(pol_dict, dict)
+            else None
+        )
+        soft_raw = (
+            pol_dict.get("soft_rules")
+            or pol_dict.get("soft_rules_json")
+            if isinstance(pol_dict, dict)
+            else None
+        )
 
-        if isinstance(soft, list):
-            soft_rules_count = len([x for x in soft if isinstance(x, str) and x.strip()])
+        if hard_raw is None:
+            hard_raw = getattr(pol, "hard_block_rules", None) or getattr(pol, "hard_rules", None)
+        if soft_raw is None:
+            soft_raw = getattr(pol, "soft_rules", None)
+
+        hard_list = _as_str_list(hard_raw)
+        soft_list = _as_str_list(soft_raw)
+
+        hard_rules_count = len(hard_list)
+        soft_rules_count = len(soft_list)
 
     except Exception:
         pass
