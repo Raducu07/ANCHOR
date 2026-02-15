@@ -405,29 +405,46 @@ def _safe_int(v: Any, default: int = 0) -> int:
 
 def _as_str_list(v: Any) -> List[str]:
     """
-    Accept list[str] OR JSON string OR comma-separated string.
-    Always return clean list[str].
+    Accepts:
+      - python list/tuple/set of strings
+      - JSON string like '["a","b"]'
+      - comma-separated string like 'a,b'
+      - None/other -> []
+    Returns a clean list[str].
     """
     if v is None:
         return []
 
-    if isinstance(v, list):
-        return [str(x).strip() for x in v if str(x).strip()]
+    # Already a list-like
+    if isinstance(v, (list, tuple, set)):
+        out: List[str] = []
+        for x in v:
+            if isinstance(x, str) and x.strip():
+                out.append(x.strip())
+        return out
 
+    # JSON string or plain string
     if isinstance(v, str):
         s = v.strip()
         if not s:
             return []
+        # Try JSON first
         try:
             parsed = json.loads(s)
             if isinstance(parsed, list):
                 return [str(x).strip() for x in parsed if str(x).strip()]
         except Exception:
             pass
-        # fallback: comma-separated
-        return [p.strip() for p in s.split(",") if p.strip()]
+        # Fall back to comma-separated
+        if "," in s:
+            return [p.strip() for p in s.split(",") if p.strip()]
+        return [s]  # single token string
 
-    return []
+    # Unknown type
+    try:
+        return [str(v).strip()] if str(v).strip() else []
+    except Exception:
+        return []
 
 
 def _to_dict(obj: Any) -> Dict[str, Any]:
@@ -478,99 +495,44 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
     hard_rules_count = 0
     soft_rules_count = 0
 
-    def _coerce_policy_dict(obj: Any) -> Dict[str, Any]:
-        # already dict
-        if isinstance(obj, dict):
-            return obj
-
-        # SQLAlchemy Row / RowMapping patterns
-        try:
-            m = getattr(obj, "_mapping", None)
-            if m is not None:
-                return dict(m)
-        except Exception:
-            pass
-
-        # Pydantic model
-        try:
-            if hasattr(obj, "dict"):
-                d = obj.dict()
-                if isinstance(d, dict):
-                    return d
-        except Exception:
-            pass
-
-        # JSON string fallback
-        try:
-            if isinstance(obj, str):
-                j = json.loads(obj)
-                if isinstance(j, dict):
-                    return j
-        except Exception:
-            pass
-
-        return {}
-
-    def _as_str_list(v: Any) -> List[str]:
-        # already a list
-        if isinstance(v, list):
-            return [x.strip() for x in v if isinstance(x, str) and x.strip()]
-
-        # json-encoded list
-        if isinstance(v, str) and v.strip():
-            try:
-                parsed = json.loads(v)
-                if isinstance(parsed, list):
-                    return [x.strip() for x in parsed if isinstance(x, str) and x.strip()]
-            except Exception:
-                return []
-
-        return []
-
     try:
-        pol_raw = get_current_policy(db)
-        pol = _coerce_policy_dict(pol_raw)
+        pol = get_current_policy(db)
+        if isinstance(pol, dict):
+            pv = pol.get("policy_version")
+            nv = pol.get("neutrality_version")
+            msa = pol.get("min_score_allow")
 
-        pv = pol.get("policy_version")
-        nv = pol.get("neutrality_version")
-        msa = pol.get("min_score_allow")
+            if isinstance(pv, str) and pv.strip():
+                policy_version = pv.strip()
+            if isinstance(nv, str) and nv.strip():
+                neutrality_version = nv.strip()
 
-        if isinstance(pv, str) and pv.strip():
-            policy_version = pv.strip()
-        if isinstance(nv, str) and nv.strip():
-            neutrality_version = nv.strip()
+            try:
+                min_score_allow = int(msa)
+            except Exception:
+                pass
 
-        try:
-            min_score_allow = int(msa)
-        except Exception:
-            pass
+            # ✅ handle multiple possible keys + multiple possible shapes
+            hard_raw = (
+                pol.get("hard_block_rules")
+                or pol.get("hard_block_rules_json")
+                or pol.get("hard_rules")
+            )
+            soft_raw = (
+                pol.get("soft_rules")
+                or pol.get("soft_rules_json")
+            )
 
-        hard = (
-            pol.get("hard_block_rules")
-            or pol.get("hard_block_rules_json")
-            or pol.get("hard_rules")
-        )
-        soft = (
-            pol.get("soft_rules")
-            or pol.get("soft_rules_json")
-            or pol.get("soft_rules_list")
-        )
+            hard_list = _as_str_list(hard_raw)
+            soft_list = _as_str_list(soft_raw)
 
-        hard_list = _as_str_list(hard)
-        soft_list = _as_str_list(soft)
-
-        hard_rules_count = len(hard_list)
-        soft_rules_count = len(soft_list)
+            hard_rules_count = len(hard_list)
+            soft_rules_count = len(soft_list)
 
     except Exception:
-        # keep defaults
         pass
 
-    strictness_score = (
-        float(min_score_allow)
-        + (2.0 * float(hard_rules_count))
-        + (1.0 * float(soft_rules_count))
-    )
+    strictness_score = float(min_score_allow) + (2.0 * float(hard_rules_count)) + (1.0 * float(soft_rules_count))
 
     return {
         "policy_version": policy_version,
