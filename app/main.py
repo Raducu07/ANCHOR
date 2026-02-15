@@ -1486,6 +1486,39 @@ def ops_policy_strictness(_: None = Depends(require_admin)):
             "status": "ok",
             "policy_strictness": _extract_policy_strictness(db),
         }
+        
+@app.get("/v1/admin/ops/policy-strictness-debug")
+def ops_policy_strictness_debug(_: None = Depends(require_admin)):
+    with SessionLocal() as db:
+        pol = get_current_policy(db)
+
+        # handle if get_current_policy returns {"policy": {...}}
+        pol_obj = pol.get("policy") if isinstance(pol, dict) and isinstance(pol.get("policy"), dict) else pol
+
+        hard_raw = None
+        soft_raw = None
+        if isinstance(pol_obj, dict):
+            hard_raw = (
+                pol_obj.get("hard_block_rules")
+                or pol_obj.get("hard_block_rules_json")
+                or pol_obj.get("hard_rules")
+            )
+            soft_raw = (
+                pol_obj.get("soft_rules")
+                or pol_obj.get("soft_rules_json")
+            )
+
+        return {
+            "status": "ok",
+            "policy_top_level_type": type(pol).__name__,
+            "policy_obj_type": type(pol_obj).__name__,
+            "policy_keys": sorted(list(pol_obj.keys())) if isinstance(pol_obj, dict) else None,
+            "hard_raw_type": type(hard_raw).__name__,
+            "soft_raw_type": type(soft_raw).__name__,
+            "hard_raw_preview": str(hard_raw)[:200] if hard_raw is not None else None,
+            "soft_raw_preview": str(soft_raw)[:200] if soft_raw is not None else None,
+            "parsed": _extract_policy_strictness(db),
+        }
 
 # ============================================================
 # M2.4a — Error-budget / "burning trust" view
