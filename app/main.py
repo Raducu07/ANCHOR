@@ -430,6 +430,35 @@ def _as_str_list(v: Any) -> List[str]:
     return []
 
 
+def _to_dict(obj: Any) -> Dict[str, Any]:
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    # Pydantic v2
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump()
+        except Exception:
+            pass
+    # Pydantic v1
+    if hasattr(obj, "dict"):
+        try:
+            return obj.dict()
+        except Exception:
+            pass
+    # JSON string
+    if isinstance(obj, str):
+        s = obj.strip()
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                parsed = json.loads(s)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+    return {}
+
+
 def _extract_policy_strictness(db) -> Dict[str, Any]:
     policy_version = "gov-v1.0"
     neutrality_version = "n-v1.1"
@@ -438,26 +467,55 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
     soft_rules_count = 0
 
     try:
-        pol = get_current_policy(db)
-        if isinstance(pol, dict):
-            pv = pol.get("policy_version")
-            nv = pol.get("neutrality_version")
-            msa = pol.get("min_score_allow")
-            hard_list = _as_str_list(pol.get("hard_block_rules"))
-            soft_list = _as_str_list(pol.get("soft_rules"))
+        pol_raw = get_current_policy(db)
+        pol = _to_dict(pol_raw)
 
-            hard_rules_count = len(hard_list)
-            soft_rules_count = len(soft_list)
+        pv = pol.get("policy_version")
+        nv = pol.get("neutrality_version")
+        msa = pol.get("min_score_allow")
 
+        if isinstance(pv, str) and pv.strip():
+            policy_version = pv.strip()
+        if isinstance(nv, str) and nv.strip():
+            neutrality_version = nv.strip()
+        try:
+            min_score_allow = int(msa)
+        except Exception:
+            pass
+
+        hard = pol.get("hard_block_rules")
+        soft = pol.get("soft_rules")
+
+        # Accept list[str] directly (your posted shape)
+        if isinstance(hard, list):
+            hard_rules_count = len([x for x in hard if isinstance(x, str) and x.strip()])
+        elif isinstance(hard, str):
+            # Accept JSON string fallback if ever returned differently
             try:
-                min_score_allow = int(msa)
+                parsed = json.loads(hard)
+                if isinstance(parsed, list):
+                    hard_rules_count = len([x for x in parsed if isinstance(x, str) and x.strip()])
             except Exception:
                 pass
 
-            if isinstance(hard, list):
-                hard_rules_count = len([x for x in hard if isinstance(x, str) and x.strip()])
-            if isinstance(soft, list):
-                soft_rules_count = len([x for x in soft if isinstance(x, str) and x.strip()])
+        if isinstance(soft, list):
+            soft_rules_count = len([x for x in soft if isinstance(x, str) and x.strip()])
+        elif isinstance(soft, str):
+            try:
+                parsed = json.loads(soft)
+                if isinstance(parsed, list):
+                    soft_rules_count = len([x for x in parsed if isinstance(x, str) and x.strip()])
+            except Exception:
+                pass
+
+        # Optional: TEMP debug (safe — no content)
+        # log_event(logging.INFO, "ops.policy_shape",
+        #          pol_type=str(type(pol_raw).__name__),
+        #          hard_type=str(type(hard).__name__),
+        #          soft_type=str(type(soft).__name__),
+        #          hard_rules_count=hard_rules_count,
+        #          soft_rules_count=soft_rules_count)
+
     except Exception:
         pass
 
