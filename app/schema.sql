@@ -287,3 +287,57 @@ CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_route_sec_start
 -- Large-history acceleration for time scans (optional but safe)
 CREATE INDEX IF NOT EXISTS brin_ops_timeseries_bucket_start
   ON ops_timeseries_buckets USING BRIN (bucket_start);
+
+-- ============================================================
+-- M2.5 — Mode-aware ops time-series buckets (schema upgrade)
+-- Adds 'mode' dimension, and upgrades uniqueness/indexes.
+-- Idempotent and safe for repeated runs.
+-- ============================================================
+
+-- 1) Add column
+ALTER TABLE ops_timeseries_buckets
+  ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT '__all__';
+
+-- 2) Backfill any NULLs (defensive)
+UPDATE ops_timeseries_buckets
+SET mode = '__all__'
+WHERE mode IS NULL;
+
+-- 3) Drop old unique index if it exists (bucket_start, bucket_sec, route)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND indexname = 'idx_ops_timeseries_unique'
+  ) THEN
+    EXECUTE 'DROP INDEX IF EXISTS idx_ops_timeseries_unique';
+  END IF;
+END $$;
+
+-- 4) Create new unique index including mode
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_timeseries_unique_mode
+  ON ops_timeseries_buckets (bucket_start, bucket_sec, route, mode);
+
+-- 5) Drop old helper index if it exists (bucket_sec, route, bucket_start)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND indexname = 'idx_ops_timeseries_bucket_route_sec_start'
+  ) THEN
+    EXECUTE 'DROP INDEX IF EXISTS idx_ops_timeseries_bucket_route_sec_start';
+  END IF;
+END $$;
+
+-- 6) Create new helper index with mode
+CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_route_mode_sec_start
+  ON ops_timeseries_buckets (bucket_sec, route, mode, bucket_start DESC);
+
+-- Optional: if you want querying by mode fast even without route filter
+CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_mode_sec_start
+  ON ops_timeseries_buckets (bucket_sec, mode, bucket_start DESC);
+
