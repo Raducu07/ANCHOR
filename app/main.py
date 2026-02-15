@@ -1037,43 +1037,53 @@ def _timeseries_worker() -> None:
                 for i in range(lookback_buckets, 0, -1):
                     b_start_ns = end_bucket_ns - (i * bucket_ns)
                     b_end_ns = b_start_ns + bucket_ns
-
                     b_start_dt = datetime.fromtimestamp(b_start_ns / 1_000_000_000, tz=timezone.utc)
                     b_end_dt = datetime.fromtimestamp(b_end_ns / 1_000_000_000, tz=timezone.utc)
 
                     # 1) write __all__ bucket (http + governance)
-http_all = _summarize_http_metrics_range(items, b_start_ns, b_end_ns, route="__all__")
-gov_all = _compute_governance_bucket_stats(db, b_start_dt, b_end_dt, mode="__all__")
+                    http_all = _summarize_http_metrics_range(
+                        items, b_start_ns, b_end_ns, route="__all__"
+                    )
 
-_upsert_timeseries_bucket(
-    db,
-    bucket_start=b_start_dt,
-    bucket_sec=bucket_sec,
-    route="__all__",
-    mode="__all__",
-    http_stats=http_all,
-    gov_stats=gov_all,
-    policy_stats=policy_stats,
-)
+                    gov_all = _compute_governance_bucket_stats(
+                        db, b_start_dt, b_end_dt, mode="__all__"
+                    )
 
-# 2) write per-mode buckets (governance-only; http set to zero to avoid false attribution)
-modes = _list_known_modes(db, max_modes=int(os.getenv("OPS_TS_MAX_MODES", "10") or "10"))
-for m in modes:
-    gov_m = _compute_governance_bucket_stats(db, b_start_dt, b_end_dt, mode=m)
-    _upsert_timeseries_bucket(
-        db,
-        bucket_start=b_start_dt,
-        bucket_sec=bucket_sec,
-        route="__all__",
-        mode=m,
-        http_stats=_zero_http_stats(),
-        gov_stats=gov_m,
-        policy_stats=policy_stats,
-    )
+                    _upsert_timeseries_bucket(
+                        db,
+                        bucket_start=b_start_dt,
+                        bucket_sec=bucket_sec,
+                        route="__all__",
+                        mode="__all__",
+                        http_stats=http_all,
+                        gov_stats=gov_all,
+                        policy_stats=policy_stats,
+                    )
 
+                    # 2) write per-mode buckets (governance-only; http set to zero to avoid false attribution)
+                    modes = _list_known_modes(
+                        db,
+                        max_modes=int(os.getenv("OPS_TS_MAX_MODES", "10") or "10"),
+                    )
+
+                    for m in modes:
+                        gov_m = _compute_governance_bucket_stats(
+                            db, b_start_dt, b_end_dt, mode=m
+                        )
+
+                        _upsert_timeseries_bucket(
+                            db,
+                            bucket_start=b_start_dt,
+                            bucket_sec=bucket_sec,
+                            route="__all__",
+                            mode=m,
+                            http_stats=_zero_http_stats(),
+                            gov_stats=gov_m,
+                            policy_stats=policy_stats,
+                        )
 
                 db.commit()
-                
+
                 # --- ops.trust_state heartbeat (rolling window) ---
                 try:
                     window_sec = max(30, min(86400, int(os.getenv("OPS_TRUST_WINDOW_SEC", "900") or "900")))
