@@ -535,54 +535,42 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
 
     try:
         pol = get_current_policy(db)
-        pol_dict = _policy_to_dict(pol)
 
-# handle if some callers wrap as {"policy": {...}}
-if isinstance(pol_dict.get("policy"), dict):
-    pol_dict = pol_dict["policy"]
+        # Normalize Pydantic model / dict
+        if hasattr(pol, "model_dump"):
+            pol_dict = pol.model_dump()
+        elif hasattr(pol, "dict"):
+            pol_dict = pol.dict()
+        elif isinstance(pol, dict):
+            pol_dict = pol
+        else:
+            pol_dict = {}
 
-pv = pol_dict.get("policy_version")
-nv = pol_dict.get("neutrality_version")
-msa = pol_dict.get("min_score_allow")
-hard = pol_dict.get("hard_block_rules") or pol_dict.get("hard_rules")
-soft = pol_dict.get("soft_rules")
+        # Handle nested shape {"policy": {...}}
+        if isinstance(pol_dict.get("policy"), dict):
+            pol_dict = pol_dict["policy"]
 
-if isinstance(pv, str) and pv.strip():
-    policy_version = pv.strip()
-if isinstance(nv, str) and nv.strip():
-    neutrality_version = nv.strip()
+        pv = pol_dict.get("policy_version")
+        nv = pol_dict.get("neutrality_version")
+        msa = pol_dict.get("min_score_allow")
+        hard = pol_dict.get("hard_block_rules") or pol_dict.get("hard_rules")
+        soft = pol_dict.get("soft_rules")
 
-try:
-    min_score_allow = int(msa)
-except Exception:
-    pass
+        if isinstance(pv, str) and pv.strip():
+            policy_version = pv.strip()
+        if isinstance(nv, str) and nv.strip():
+            neutrality_version = nv.strip()
 
-if isinstance(hard, list):
-    hard_rules_count = len([x for x in hard if isinstance(x, str) and x.strip()])
-if isinstance(soft, list):
-    soft_rules_count = len([x for x in soft if isinstance(x, str) and x.strip()])
+        try:
+            min_score_allow = int(msa)
+        except Exception:
+            pass
 
-            try:
-                min_score_allow = int(msa)
-            except Exception:
-                pass
+        if isinstance(hard, list):
+            hard_rules_count = len([x for x in hard if isinstance(x, str) and x.strip()])
 
-            # ✅ handle multiple possible keys + multiple possible shapes
-            hard_raw = (
-                pol.get("hard_block_rules")
-                or pol.get("hard_block_rules_json")
-                or pol.get("hard_rules")
-            )
-            soft_raw = (
-                pol.get("soft_rules")
-                or pol.get("soft_rules_json")
-            )
-
-            hard_list = _as_str_list(hard_raw)
-            soft_list = _as_str_list(soft_raw)
-
-            hard_rules_count = len(hard_list)
-            soft_rules_count = len(soft_list)
+        if isinstance(soft, list):
+            soft_rules_count = len([x for x in soft if isinstance(x, str) and x.strip()])
 
     except Exception:
         pass
