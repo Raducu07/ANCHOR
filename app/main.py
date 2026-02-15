@@ -602,21 +602,43 @@ def _extract_policy_strictness(db) -> Dict[str, Any]:
     }
 
 
-def _compute_governance_bucket_stats(db, start_ts: datetime, end_ts: datetime) -> Dict[str, Any]:
-    row = db.execute(
-        text(
-            """
-            SELECT
-              COUNT(*)::int AS events_total,
-              COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate,
-              COALESCE(AVG(score), 0)::float AS avg_score
-            FROM governance_events
-            WHERE created_at >= :start_ts
-              AND created_at <  :end_ts
-            """
-        ),
-        {"start_ts": start_ts, "end_ts": end_ts},
-    ).fetchone()
+def _compute_governance_bucket_stats(
+    db,
+    start_ts: datetime,
+    end_ts: datetime,
+    mode: str = "__all__",
+) -> Dict[str, Any]:
+    if mode == "__all__":
+        row = db.execute(
+            text(
+                """
+                SELECT
+                  COUNT(*)::int AS events_total,
+                  COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate,
+                  COALESCE(AVG(score), 0)::float AS avg_score
+                FROM governance_events
+                WHERE created_at >= :start_ts
+                  AND created_at <  :end_ts
+                """
+            ),
+            {"start_ts": start_ts, "end_ts": end_ts},
+        ).fetchone()
+    else:
+        row = db.execute(
+            text(
+                """
+                SELECT
+                  COUNT(*)::int AS events_total,
+                  COALESCE(AVG(CASE WHEN replaced THEN 1 ELSE 0 END), 0)::float AS replaced_rate,
+                  COALESCE(AVG(score), 0)::float AS avg_score
+                FROM governance_events
+                WHERE created_at >= :start_ts
+                  AND created_at <  :end_ts
+                  AND mode = :mode
+                """
+            ),
+            {"start_ts": start_ts, "end_ts": end_ts, "mode": mode},
+        ).fetchone()
 
     if not row:
         return {"gov_events_total": 0, "gov_replaced_rate": 0.0, "gov_avg_score": 0.0}
@@ -637,6 +659,7 @@ def _ensure_ops_timeseries_table(db) -> None:
               bucket_start timestamptz NOT NULL,
               bucket_sec int NOT NULL,
               route text NOT NULL DEFAULT '__all__',
+              mode text NOT NULL DEFAULT '__all__',
 
               request_count int NOT NULL DEFAULT 0,
               rate_5xx double precision NOT NULL DEFAULT 0,
@@ -659,14 +682,35 @@ def _ensure_ops_timeseries_table(db) -> None:
             """
         )
     )
+
+    # Old uniqueness (without mode) might exist in older DBs:
     db.execute(
         text(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_timeseries_unique
-              ON ops_timeseries_buckets (bucket_start, bucket_sec, route);
+            DO $$
+            BEGIN
+              IF EXISTS (
+                SELECT 1 FROM pg_indexes
+                WHERE schemaname = 'public'
+                  AND indexname = 'idx_ops_timeseries_unique'
+              ) THEN
+                EXECUTE 'DROP INDEX IF EXISTS idx_ops_timeseries_unique';
+              END IF;
+            END $$;
             """
         )
     )
+
+    # New uniqueness
+    db.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_timeseries_unique_mode
+              ON ops_timeseries_buckets (bucket_start, bucket_sec, route, mode);
+            """
+        )
+    )
+
     db.execute(
         text(
             """
@@ -675,14 +719,45 @@ def _ensure_ops_timeseries_table(db) -> None:
             """
         )
     )
+
+    # Old helper index (without mode) might exist:
     db.execute(
         text(
             """
-            CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_route_sec_start
-              ON ops_timeseries_buckets (bucket_sec, route, bucket_start DESC);
+            DO $$
+            BEGIN
+              IF EXISTS (
+                SELECT 1 FROM pg_indexes
+                WHERE schemaname = 'public'
+                  AND indexname = 'idx_ops_timeseries_bucket_route_sec_start'
+              ) THEN
+                EXECUTE 'DROP INDEX IF EXISTS idx_ops_timeseries_bucket_route_sec_start';
+              END IF;
+            END $$;
             """
         )
     )
+
+    # New helper index with mode
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_route_mode_sec_start
+              ON ops_timeseries_buckets (bucket_sec, route, mode, bucket_start DESC);
+            """
+        )
+    )
+
+    # Optional additional index
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_mode_sec_start
+              ON ops_timeseries_buckets (bucket_sec, mode, bucket_start DESC);
+            """
+        )
+    )
+
     db.execute(
         text(
             """
@@ -699,6 +774,7 @@ def _upsert_timeseries_bucket(
     bucket_start: datetime,
     bucket_sec: int,
     route: str,
+    mode: str,
     http_stats: Dict[str, Any],
     gov_stats: Dict[str, Any],
     policy_stats: Dict[str, Any],
@@ -707,20 +783,20 @@ def _upsert_timeseries_bucket(
         text(
             """
             INSERT INTO ops_timeseries_buckets (
-              id, bucket_start, bucket_sec, route,
+              id, bucket_start, bucket_sec, route, mode,
               request_count, rate_5xx, p95_latency_ms, avg_latency_ms,
               gov_events_total, gov_replaced_rate, gov_avg_score,
               policy_version, neutrality_version, min_score_allow,
               hard_rules_count, soft_rules_count, strictness_score
             )
             VALUES (
-              :id, :bucket_start, :bucket_sec, :route,
+              :id, :bucket_start, :bucket_sec, :route, :mode,
               :request_count, :rate_5xx, :p95_latency_ms, :avg_latency_ms,
               :gov_events_total, :gov_replaced_rate, :gov_avg_score,
               :policy_version, :neutrality_version, :min_score_allow,
               :hard_rules_count, :soft_rules_count, :strictness_score
             )
-            ON CONFLICT (bucket_start, bucket_sec, route)
+            ON CONFLICT (bucket_start, bucket_sec, route, mode)
             DO UPDATE SET
               request_count = EXCLUDED.request_count,
               rate_5xx = EXCLUDED.rate_5xx,
@@ -742,6 +818,7 @@ def _upsert_timeseries_bucket(
             "bucket_start": bucket_start,
             "bucket_sec": int(bucket_sec),
             "route": str(route),
+            "mode": str(mode or "__all__"),
             "request_count": _safe_int(http_stats.get("request_count")),
             "rate_5xx": _safe_float(http_stats.get("rate_5xx")),
             "p95_latency_ms": _safe_int(http_stats.get("p95_latency_ms")),
@@ -892,6 +969,47 @@ def _compute_trust_state_from_windows(
     }
 
 
+def _zero_http_stats() -> Dict[str, Any]:
+    return {"request_count": 0, "rate_5xx": 0.0, "p95_latency_ms": 0, "avg_latency_ms": 0.0}
+
+
+def _list_known_modes(db, max_modes: int = 10) -> List[str]:
+    # Pull modes that actually exist in governance_events recently.
+    rows = db.execute(
+        text(
+            """
+            SELECT DISTINCT mode
+            FROM governance_events
+            WHERE created_at >= (NOW() - INTERVAL '7 days')
+              AND mode IS NOT NULL
+            ORDER BY mode ASC
+            LIMIT :lim
+            """
+        ),
+        {"lim": int(max_modes)},
+    ).fetchall()
+
+    modes: List[str] = []
+    for r in rows:
+        m = (r[0] or "").strip()
+        if m:
+            modes.append(m)
+
+    # Always ensure witness is present (your current default)
+    if "witness" not in modes:
+        modes.append("witness")
+
+    # de-dupe + keep stable order
+    seen = set()
+    out: List[str] = []
+    for m in modes:
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+
+    return out[:max(1, min(20, int(max_modes)))]
+
+
 def _timeseries_worker() -> None:
     interval_sec = max(10, min(300, int(os.getenv("OPS_TS_FLUSH_INTERVAL_SEC", "30") or "30")))
     bucket_sec = max(60, min(3600, int(os.getenv("OPS_TS_BUCKET_SEC", "300") or "300")))  # default 5 minutes
@@ -923,18 +1041,36 @@ def _timeseries_worker() -> None:
                     b_start_dt = datetime.fromtimestamp(b_start_ns / 1_000_000_000, tz=timezone.utc)
                     b_end_dt = datetime.fromtimestamp(b_end_ns / 1_000_000_000, tz=timezone.utc)
 
-                    http_stats = _summarize_http_metrics_range(items, b_start_ns, b_end_ns, route="__all__")
-                    gov_stats = _compute_governance_bucket_stats(db, b_start_dt, b_end_dt)
+                    # 1) write __all__ bucket (http + governance)
+http_all = _summarize_http_metrics_range(items, b_start_ns, b_end_ns, route="__all__")
+gov_all = _compute_governance_bucket_stats(db, b_start_dt, b_end_dt, mode="__all__")
 
-                    _upsert_timeseries_bucket(
-                        db,
-                        bucket_start=b_start_dt,
-                        bucket_sec=bucket_sec,
-                        route="__all__",
-                        http_stats=http_stats,
-                        gov_stats=gov_stats,
-                        policy_stats=policy_stats,
-                    )
+_upsert_timeseries_bucket(
+    db,
+    bucket_start=b_start_dt,
+    bucket_sec=bucket_sec,
+    route="__all__",
+    mode="__all__",
+    http_stats=http_all,
+    gov_stats=gov_all,
+    policy_stats=policy_stats,
+)
+
+# 2) write per-mode buckets (governance-only; http set to zero to avoid false attribution)
+modes = _list_known_modes(db, max_modes=int(os.getenv("OPS_TS_MAX_MODES", "10") or "10"))
+for m in modes:
+    gov_m = _compute_governance_bucket_stats(db, b_start_dt, b_end_dt, mode=m)
+    _upsert_timeseries_bucket(
+        db,
+        bucket_start=b_start_dt,
+        bucket_sec=bucket_sec,
+        route="__all__",
+        mode=m,
+        http_stats=_zero_http_stats(),
+        gov_stats=gov_m,
+        policy_stats=policy_stats,
+    )
+
 
                 db.commit()
                 
@@ -1885,18 +2021,19 @@ def ops_error_budget(
 # M2.4b — Timeseries endpoints
 # ============================================================
 
-
 @app.get("/v1/admin/ops/timeseries")
 def ops_timeseries(
     hours: int = 24,
     bucket_sec: int = 300,
     route: str = "__all__",
+    mode: str = "__all__",
     limit: int = 500,
     _: None = Depends(require_admin),
 ):
     hours = max(1, min(24 * 60, int(hours)))
     bucket_sec = max(60, min(3600, int(bucket_sec)))
     limit = max(1, min(5000, int(limit)))
+    mode = (mode or "__all__").strip() or "__all__"
 
     with SessionLocal() as db:
         _ensure_ops_timeseries_table(db)
@@ -1905,7 +2042,7 @@ def ops_timeseries(
             text(
                 """
                 SELECT
-                  bucket_start, bucket_sec, route,
+                  bucket_start, bucket_sec, route, mode,
                   request_count, rate_5xx, p95_latency_ms, avg_latency_ms,
                   gov_events_total, gov_replaced_rate, gov_avg_score,
                   policy_version, neutrality_version,
@@ -1914,11 +2051,12 @@ def ops_timeseries(
                 WHERE bucket_start >= (NOW() - (:hours || ' hours')::interval)
                   AND bucket_sec = :bucket_sec
                   AND route = :route
+                  AND mode = :mode
                 ORDER BY bucket_start ASC
                 LIMIT :limit
                 """
             ),
-            {"hours": hours, "bucket_sec": bucket_sec, "route": route, "limit": limit},
+            {"hours": hours, "bucket_sec": bucket_sec, "route": route, "mode": mode, "limit": limit},
         ).fetchall()
 
     return {
@@ -1927,24 +2065,26 @@ def ops_timeseries(
         "hours": hours,
         "bucket_sec": bucket_sec,
         "route": route,
+        "mode": mode,
         "points": [
             {
                 "bucket_start": r[0].isoformat() if r[0] else None,
                 "bucket_sec": int(r[1]),
                 "route": r[2],
-                "request_count": int(r[3]),
-                "rate_5xx": float(r[4]),
-                "p95_latency_ms": int(r[5]),
-                "avg_latency_ms": float(r[6]),
-                "gov_events_total": int(r[7]),
-                "gov_replaced_rate": float(r[8]),
-                "gov_avg_score": float(r[9]),
-                "policy_version": r[10],
-                "neutrality_version": r[11],
-                "min_score_allow": r[12],
-                "hard_rules_count": r[13],
-                "soft_rules_count": r[14],
-                "strictness_score": float(r[15]),
+                "mode": r[3],
+                "request_count": int(r[4]),
+                "rate_5xx": float(r[5]),
+                "p95_latency_ms": int(r[6]),
+                "avg_latency_ms": float(r[7]),
+                "gov_events_total": int(r[8]),
+                "gov_replaced_rate": float(r[9]),
+                "gov_avg_score": float(r[10]),
+                "policy_version": r[11],
+                "neutrality_version": r[12],
+                "min_score_allow": r[13],
+                "hard_rules_count": r[14],
+                "soft_rules_count": r[15],
+                "strictness_score": float(r[16]),
             }
             for r in rows
         ],
@@ -1956,10 +2096,12 @@ def ops_latency_strictness_correlation(
     hours: int = 72,
     bucket_sec: int = 300,
     route: str = "__all__",
+    mode: str = "__all__",
     _: None = Depends(require_admin),
 ):
     hours = max(1, min(24 * 60, int(hours)))
     bucket_sec = max(60, min(3600, int(bucket_sec)))
+    mode = (mode or "__all__").strip() or "__all__"
 
     with SessionLocal() as db:
         _ensure_ops_timeseries_table(db)
@@ -1972,10 +2114,11 @@ def ops_latency_strictness_correlation(
                 WHERE bucket_start >= (NOW() - (:hours || ' hours')::interval)
                   AND bucket_sec = :bucket_sec
                   AND route = :route
+                  AND mode = :mode
                 ORDER BY bucket_start ASC
                 """
             ),
-            {"hours": hours, "bucket_sec": bucket_sec, "route": route},
+            {"hours": hours, "bucket_sec": bucket_sec, "route": route, "mode": mode},
         ).fetchall()
 
     xs: List[float] = []
@@ -2010,10 +2153,12 @@ def ops_latency_strictness_correlation(
         "hours": hours,
         "bucket_sec": bucket_sec,
         "route": route,
+        "mode": mode,
         "points_used": len(scatter),
         "pearson_r_strictness_vs_p95": r_val,
         "scatter": scatter[-500:],
     }
+
 
 # ============================================================
 # Public SLO-lite (optional) — disabled unless OPS_SLO_LITE_ENABLED=true
