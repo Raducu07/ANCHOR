@@ -22,6 +22,7 @@ from sqlalchemy import text
 
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from app.auth_and_rls import router as clinic_auth_router
 
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
