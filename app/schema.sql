@@ -1,16 +1,28 @@
 -- =========================
 -- ANCHOR schema.sql (ready copy/paste)
 -- PostgreSQL
--- Includes: core tables, memories, memory_offers handshake/audit, governance audit + config,
--- ops time-series buckets (aggregated, mode-aware), and safe performance indexes.
+-- Includes:
+--  - v0 core tables (users/sessions/messages)
+--  - memories + memory_offers handshake/audit
+--  - governance audit + governance_config
+--  - ops_timeseries_buckets (aggregated, mode-aware)
+--  - ANCHOR Portal V1 (multi-tenant) + RLS helpers + tenant tables
+--
 -- Idempotent: safe to run repeatedly.
+--
+-- IMPORTANT UPDATE (from our discussion):
+--  ✅ Removed unsafe "login lookup" RLS policy on clinics that could leak all active clinics.
+--  ✅ Added safe public view clinics_public (slug + active_status only).
+--  ✅ Optional privilege tightening for runtime role (anchor_app) is done safely (only if role exists).
+--  ✅ RLS is ENABLED (not FORCE) as per your staging plan.
 -- =========================
 
--- Needed for gen_random_uuid()
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- Extensions
+CREATE EXTENSION IF NOT EXISTS pgcrypto; -- gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS citext;
 
 -- =========================
--- Core tables
+-- Core tables (v0)
 -- =========================
 
 CREATE TABLE IF NOT EXISTS users (
@@ -122,7 +134,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_offers_user_id_status
   ON memory_offers(user_id, status);
 
 -- =========================
--- Governance audit table (A3/A4)
+-- Governance audit table (A3/A4) (v0)
 -- =========================
 
 CREATE TABLE IF NOT EXISTS governance_events (
@@ -170,8 +182,7 @@ CREATE INDEX IF NOT EXISTS idx_governance_events_neutrality_version
 
 -- Optional performance: GIN index on decision_trace (safe + idempotent)
 CREATE INDEX IF NOT EXISTS idx_governance_events_decision_trace_gin
-  ON governance_events
-  USING GIN (decision_trace);
+  ON governance_events USING GIN (decision_trace);
 
 -- =========================
 -- Governance config (institution-friendly, auditable settings)
@@ -247,6 +258,39 @@ CREATE TABLE IF NOT EXISTS ops_timeseries_buckets (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Back-compat: ensure mode exists + backfill
+ALTER TABLE ops_timeseries_buckets
+  ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT '__all__';
+
+UPDATE ops_timeseries_buckets
+SET mode = '__all__'
+WHERE mode IS NULL;
+
+-- Drop old indexes if they exist
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND indexname = 'idx_ops_timeseries_unique'
+  ) THEN
+    EXECUTE 'DROP INDEX IF EXISTS idx_ops_timeseries_unique';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND indexname = 'idx_ops_timeseries_bucket_route_sec_start'
+  ) THEN
+    EXECUTE 'DROP INDEX IF EXISTS idx_ops_timeseries_bucket_route_sec_start';
+  END IF;
+END $$;
+
 -- Uniqueness for bucket aggregation (mode-aware)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_timeseries_unique_mode
   ON ops_timeseries_buckets (bucket_start, bucket_sec, route, mode);
@@ -264,51 +308,9 @@ CREATE INDEX IF NOT EXISTS idx_ops_timeseries_bucket_mode_sec_start
 CREATE INDEX IF NOT EXISTS brin_ops_timeseries_bucket_start
   ON ops_timeseries_buckets USING BRIN (bucket_start);
 
--- ===========================
--- Back-compat upgrades (safe if running on older DBs)
--- ===========================
-
--- If ops_timeseries_buckets existed without mode before, ensure column exists + backfill
-ALTER TABLE ops_timeseries_buckets
-  ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT '__all__';
-
-UPDATE ops_timeseries_buckets
-SET mode = '__all__'
-WHERE mode IS NULL;
-
--- If old unique index exists (bucket_start, bucket_sec, route) drop it
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-    FROM pg_indexes
-    WHERE schemaname = 'public'
-      AND indexname = 'idx_ops_timeseries_unique'
-  ) THEN
-    EXECUTE 'DROP INDEX IF EXISTS idx_ops_timeseries_unique';
-  END IF;
-END $$;
-
--- If old helper index exists (bucket_sec, route, bucket_start) drop it
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-    FROM pg_indexes
-    WHERE schemaname = 'public'
-      AND indexname = 'idx_ops_timeseries_bucket_route_sec_start'
-  ) THEN
-    EXECUTE 'DROP INDEX IF EXISTS idx_ops_timeseries_bucket_route_sec_start';
-  END IF;
-END $$;
-
 -- =========================
 -- ANCHOR Portal V1 (additive, non-colliding)
 -- =========================
-
--- extensions already exist above; keep idempotent anyway
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-CREATE EXTENSION IF NOT EXISTS citext;
 
 -- tenant context helpers (safe even if unused for now)
 CREATE OR REPLACE FUNCTION app_current_clinic_id()
@@ -456,10 +458,21 @@ CREATE TABLE IF NOT EXISTS admin_audit_events (
 CREATE INDEX IF NOT EXISTS idx_admin_audit_events_clinic_created_at
   ON admin_audit_events (clinic_id, created_at DESC);
 
--- -------------------------
--- RLS: DO NOT FORCE YET
--- Enable only (safe). Force comes after login+middleware sets app.clinic_id everywhere.
--- -------------------------
+-- =========================
+-- Safe public lookup view for login (UPDATED)
+-- - Replaces unsafe RLS policy that leaked all active clinics.
+-- - This view exposes only slug + active_status.
+-- =========================
+
+CREATE OR REPLACE VIEW clinics_public AS
+SELECT clinic_slug, active_status
+FROM clinics;
+
+-- =========================
+-- RLS: ENABLE only (safe).
+-- FORCE comes after login+middleware sets app.clinic_id on every clinic route.
+-- =========================
+
 ALTER TABLE clinics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE clinic_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE clinic_user_invites ENABLE ROW LEVEL SECURITY;
@@ -516,7 +529,27 @@ CREATE POLICY rls_admin_audit_tenant ON admin_audit_events
   USING (clinic_id = app_current_clinic_id())
   WITH CHECK (clinic_id = app_current_clinic_id());
 
+-- =========================
+-- IMPORTANT UPDATE:
+-- Remove unsafe policy that OR'd with tenant policy and exposed all active clinics.
+-- =========================
 DROP POLICY IF EXISTS rls_clinics_login_lookup ON clinics;
-CREATE POLICY rls_clinics_login_lookup ON clinics
-FOR SELECT
-USING (active_status = true);
+
+-- =========================
+-- Optional privilege tightening for runtime role (UPDATED)
+-- Safe: only runs if role exists.
+--
+-- We keep SELECT on base clinics table (RLS-scoped) so authenticated requests
+-- can read their own clinic record when app.clinic_id is set.
+-- We also grant SELECT on clinics_public for slug lookup.
+-- =========================
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anchor_app') THEN
+    -- Ensure runtime role can read the public lookup view
+    GRANT SELECT ON clinics_public TO anchor_app;
+
+    -- Allow runtime role to read clinics, but only through RLS tenant policy
+    GRANT SELECT ON clinics TO anchor_app;
+  END IF;
+END $$;
