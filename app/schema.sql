@@ -301,3 +301,320 @@ BEGIN
     EXECUTE 'DROP INDEX IF EXISTS idx_ops_timeseries_bucket_route_sec_start';
   END IF;
 END $$;
+
+-- schema.sql — ANCHOR Portal Blueprint v1 (DDL + RLS)
+-- PostgreSQL 13+ recommended.
+
+BEGIN;
+
+-- ---------- Extensions ----------
+-- gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- ---------- Helper: tenant context ----------
+-- Your app should run, per request:
+--   SELECT set_config('app.clinic_id', '<uuid>', true);
+--   SELECT set_config('app.user_id',   '<uuid>', true);
+--
+-- We use current_setting(..., true) so missing settings don't error.
+CREATE OR REPLACE FUNCTION app_current_clinic_id()
+RETURNS uuid
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT NULLIF(current_setting('app.clinic_id', true), '')::uuid;
+$$;
+
+CREATE OR REPLACE FUNCTION app_current_user_id()
+RETURNS uuid
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT NULLIF(current_setting('app.user_id', true), '')::uuid;
+$$;
+
+-- ---------- Controlled vocab (v1 via CHECK constraints) ----------
+-- NOTE: You can evolve to ENUMs later if you want hard typing.
+-- Keeping TEXT + CHECK is easiest for migrations.
+
+-- ---------- Core tables ----------
+CREATE TABLE IF NOT EXISTS clinics (
+  clinic_id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  clinic_name           text NOT NULL,
+  subscription_tier     text NOT NULL DEFAULT 'starter',
+  active_status         boolean NOT NULL DEFAULT true,
+  policy_version_locked boolean NOT NULL DEFAULT false,
+  usage_limit_monthly   integer,
+  rate_limit_per_min    integer,
+  created_at            timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  user_id       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  clinic_id     uuid NOT NULL REFERENCES clinics(clinic_id) ON DELETE CASCADE,
+  role          text NOT NULL CHECK (role IN ('admin','staff')),
+  email         text NOT NULL,
+  password_hash text NOT NULL,
+  active_status boolean NOT NULL DEFAULT true,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (clinic_id, email)
+);
+
+CREATE TABLE IF NOT EXISTS user_invites (
+  invite_id   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  clinic_id   uuid NOT NULL REFERENCES clinics(clinic_id) ON DELETE CASCADE,
+  email       text NOT NULL,
+  role        text NOT NULL CHECK (role IN ('admin','staff')),
+  token_hash  text NOT NULL,
+  expires_at  timestamptz NOT NULL,
+  used_at     timestamptz,
+  created_by  uuid REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (clinic_id, email, token_hash)
+);
+
+-- ---------- Policy versioning ----------
+-- Immutable history (append-only)
+CREATE TABLE IF NOT EXISTS clinic_policies (
+  clinic_id     uuid NOT NULL REFERENCES clinics(clinic_id) ON DELETE CASCADE,
+  policy_version integer NOT NULL,
+  policy_json   jsonb NOT NULL,
+  created_by    uuid NOT NULL REFERENCES users(user_id) ON DELETE RESTRICT,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (clinic_id, policy_version)
+);
+
+-- Pointer to active version
+CREATE TABLE IF NOT EXISTS clinic_policy_state (
+  clinic_id             uuid PRIMARY KEY REFERENCES clinics(clinic_id) ON DELETE CASCADE,
+  active_policy_version integer NOT NULL,
+  updated_by            uuid NOT NULL REFERENCES users(user_id) ON DELETE RESTRICT,
+  updated_at            timestamptz NOT NULL DEFAULT now()
+);
+
+-- ---------- Privacy profile / retention ----------
+CREATE TABLE IF NOT EXISTS clinic_privacy_profile (
+  clinic_id               uuid PRIMARY KEY REFERENCES clinics(clinic_id) ON DELETE CASCADE,
+  data_region             text NOT NULL CHECK (data_region IN ('UK','EU')),
+  retention_days_governance integer NOT NULL DEFAULT 90 CHECK (retention_days_governance BETWEEN 1 AND 3650),
+  retention_days_ops        integer NOT NULL DEFAULT 30 CHECK (retention_days_ops BETWEEN 1 AND 3650),
+  export_enabled          boolean NOT NULL DEFAULT false,
+  dpa_accepted_at         timestamptz,
+  subprocessor_ack_at     timestamptz,
+  updated_at              timestamptz NOT NULL DEFAULT now()
+);
+
+-- ---------- Governance events (metadata-only) ----------
+CREATE TABLE IF NOT EXISTS governance_events (
+  event_id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  clinic_id        uuid NOT NULL REFERENCES clinics(clinic_id) ON DELETE CASCADE,
+  request_id       uuid NOT NULL,
+  user_id          uuid NOT NULL REFERENCES users(user_id) ON DELETE RESTRICT,
+
+  mode             text NOT NULL CHECK (mode IN ('clinical_note','client_comm','internal_summary')),
+
+  pii_detected     boolean NOT NULL DEFAULT false,
+  pii_action       text NOT NULL CHECK (pii_action IN ('allow','warn','block','redact')),
+  pii_types        text[], -- categories only (e.g. name,email,phone,address,microchip,client_id)
+
+  decision         text NOT NULL CHECK (decision IN ('allowed','blocked','replaced','modified')),
+  risk_grade       text NOT NULL CHECK (risk_grade IN ('low','med','high')),
+
+  reason_code      text NOT NULL CHECK (
+                    reason_code IN (
+                      'PII_DETECTED_BLOCKED',
+                      'PII_DETECTED_WARNED',
+                      'MODE_NOT_ALLOWED',
+                      'CLIENT_FACING_TEMPLATE_APPLIED',
+                      'UNCERTAINTY_REQUIRED_ADDED',
+                      'MEDICAL_OVERCONFIDENCE_SOFTENED',
+                      'DISALLOWED_CONTENT_REPLACED'
+                    )
+                  ),
+
+  governance_score   double precision,
+  policy_version     integer NOT NULL,
+  neutrality_version text NOT NULL DEFAULT 'v1.1',
+
+  created_at       timestamptz NOT NULL DEFAULT now()
+);
+
+-- ---------- Ops metrics events (telemetry-only) ----------
+-- Note: keep clinic_id NOT NULL to preserve strict tenant scoping via RLS.
+-- For non-tenant routes (/health), write a reserved "system clinic_id" in your app.
+CREATE TABLE IF NOT EXISTS ops_metrics_events (
+  event_id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  clinic_id           uuid NOT NULL REFERENCES clinics(clinic_id) ON DELETE CASCADE,
+  request_id          uuid NOT NULL,
+  route               text NOT NULL,
+  status_code         integer NOT NULL CHECK (status_code BETWEEN 100 AND 599),
+  latency_ms          integer NOT NULL CHECK (latency_ms >= 0),
+  mode                text CHECK (mode IN ('clinical_note','client_comm','internal_summary')),
+  governance_replaced boolean NOT NULL DEFAULT false,
+  created_at          timestamptz NOT NULL DEFAULT now()
+);
+
+-- ---------- Admin audit events (content-free) ----------
+CREATE TABLE IF NOT EXISTS admin_audit_events (
+  event_id       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  clinic_id      uuid NOT NULL REFERENCES clinics(clinic_id) ON DELETE CASCADE,
+  admin_user_id  uuid NOT NULL REFERENCES users(user_id) ON DELETE RESTRICT,
+  action         text NOT NULL CHECK (
+                  action IN (
+                    'created_user',
+                    'disabled_user',
+                    'changed_policy',
+                    'exported_csv',
+                    'changed_retention',
+                    'created_invite',
+                    'revoked_invite'
+                  )
+                ),
+  target_id      uuid,
+  ip_hash        text,
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+
+-- ---------- Indexes ----------
+-- Events: tenant + time
+CREATE INDEX IF NOT EXISTS idx_governance_events_clinic_created_at
+  ON governance_events (clinic_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_governance_events_clinic_request
+  ON governance_events (clinic_id, request_id);
+
+CREATE INDEX IF NOT EXISTS idx_governance_events_clinic_user_created_at
+  ON governance_events (clinic_id, user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ops_metrics_events_clinic_created_at
+  ON ops_metrics_events (clinic_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ops_metrics_events_route_created_at
+  ON ops_metrics_events (route, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_events_clinic_created_at
+  ON admin_audit_events (clinic_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_users_clinic_role
+  ON users (clinic_id, role);
+
+CREATE INDEX IF NOT EXISTS idx_user_invites_clinic_expires
+  ON user_invites (clinic_id, expires_at DESC);
+
+-- ---------- Row Level Security (RLS) ----------
+-- Enable RLS for tenant-scoped tables.
+ALTER TABLE clinics               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users                 ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_invites          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clinic_policies       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clinic_policy_state   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clinic_privacy_profile ENABLE ROW LEVEL SECURITY;
+ALTER TABLE governance_events     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ops_metrics_events    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_audit_events    ENABLE ROW LEVEL SECURITY;
+
+-- Optional: force RLS even for table owners (recommended in production)
+ALTER TABLE clinics               FORCE ROW LEVEL SECURITY;
+ALTER TABLE users                 FORCE ROW LEVEL SECURITY;
+ALTER TABLE user_invites          FORCE ROW LEVEL SECURITY;
+ALTER TABLE clinic_policies       FORCE ROW LEVEL SECURITY;
+ALTER TABLE clinic_policy_state   FORCE ROW LEVEL SECURITY;
+ALTER TABLE clinic_privacy_profile FORCE ROW LEVEL SECURITY;
+ALTER TABLE governance_events     FORCE ROW LEVEL SECURITY;
+ALTER TABLE ops_metrics_events    FORCE ROW LEVEL SECURITY;
+ALTER TABLE admin_audit_events    FORCE ROW LEVEL SECURITY;
+
+-- Policy pattern: only allow rows where clinic_id == app_current_clinic_id()
+-- NOTE: For INSERT/UPDATE, WITH CHECK enforces tenant binding as well.
+
+-- clinics
+DROP POLICY IF EXISTS rls_clinics_tenant ON clinics;
+CREATE POLICY rls_clinics_tenant ON clinics
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
+
+-- users
+DROP POLICY IF EXISTS rls_users_tenant ON users;
+CREATE POLICY rls_users_tenant ON users
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
+
+-- user_invites
+DROP POLICY IF EXISTS rls_user_invites_tenant ON user_invites;
+CREATE POLICY rls_user_invites_tenant ON user_invites
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
+
+-- clinic_policies
+DROP POLICY IF EXISTS rls_clinic_policies_tenant ON clinic_policies;
+CREATE POLICY rls_clinic_policies_tenant ON clinic_policies
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
+
+-- clinic_policy_state
+DROP POLICY IF EXISTS rls_clinic_policy_state_tenant ON clinic_policy_state;
+CREATE POLICY rls_clinic_policy_state_tenant ON clinic_policy_state
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
+
+-- clinic_privacy_profile
+DROP POLICY IF EXISTS rls_privacy_profile_tenant ON clinic_privacy_profile;
+CREATE POLICY rls_privacy_profile_tenant ON clinic_privacy_profile
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
+
+-- governance_events
+DROP POLICY IF EXISTS rls_governance_events_tenant ON governance_events;
+CREATE POLICY rls_governance_events_tenant ON governance_events
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
+
+-- ops_metrics_events
+DROP POLICY IF EXISTS rls_ops_metrics_events_tenant ON ops_metrics_events;
+CREATE POLICY rls_ops_metrics_events_tenant ON ops_metrics_events
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
+
+-- admin_audit_events
+DROP POLICY IF EXISTS rls_admin_audit_events_tenant ON admin_audit_events;
+CREATE POLICY rls_admin_audit_events_tenant ON admin_audit_events
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
+
+COMMIT;
+
+-- ---------- Important implementation notes ----------
+-- 1) Login/Auth with RLS:
+--    Because RLS requires app.clinic_id, your login flow should either:
+--      A) take clinic identifier first (subdomain/clinic code), set app.clinic_id, then query users, OR
+--      B) perform the login query via a SECURITY DEFINER function that checks credentials and returns clinic_id/user_id.
+--
+-- 2) Always set app.clinic_id at the start of each request handler before hitting tenant tables.
+--
+-- 3) For background jobs (retention pruning), set app.clinic_id in the DB session per clinic before deleting rows.
+
+BEGIN;
+
+-- 1) Add a human-friendly unique clinic code / subdomain slug
+ALTER TABLE clinics
+  ADD COLUMN IF NOT EXISTS clinic_slug text;
+
+-- 2) Backfill for existing rows (optional; you can do this in app code instead)
+-- UPDATE clinics SET clinic_slug = lower(regexp_replace(clinic_name, '[^a-zA-Z0-9]+', '-', 'g'))
+-- WHERE clinic_slug IS NULL;
+
+-- 3) Enforce slug presence + uniqueness (once you’ve backfilled)
+-- If you already have clinics in prod, do this in two steps:
+--   (a) backfill
+--   (b) then set NOT NULL
+ALTER TABLE clinics
+  ALTER COLUMN clinic_slug SET NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_clinics_slug
+  ON clinics (clinic_slug);
+
+-- Helpful index for login
+CREATE INDEX IF NOT EXISTS idx_users_clinic_email
+  ON users (clinic_id, email);
+
+COMMIT;
