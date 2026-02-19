@@ -3,3 +3,4 @@ uvicorn
 psycopg[binary]
 sqlalchemy[psycopg]
 alembic
+PyJWT==2.8.0
