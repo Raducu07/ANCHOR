@@ -515,3 +515,8 @@ DROP POLICY IF EXISTS rls_admin_audit_tenant ON admin_audit_events;
 CREATE POLICY rls_admin_audit_tenant ON admin_audit_events
   USING (clinic_id = app_current_clinic_id())
   WITH CHECK (clinic_id = app_current_clinic_id());
+
+DROP POLICY IF EXISTS rls_clinics_login_lookup ON clinics;
+CREATE POLICY rls_clinics_login_lookup ON clinics
+FOR SELECT
+USING (active_status = true);
