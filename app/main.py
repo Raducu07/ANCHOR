@@ -27,6 +27,7 @@ from app.auth_and_rls import router as clinic_auth_router
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
 from app.ops_rls_test import router as ops_rls_router
+from app.portal_bootstrap import router as portal_bootstrap_router
 
 from app.governance_config import (
     get_current_policy,
@@ -1443,6 +1444,7 @@ _configure_edge_middlewares(app)
 
 app.include_router(ops_rls_router)
 app.include_router(clinic_auth_router)
+app.include_router(portal_bootstrap_router)
 
 # ============================================================
 # Exception handlers
