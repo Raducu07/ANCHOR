@@ -9,8 +9,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.db import get_db
 from app.auth_and_rls import require_clinic_user
+from app.db import get_db
 
 router = APIRouter(
     prefix="/v1/portal",
@@ -132,7 +132,7 @@ def portal_submit(
     - RLS applied automatically by get_db() using request.state.*
     - Writes:
         * clinic_governance_events (metadata only)
-        * ops_metrics_events (telemetry only; no content)
+        * ops_metrics_events (telemetry only)
     - Returns a "Governance Receipt"
     """
     t0 = time.time()
@@ -150,19 +150,16 @@ def portal_submit(
 
     req_id = payload.request_id or uuid.uuid4()
 
-    # PII detection (types only; never store matches)
     pii_types = detect_pii_types(payload.text)
     pii_detected = bool(pii_types)
 
-    # ✅ Split: hygiene signal vs true governance intervention
-    pii_warned = bool(pii_detected)
-
+    # Hygiene semantics
     pii_action = "warn" if pii_detected else "allow"
 
-    # Portal decision semantics:
-    # - "modified" here means "requires review / hygiene warning"
-    # - This is NOT a true governance replacement.
-    decision = "modified" if pii_detected else "allowed"
+    # Governance semantics (metadata-only)
+    # We keep "decision" as "allowed" even when we warn on PII,
+    # because we did not block/replace content. The warning is stored separately.
+    decision = "allowed"
     risk_grade = _simple_risk_grade(pii_types)
     reason_code = _simple_reason_code(pii_types)
 
@@ -174,7 +171,9 @@ def portal_submit(
 
     policy_version = _get_active_policy_version(db)
 
-    # Governance metadata insert (clinic scoped via RLS)
+    # -----------------------------
+    # Write governance metadata
+    # -----------------------------
     db.execute(
         text(
             """
@@ -199,7 +198,7 @@ def portal_submit(
             "mode": mode,
             "pii_detected": bool(pii_detected),
             "pii_action": pii_action,
-            "pii_types": pii_types if pii_types else None,  # text[] column; None => NULL
+            "pii_types": pii_types if pii_types else None,
             "decision": decision,
             "risk_grade": risk_grade,
             "reason_code": reason_code,
@@ -209,7 +208,13 @@ def portal_submit(
         },
     )
 
-    # Ops telemetry insert (clinic scoped via RLS)
+    # -----------------------------
+    # Write ops telemetry (no content)
+    # -----------------------------
+    # ✅ Split: PII warnings are NOT governance interventions.
+    pii_warned = bool(pii_detected)
+    governance_replaced = False  # reserved for true replace/block flows later
+
     db.execute(
         text(
             """
@@ -230,9 +235,7 @@ def portal_submit(
             "status_code": int(status_code),
             "latency_ms": int(latency_ms),
             "mode": mode,
-            # ✅ TRUE interventions only (PII “modified” does NOT count)
-            "gov_replaced": bool(decision in {"replaced", "blocked"}),
-            # ✅ Hygiene signal
+            "gov_replaced": bool(governance_replaced),
             "pii_warned": bool(pii_warned),
         },
     )
