@@ -42,7 +42,9 @@ class WindowBurn(BaseModel):
 
     rate_5xx: float
     p95_latency_ms: Optional[int] = None
+
     governance_replaced_rate: float
+    pii_warned_rate: float
 
     burn_5xx: float
     burn_latency: Optional[float] = None
@@ -79,7 +81,6 @@ def _ui_message(trust_state: str, reasons: List[str]) -> str:
     # yellow
     if any(r.startswith("low_data") for r in reasons) or "no_data" in reasons:
         return "Collecting data"
-    # degrade hints
     if any("5xx" in r for r in reasons):
         return "Degraded: elevated errors"
     if any("latency" in r for r in reasons):
@@ -105,7 +106,7 @@ def _compute_trust_state_from_latest(
         reasons.append("no_data")
         return "yellow", reasons
 
-    # red checks
+    # ---- RED conditions ----
     if rate_5xx >= RED_5XX_RATE:
         reasons.append("red_5xx_rate")
         return "red", reasons
@@ -116,7 +117,6 @@ def _compute_trust_state_from_latest(
         reasons.append("red_gov_replaced_rate")
         return "red", reasons
 
-    # green checks (only if enough data)
     green_ok = (
         rate_5xx <= SLO_MAX_5XX_RATE
         and (p95_latency_ms is None or p95_latency_ms <= SLO_MAX_P95_LATENCY_MS)
@@ -124,7 +124,6 @@ def _compute_trust_state_from_latest(
     )
 
     if low_data:
-        # don’t claim green yet; keep it yellow unless red triggered
         return "yellow", reasons
 
     return ("green", reasons) if green_ok else ("yellow", reasons)
@@ -140,6 +139,10 @@ def portal_error_budget(
     """
     Clinic-scoped error-budget/burn view.
     Computes burn rates over windows: 1h/6h/24h.
+
+    NOTE:
+      - governance_replaced_rate is TRUE interventions only (blocked/replaced)
+      - pii_warned_rate is hygiene-only (PII detected)
     """
     m = (mode or _ALL).strip()
     r = (route or _ALL).strip()
@@ -168,7 +171,6 @@ def portal_error_budget(
 
     windows: List[WindowBurn] = []
 
-    # Compute for each window
     for wh in WINDOWS_HOURS:
         params = dict(params_base)
         params["hours"] = wh
@@ -178,7 +180,8 @@ def portal_error_budget(
           COUNT(*)::bigint AS events_total,
           SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END)::bigint AS errors_5xx,
           percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS latency_p95_ms,
-          SUM(CASE WHEN governance_replaced THEN 1 ELSE 0 END)::bigint AS governance_replaced
+          SUM(CASE WHEN governance_replaced THEN 1 ELSE 0 END)::bigint AS governance_replaced,
+          SUM(CASE WHEN pii_warned THEN 1 ELSE 0 END)::bigint AS pii_warned
         FROM ops_metrics_events
         WHERE {base_where_sql}
           AND created_at >= now() - make_interval(hours => :hours)
@@ -189,9 +192,11 @@ def portal_error_budget(
         events_total = int(row.get("events_total") or 0)
         errors_5xx = int(row.get("errors_5xx") or 0)
         gov_rep = int(row.get("governance_replaced") or 0)
+        pii_warned = int(row.get("pii_warned") or 0)
 
         rate_5xx = float(errors_5xx / events_total) if events_total > 0 else 0.0
         gov_rate = float(gov_rep / events_total) if events_total > 0 else 0.0
+        pii_rate = float(pii_warned / events_total) if events_total > 0 else 0.0
 
         p95 = row.get("latency_p95_ms")
         p95_ms = int(p95) if p95 is not None else None
@@ -216,6 +221,7 @@ def portal_error_budget(
                 rate_5xx=rate_5xx,
                 p95_latency_ms=p95_ms,
                 governance_replaced_rate=gov_rate,
+                pii_warned_rate=pii_rate,
                 burn_5xx=float(burn_5xx),
                 burn_latency=float(burn_lat) if burn_lat is not None else None,
                 burn_governance=float(burn_gov),
@@ -223,7 +229,6 @@ def portal_error_budget(
             )
         )
 
-    # Use the largest window (24h) for trust_state; fallback to last element
     latest = windows[-1] if windows else None
     trust_state, reasons = _compute_trust_state_from_latest(
         events_total=latest.events_total if latest else 0,
@@ -232,10 +237,9 @@ def portal_error_budget(
         gov_rate=latest.governance_replaced_rate if latest else 0.0,
     )
 
-    # Contributors (simple + cheap; clinic scoped by RLS)
+    # Contributors (cheap; clinic scoped by RLS)
     contrib = Contributors()
 
-    # Top routes
     row_routes = db.execute(
         text(
             f"""
@@ -255,7 +259,6 @@ def portal_error_budget(
         {"route": str(x["route"]), "events": int(x["events"])} for x in row_routes
     ]
 
-    # Top modes
     row_modes = db.execute(
         text(
             f"""
