@@ -18,17 +18,28 @@ router = APIRouter(
 _ALLOWED_MODES = {"clinical_note", "client_comm", "internal_summary"}
 _ALL = "__all__"
 
+# -----------------------------
+# 🔒 Locked SLO thresholds
+# -----------------------------
+MAX_5XX_RATE_GREEN = 0.01
+MAX_P95_LATENCY_MS_GREEN = 1000
+MAX_GOV_REPLACED_RATE_GREEN = 0.10
+
+RED_5XX_RATE = 0.05
+RED_P95_LATENCY_MS = 3000
+RED_GOV_REPLACED_RATE = 0.30
+
+MIN_REQUEST_COUNT = 10  # reduced from 20 for early clinics
+
 
 class Thresholds(BaseModel):
-    max_5xx_rate_green: float = 0.01
-    max_p95_latency_ms_green: int = 1000
-    max_governance_replaced_rate_green: float = 0.10
-
-    red_5xx_rate: float = 0.05
-    red_p95_latency_ms: int = 3000
-    red_governance_replaced_rate: float = 0.30
-
-    min_request_count: int = 20
+    max_5xx_rate_green: float
+    max_p95_latency_ms_green: int
+    max_governance_replaced_rate_green: float
+    red_5xx_rate: float
+    red_p95_latency_ms: int
+    red_governance_replaced_rate: float
+    min_request_count: int
 
 
 class PortalTrustStateResponse(BaseModel):
@@ -54,27 +65,15 @@ def portal_trust_state(
     hours: int = 24,
     mode: str = _ALL,
     route: str = _ALL,
-    # allow overriding thresholds if needed later (still safe defaults)
-    max_5xx_rate_green: float = 0.01,
-    max_p95_latency_ms_green: int = 1000,
-    max_governance_replaced_rate_green: float = 0.10,
-    red_5xx_rate: float = 0.05,
-    red_p95_latency_ms: int = 3000,
-    red_governance_replaced_rate: float = 0.30,
-    min_request_count: int = 20,
 ) -> PortalTrustStateResponse:
     """
-    Clinic-scoped trust state for the portal (RLS enforced).
-    Returns a green/yellow/red state based on error rate, p95 latency,
-    and governance intervention rate.
+    Clinic-scoped trust state (RLS enforced).
+    Uses locked SLO thresholds.
     """
     try:
         hours = int(hours)
-        max_p95_latency_ms_green = int(max_p95_latency_ms_green)
-        red_p95_latency_ms = int(red_p95_latency_ms)
-        min_request_count = int(min_request_count)
     except Exception:
-        raise HTTPException(status_code=400, detail="invalid numeric parameters")
+        raise HTTPException(status_code=400, detail="invalid hours")
 
     if hours < 1:
         hours = 1
@@ -124,58 +123,40 @@ def portal_trust_state(
     p95 = row.get("latency_p95_ms")
     latency_p95_ms = int(p95) if p95 is not None else None
 
-    thresholds = Thresholds(
-        max_5xx_rate_green=float(max_5xx_rate_green),
-        max_p95_latency_ms_green=int(max_p95_latency_ms_green),
-        max_governance_replaced_rate_green=float(max_governance_replaced_rate_green),
-        red_5xx_rate=float(red_5xx_rate),
-        red_p95_latency_ms=int(red_p95_latency_ms),
-        red_governance_replaced_rate=float(red_governance_replaced_rate),
-        min_request_count=int(min_request_count),
-    )
-
     reasons: List[str] = []
+    low_data = events_total < MIN_REQUEST_COUNT
 
-    # If too few data points, we still return a state, but mark it
-    low_data = events_total < min_request_count
     if low_data:
-        reasons.append(f"low_data: events_total<{min_request_count}")
+        reasons.append(f"low_data: events_total<{MIN_REQUEST_COUNT}")
 
-    # RED conditions
+    # ---- RED conditions ----
     is_red = False
     if events_total > 0:
-        if rate_5xx >= red_5xx_rate:
+        if rate_5xx >= RED_5XX_RATE:
             is_red = True
-            reasons.append(f"red_5xx_rate: {rate_5xx:.4f}>={red_5xx_rate:.4f}")
-        if latency_p95_ms is not None and latency_p95_ms >= red_p95_latency_ms:
+            reasons.append("red_5xx_rate")
+        if latency_p95_ms is not None and latency_p95_ms >= RED_P95_LATENCY_MS:
             is_red = True
-            reasons.append(f"red_p95_latency: {latency_p95_ms}>={red_p95_latency_ms}")
-        if gov_rate >= red_governance_replaced_rate:
+            reasons.append("red_p95_latency")
+        if gov_rate >= RED_GOV_REPLACED_RATE:
             is_red = True
-            reasons.append(f"red_gov_replaced_rate: {gov_rate:.4f}>={red_governance_replaced_rate:.4f}")
+            reasons.append("red_gov_replaced_rate")
 
     if is_red:
         trust_state = "red"
     else:
-        # GREEN conditions (only if we have any data; if none, treat as yellow with low_data)
         if events_total == 0:
             trust_state = "yellow"
             reasons.append("no_data")
         else:
-            green_ok = True
-            if rate_5xx > max_5xx_rate_green:
-                green_ok = False
-                reasons.append(f"warn_5xx_rate: {rate_5xx:.4f}>{max_5xx_rate_green:.4f}")
-            if latency_p95_ms is not None and latency_p95_ms > max_p95_latency_ms_green:
-                green_ok = False
-                reasons.append(f"warn_p95_latency: {latency_p95_ms}>{max_p95_latency_ms_green}")
-            if gov_rate > max_governance_replaced_rate_green:
-                green_ok = False
-                reasons.append(f"warn_gov_replaced_rate: {gov_rate:.4f}>{max_governance_replaced_rate_green:.4f}")
+            green_ok = (
+                rate_5xx <= MAX_5XX_RATE_GREEN
+                and (latency_p95_ms is None or latency_p95_ms <= MAX_P95_LATENCY_MS_GREEN)
+                and gov_rate <= MAX_GOV_REPLACED_RATE_GREEN
+            )
 
-            # If low data, don’t claim green; keep it yellow unless clearly bad (red handled above)
             if low_data:
-                trust_state = "yellow" if green_ok else "yellow"
+                trust_state = "yellow"
             else:
                 trust_state = "green" if green_ok else "yellow"
 
@@ -189,5 +170,13 @@ def portal_trust_state(
         rate_5xx=rate_5xx,
         latency_p95_ms=latency_p95_ms,
         governance_replaced_rate=gov_rate,
-        thresholds=thresholds,
+        thresholds=Thresholds(
+            max_5xx_rate_green=MAX_5XX_RATE_GREEN,
+            max_p95_latency_ms_green=MAX_P95_LATENCY_MS_GREEN,
+            max_governance_replaced_rate_green=MAX_GOV_REPLACED_RATE_GREEN,
+            red_5xx_rate=RED_5XX_RATE,
+            red_p95_latency_ms=RED_P95_LATENCY_MS,
+            red_governance_replaced_rate=RED_GOV_REPLACED_RATE,
+            min_request_count=MIN_REQUEST_COUNT,
+        ),
     )
