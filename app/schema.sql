@@ -468,6 +468,30 @@ CREATE OR REPLACE VIEW clinics_public AS
 SELECT clinic_slug, active_status
 FROM clinics;
 
+-- Safe clinic resolver for login: returns clinic_id only for active clinics.
+-- SECURITY DEFINER bypasses RLS safely without exposing extra fields.
+CREATE OR REPLACE FUNCTION public.resolve_clinic_id_by_slug(p_slug text)
+RETURNS uuid
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+AS $$
+  SELECT clinic_id
+  FROM clinics
+  WHERE clinic_slug = p_slug::citext
+    AND active_status = true
+  LIMIT 1
+$$;
+
+-- Lock down function execution: only runtime role if it exists.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anchor_app') THEN
+    REVOKE ALL ON FUNCTION public.resolve_clinic_id_by_slug(text) FROM PUBLIC;
+    GRANT EXECUTE ON FUNCTION public.resolve_clinic_id_by_slug(text) TO anchor_app;
+  END IF;
+END $$;
+
 -- =========================
 -- RLS: ENABLE only (safe).
 -- FORCE comes after login+middleware sets app.clinic_id on every clinic route.
