@@ -2,7 +2,7 @@
 import re
 import time
 import uuid
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -15,7 +15,7 @@ from app.db import get_db
 router = APIRouter(
     prefix="/v1/portal",
     tags=["Portal Submit"],
-    # ✅ ensures request.state.clinic_id / clinic_user_id exist for all /v1/portal routes
+    # Ensures request.state.clinic_id / clinic_user_id exist for ALL /v1/portal routes
     dependencies=[Depends(require_clinic_user)],
 )
 
@@ -144,22 +144,23 @@ def portal_submit(
 
     clinic_id = getattr(request.state, "clinic_id", None)
     clinic_user_id = getattr(request.state, "clinic_user_id", None)
-
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
 
     req_id = payload.request_id or uuid.uuid4()
 
+    # PII detection (types only; never store matches)
     pii_types = detect_pii_types(payload.text)
     pii_detected = bool(pii_types)
 
-    # Hygiene semantics
+    # Hygiene semantics:
+    # - Warn if PII detected, but this is NOT an intervention (no replace/block).
     pii_action = "warn" if pii_detected else "allow"
 
-    # Governance semantics (metadata-only)
-    # We keep "decision" as "allowed" even when we warn on PII,
-    # because we did not block/replace content. The warning is stored separately.
+    # ✅ Option A (recommended): decision stays "allowed".
+    # Reserve "modified/replaced/blocked" for true transforms or blocking.
     decision = "allowed"
+
     risk_grade = _simple_risk_grade(pii_types)
     reason_code = _simple_reason_code(pii_types)
 
@@ -171,9 +172,7 @@ def portal_submit(
 
     policy_version = _get_active_policy_version(db)
 
-    # -----------------------------
-    # Write governance metadata
-    # -----------------------------
+    # ---- clinic governance metadata (no content) ----
     db.execute(
         text(
             """
@@ -198,7 +197,7 @@ def portal_submit(
             "mode": mode,
             "pii_detected": bool(pii_detected),
             "pii_action": pii_action,
-            "pii_types": pii_types if pii_types else None,
+            "pii_types": pii_types if pii_types else None,  # text[] column; None => NULL
             "decision": decision,
             "risk_grade": risk_grade,
             "reason_code": reason_code,
@@ -208,12 +207,12 @@ def portal_submit(
         },
     )
 
-    # -----------------------------
-    # Write ops telemetry (no content)
-    # -----------------------------
-    # ✅ Split: PII warnings are NOT governance interventions.
+    # ---- ops telemetry (no content) ----
+    # ✅ split signals:
+    # - pii_warned: hygiene flag
+    # - governance_replaced: true interventions only (false here)
     pii_warned = bool(pii_detected)
-    governance_replaced = False  # reserved for true replace/block flows later
+    governance_replaced = False
 
     db.execute(
         text(
