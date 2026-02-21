@@ -132,27 +132,36 @@ def portal_submit(
     - RLS applied automatically by get_db() using request.state.*
     - Writes:
         * clinic_governance_events (metadata only)
-        * ops_metrics_events (telemetry only)
+        * ops_metrics_events (telemetry only; no content)
     - Returns a "Governance Receipt"
     """
     t0 = time.time()
-
     mode = (payload.mode or "").strip()
+
     allowed_modes = {"clinical_note", "client_comm", "internal_summary"}
     if mode not in allowed_modes:
         raise HTTPException(status_code=400, detail="invalid mode")
 
     clinic_id = getattr(request.state, "clinic_id", None)
     clinic_user_id = getattr(request.state, "clinic_user_id", None)
+
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
 
     req_id = payload.request_id or uuid.uuid4()
 
+    # PII detection (types only; never store matches)
     pii_types = detect_pii_types(payload.text)
     pii_detected = bool(pii_types)
 
+    # ✅ Split: hygiene signal vs true governance intervention
+    pii_warned = bool(pii_detected)
+
     pii_action = "warn" if pii_detected else "allow"
+
+    # Portal decision semantics:
+    # - "modified" here means "requires review / hygiene warning"
+    # - This is NOT a true governance replacement.
     decision = "modified" if pii_detected else "allowed"
     risk_grade = _simple_risk_grade(pii_types)
     reason_code = _simple_reason_code(pii_types)
@@ -160,9 +169,12 @@ def portal_submit(
     governance_score = None
     neutrality_version = "v1.1"
 
+    latency_ms = int((time.time() - t0) * 1000)
+    status_code = 200
+
     policy_version = _get_active_policy_version(db)
 
-    # 1) Insert governance metadata
+    # Governance metadata insert (clinic scoped via RLS)
     db.execute(
         text(
             """
@@ -187,7 +199,7 @@ def portal_submit(
             "mode": mode,
             "pii_detected": bool(pii_detected),
             "pii_action": pii_action,
-            "pii_types": pii_types if pii_types else None,  # NULL when empty
+            "pii_types": pii_types if pii_types else None,  # text[] column; None => NULL
             "decision": decision,
             "risk_grade": risk_grade,
             "reason_code": reason_code,
@@ -197,21 +209,17 @@ def portal_submit(
         },
     )
 
-    # ✅ 2) Measure latency as late as possible (includes DB work above)
-    latency_ms = int((time.time() - t0) * 1000)
-    status_code = 200
-
-    # 3) Insert ops telemetry (still no content)
+    # Ops telemetry insert (clinic scoped via RLS)
     db.execute(
         text(
             """
             INSERT INTO ops_metrics_events (
                 clinic_id, request_id, route, status_code, latency_ms,
-                mode, governance_replaced
+                mode, governance_replaced, pii_warned
             )
             VALUES (
                 :clinic_id, :request_id, :route, :status_code, :latency_ms,
-                :mode, :gov_replaced
+                :mode, :gov_replaced, :pii_warned
             )
             """
         ),
@@ -222,29 +230,16 @@ def portal_submit(
             "status_code": int(status_code),
             "latency_ms": int(latency_ms),
             "mode": mode,
-            "gov_replaced": bool(decision in {"replaced", "modified"}),
+            # ✅ TRUE interventions only (PII “modified” does NOT count)
+            "gov_replaced": bool(decision in {"replaced", "blocked"}),
+            # ✅ Hygiene signal
+            "pii_warned": bool(pii_warned),
         },
     )
 
     db.commit()
 
-    # ✅ Pro: get canonical created_at from DB for the receipt
-    created_row = db.execute(
-        text(
-            """
-            SELECT created_at
-            FROM clinic_governance_events
-            WHERE clinic_id = app_current_clinic_id()
-              AND request_id = :rid
-            LIMIT 1
-            """
-        ),
-        {"rid": str(req_id)},
-    ).fetchone()
-
-    created_at_utc = ""
-    if created_row and created_row[0] is not None:
-        created_at_utc = created_row[0].isoformat()
+    created_at_utc = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
 
     receipt = GovernanceReceipt(
         request_id=req_id,
