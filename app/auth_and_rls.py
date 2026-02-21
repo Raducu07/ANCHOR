@@ -380,10 +380,17 @@ def require_clinic_user(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ) -> Dict[str, str]:
-    if not authorization or not authorization.lower().startswith("bearer "):
+    if not authorization:
         raise HTTPException(status_code=401, detail="missing bearer token")
 
-    token = authorization.split(" ", 1)[1].strip()
+    parts = authorization.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    token = parts[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
     claims = _decode_jwt(token)
 
     clinic_id = str(claims.get("clinic_id") or "").strip()
@@ -401,8 +408,10 @@ def require_clinic_user(
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="invalid token claims")
 
+    # ✅ This is what app.db.get_db() reads
     request.state.clinic_id = clinic_id
     request.state.clinic_user_id = clinic_user_id
+    request.state.role = role  # ✅ handy for RBAC / auditing
 
     return {"clinic_id": clinic_id, "clinic_user_id": clinic_user_id, "role": role}
 
