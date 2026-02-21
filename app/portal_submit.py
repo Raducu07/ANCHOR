@@ -238,7 +238,7 @@ def portal_submit(
         reason_code=reason_code,
         pii_detected=pii_detected,
         pii_action=pii_action,
-        pii_types=pii_types,
+        pii_types = list(pii_types) if pii_types else [],
         policy_version=int(policy_version),
         neutrality_version=neutrality_version,
         governance_score=governance_score,
