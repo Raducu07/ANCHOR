@@ -1,19 +1,79 @@
 # app/portal_submit.py
-import uuid
+import re
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional, List
+import uuid
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
-from sqlalchemy.orm import Session
 
-from app.db import get_db
-from app.auth_and_rls import require_clinic_user
-from app.governance import govern_output
+from app.db import SessionLocal
+from app.auth_and_rls import require_clinic_user, set_rls_context
 
-router = APIRouter(tags=["Portal Submit"])
+router = APIRouter(prefix="/v1/portal", tags=["Portal Submit"])
+
+# -----------------------------
+# Simple PII detection (no values stored)
+# -----------------------------
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+_PHONE_RE = re.compile(r"\b(\+?\d[\d\s().-]{7,}\d)\b")
+_UK_POSTCODE_RE = re.compile(
+    r"\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b", re.IGNORECASE
+)
+
+def detect_pii_types(text_value: str) -> List[str]:
+    t = text_value or ""
+    types: List[str] = []
+
+    if _EMAIL_RE.search(t):
+        types.append("email")
+    if _PHONE_RE.search(t):
+        types.append("phone")
+    if _UK_POSTCODE_RE.search(t):
+        types.append("postcode")
+
+    # De-dupe, stable order
+    seen = set()
+    out = []
+    for x in types:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+# -----------------------------
+# Portal policy helpers
+# -----------------------------
+def _get_active_policy_version(db) -> int:
+    row = db.execute(
+        text(
+            """
+            SELECT active_policy_version
+            FROM clinic_policy_state
+            WHERE clinic_id = app_current_clinic_id()
+            LIMIT 1
+            """
+        )
+    ).fetchone()
+    if not row:
+        # If a clinic is bootstrapped properly this should exist,
+        # but keep a safe fallback.
+        return 1
+    try:
+        return int(row[0])
+    except Exception:
+        return 1
+
+
+def _simple_risk_grade(pii_types: List[str]) -> str:
+    # Conservative default: any PII -> medium, none -> low.
+    return "med" if pii_types else "low"
+
+
+def _simple_reason_code(pii_types: List[str]) -> str:
+    return "pii_detected" if pii_types else "ok"
 
 
 # -----------------------------
@@ -21,289 +81,182 @@ router = APIRouter(tags=["Portal Submit"])
 # -----------------------------
 class PortalSubmitRequest(BaseModel):
     mode: str = Field(..., description="clinical_note | client_comm | internal_summary")
-    user_text: str = Field(..., min_length=1, max_length=20000)
-    assistant_text: str = Field(..., min_length=1, max_length=20000)
-    debug: bool = False
+    text: str = Field(..., min_length=1, max_length=20000)
+    request_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="Optional client-generated request_id for idempotency/traceability",
+    )
+
+    # NOTE: We intentionally do NOT accept or store any structured patient identifiers here.
+    # If later needed, they should be provided as hashed/pseudonymous tokens only.
 
 
 class GovernanceReceipt(BaseModel):
-    request_id: str
-    clinic_id: str
-    clinic_user_id: str
+    request_id: uuid.UUID
+    clinic_id: uuid.UUID
+    clinic_user_id: uuid.UUID
     mode: str
 
-    decision: str              # allowed | blocked | replaced | modified
-    risk_grade: str            # low | med | high
+    decision: str
+    risk_grade: str
     reason_code: str
-
-    governance_score: float
-    grade: str
-    replaced: bool
-    allowed: bool
-
-    policy_version: int
-    neutrality_version: str
 
     pii_detected: bool
     pii_action: str
-    pii_types: Optional[List[str]] = None
+    pii_types: List[str]
 
-    created_at: str
+    policy_version: int
+    neutrality_version: str
+    governance_score: Optional[float] = None
+
+    created_at_utc: str
 
 
 class PortalSubmitResponse(BaseModel):
-    reply_text: str
     receipt: GovernanceReceipt
-
-
-# -----------------------------
-# Helpers
-# -----------------------------
-def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _map_risk_grade(score: int, grade: str, replaced: bool, min_allow: int) -> str:
-    # Simple, deterministic. You can refine later.
-    if not replaced and grade != "fail" and score >= min_allow:
-        return "low"
-    if grade == "fail" or score < max(0, min_allow - 10):
-        return "high"
-    return "med"
-
-
-def _load_active_policy(db: Session, clinic_id: str) -> Dict[str, Any]:
-    """
-    Loads the active policy JSON for the clinic.
-    Uses clinic_policy_state.active_policy_version -> clinic_policies.policy_json
-    """
-    row = db.execute(
-        text("""
-            SELECT s.active_policy_version AS v
-            FROM clinic_policy_state s
-            WHERE s.clinic_id = :cid
-            LIMIT 1
-        """),
-        {"cid": clinic_id},
-    ).mappings().first()
-
-    if not row:
-        raise HTTPException(status_code=400, detail="clinic has no active policy_state")
-
-    v = int(row["v"])
-
-    prow = db.execute(
-        text("""
-            SELECT p.policy_json
-            FROM clinic_policies p
-            WHERE p.clinic_id = :cid AND p.policy_version = :v
-            LIMIT 1
-        """),
-        {"cid": clinic_id, "v": v},
-    ).mappings().first()
-
-    if not prow:
-        raise HTTPException(status_code=400, detail="active policy version not found")
-
-    # SQLAlchemy returns jsonb as dict already
-    policy_json = prow["policy_json"] or {}
-    if not isinstance(policy_json, dict):
-        raise HTTPException(status_code=500, detail="policy_json is not an object")
-
-    policy_json["_policy_version_int"] = v
-    return policy_json
-
-
-def _mode_pii_action(policy_json: Dict[str, Any], mode: str) -> str:
-    # Default to warn if unknown
-    defaults = (policy_json.get("mode_defaults") or {})
-    if isinstance(defaults, dict):
-        m = defaults.get(mode) or {}
-        if isinstance(m, dict):
-            pa = (m.get("pii_action") or "").strip()
-            if pa in ("allow", "warn", "block", "redact"):
-                return pa
-    return "warn"
 
 
 # -----------------------------
 # Route
 # -----------------------------
-@router.post("/v1/portal/submit", response_model=PortalSubmitResponse)
+@router.post("/submit", response_model=PortalSubmitResponse)
 def portal_submit(
-    req: PortalSubmitRequest,
+    payload: PortalSubmitRequest,
     request: Request,
-    db: Session = Depends(get_db),
-    ctx: Dict[str, str] = Depends(require_clinic_user),
+    actor: Dict[str, str] = Depends(require_clinic_user),
 ) -> PortalSubmitResponse:
     """
-    Portal submit (clinic-scoped, RLS-safe).
-
-    - DOES NOT store raw content in DB
-    - Stores metadata-only governance + ops telemetry
-    - Returns a Governance Receipt
+    Metadata-only portal submission.
+    - Requires clinic JWT (Bearer)
+    - Sets RLS context on the DB connection
+    - Writes:
+        * clinic_governance_events (metadata only)
+        * ops_metrics_events (telemetry only)
+    - Returns a "Governance Receipt"
     """
-    start = time.time()
-    request_id = str(uuid.uuid4())
 
-    clinic_id = str(ctx["clinic_id"])
-    clinic_user_id = str(ctx["clinic_user_id"])
-    mode = (req.mode or "").strip()
+    t0 = time.time()
+    mode = (payload.mode or "").strip()
 
-    if mode not in ("clinical_note", "client_comm", "internal_summary"):
-        raise HTTPException(status_code=422, detail="mode must be clinical_note | client_comm | internal_summary")
+    allowed_modes = {"clinical_note", "client_comm", "internal_summary"}
+    if mode not in allowed_modes:
+        raise HTTPException(status_code=400, detail="invalid mode")
 
-    # Load active clinic policy JSON
-    policy_json = _load_active_policy(db, clinic_id=clinic_id)
-    policy_version_int = int(policy_json.get("_policy_version_int", 1))
+    clinic_id = actor["clinic_id"]
+    clinic_user_id = actor["clinic_user_id"]
 
-    # Map portal policy into governance engine policy shape
-    # Your govern_output expects: policy_version(str), neutrality_version(str), min_score_allow, hard_block_rules, soft_rules, max_findings
-    # We'll default safely if fields absent.
-    engine_policy: Dict[str, Any] = {
-        "policy_version": f"clinic-{policy_version_int}",
-        "neutrality_version": str(policy_json.get("neutrality_version") or "n-v1.1"),
-        "min_score_allow": int(policy_json.get("min_score_allow") or 75),
-        "hard_block_rules": list(policy_json.get("hard_block_rules") or ["jailbreak", "therapy", "promise"]),
-        "soft_rules": list(policy_json.get("soft_rules") or ["direct_advice", "coercion"]),
-        "max_findings": int(policy_json.get("max_findings") or 10),
-    }
+    # stable request_id for receipt
+    req_id = payload.request_id or uuid.uuid4()
 
-    # PII policy (metadata only)
-    pii_action = _mode_pii_action(policy_json, mode=mode)
-    pii_detected = False
-    pii_types: Optional[List[str]] = None
+    # PII detection (types only; never store matches)
+    pii_types = detect_pii_types(payload.text)
+    pii_detected = bool(pii_types)
 
-    # Run governance decision on provided assistant_text
+    # Simple action semantics:
+    # - For now: allow if no PII, warn if PII (do not redact here; you are metadata-only).
+    # - Later: wire to clinic privacy profile / policy for allow|warn|block|redact.
+    pii_action = "warn" if pii_detected else "allow"
+
+    # Governance decision semantics (portal table expects allowed|blocked|replaced|modified)
+    # - For now: if pii_detected -> "modified" (means "requires review"), else "allowed".
+    decision = "modified" if pii_detected else "allowed"
+    risk_grade = _simple_risk_grade(pii_types)
+    reason_code = _simple_reason_code(pii_types)
+
+    # No content storage, so "governance_score" is optional; keep null for now.
+    governance_score = None
+    neutrality_version = "v1.1"
+
+    # latency
+    latency_ms = int((time.time() - t0) * 1000)
     status_code = 200
-    final_text = ""
-    try:
-        final_text, decision, audit = govern_output(
-            user_text=req.user_text,
-            assistant_text=req.assistant_text,
-            user_id=None,         # portal uses clinic_users; we keep v0 user_id NULL
-            session_id=None,
-            mode=mode,
-            debug=bool(req.debug),
-            policy=engine_policy,
-        )
 
-        # Map to portal decision enums
-        if decision.replaced:
-            portal_decision = "replaced"
-        elif decision.allowed:
-            portal_decision = "allowed"
-        else:
-            portal_decision = "blocked"
+    with SessionLocal() as db:
+        # Set tenant context for RLS on this connection.
+        set_rls_context(db, clinic_id=str(clinic_id), user_id=str(clinic_user_id))
 
-        min_allow = int(engine_policy["min_score_allow"])
-        risk_grade = _map_risk_grade(decision.score, decision.grade, decision.replaced, min_allow=min_allow)
-        reason_code = str(decision.reason or "allowed")
+        policy_version = _get_active_policy_version(db)
 
-        created_at = _now_utc_iso()
-
-        # Write clinic_governance_events (metadata-only)
+        # Write portal governance metadata
         db.execute(
-            text("""
-                INSERT INTO clinic_governance_events
-                  (clinic_id, request_id, user_id, mode,
-                   pii_detected, pii_action, pii_types,
-                   decision, risk_grade, reason_code,
-                   governance_score, policy_version, neutrality_version, created_at)
-                VALUES
-                  (:clinic_id, :request_id, :user_id, :mode,
-                   :pii_detected, :pii_action, :pii_types,
-                   :decision, :risk_grade, :reason_code,
-                   :governance_score, :policy_version, :neutrality_version, now())
-            """),
+            text(
+                """
+                INSERT INTO clinic_governance_events (
+                    clinic_id, request_id, user_id, mode,
+                    pii_detected, pii_action, pii_types,
+                    decision, risk_grade, reason_code,
+                    governance_score, policy_version, neutrality_version
+                )
+                VALUES (
+                    :clinic_id, :request_id, :user_id, :mode,
+                    :pii_detected, :pii_action, :pii_types,
+                    :decision, :risk_grade, :reason_code,
+                    :governance_score, :policy_version, :neutrality_version
+                )
+                """
+            ),
             {
-                "clinic_id": clinic_id,
-                "request_id": request_id,
-                "user_id": clinic_user_id,
+                "clinic_id": str(clinic_id),
+                "request_id": str(req_id),
+                "user_id": str(clinic_user_id),
                 "mode": mode,
                 "pii_detected": bool(pii_detected),
                 "pii_action": pii_action,
-                "pii_types": pii_types,
-                "decision": portal_decision,
+                "pii_types": pii_types if pii_types else None,  # column is text[]; None => NULL
+                "decision": decision,
                 "risk_grade": risk_grade,
                 "reason_code": reason_code,
-                "governance_score": float(decision.score),
-                "policy_version": int(policy_version_int),
-                "neutrality_version": str(engine_policy["neutrality_version"]),
+                "governance_score": governance_score,
+                "policy_version": int(policy_version),
+                "neutrality_version": neutrality_version,
             },
         )
 
-        # Write ops_metrics_events (telemetry-only)
-        latency_ms = int(max(0.0, (time.time() - start) * 1000.0))
+        # Write ops telemetry (still no content)
         db.execute(
-            text("""
-                INSERT INTO ops_metrics_events
-                  (clinic_id, request_id, route, status_code, latency_ms, mode, governance_replaced, created_at)
-                VALUES
-                  (:clinic_id, :request_id, :route, :status_code, :latency_ms, :mode, :gov_replaced, now())
-            """),
+            text(
+                """
+                INSERT INTO ops_metrics_events (
+                    clinic_id, request_id, route, status_code, latency_ms,
+                    mode, governance_replaced
+                )
+                VALUES (
+                    :clinic_id, :request_id, :route, :status_code, :latency_ms,
+                    :mode, :gov_replaced
+                )
+                """
+            ),
             {
-                "clinic_id": clinic_id,
-                "request_id": request_id,
-                "route": "/v1/portal/submit",
+                "clinic_id": str(clinic_id),
+                "request_id": str(req_id),
+                "route": request.url.path,
                 "status_code": int(status_code),
                 "latency_ms": int(latency_ms),
                 "mode": mode,
-                "gov_replaced": bool(decision.replaced),
+                "gov_replaced": bool(decision in {"replaced", "modified"}),
             },
         )
 
         db.commit()
 
-        receipt = GovernanceReceipt(
-            request_id=request_id,
-            clinic_id=clinic_id,
-            clinic_user_id=clinic_user_id,
-            mode=mode,
-            decision=portal_decision,
-            risk_grade=risk_grade,
-            reason_code=reason_code,
-            governance_score=float(decision.score),
-            grade=str(decision.grade),
-            replaced=bool(decision.replaced),
-            allowed=bool(decision.allowed),
-            policy_version=int(policy_version_int),
-            neutrality_version=str(engine_policy["neutrality_version"]),
-            pii_detected=bool(pii_detected),
-            pii_action=pii_action,
-            pii_types=pii_types,
-            created_at=created_at,
-        )
+        # created_at is NOW() in DB; to keep things simple, return server time.
+        created_at_utc = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
 
-        return PortalSubmitResponse(reply_text=final_text, receipt=receipt)
+    receipt = GovernanceReceipt(
+        request_id=req_id,
+        clinic_id=uuid.UUID(str(clinic_id)),
+        clinic_user_id=uuid.UUID(str(clinic_user_id)),
+        mode=mode,
+        decision=decision,
+        risk_grade=risk_grade,
+        reason_code=reason_code,
+        pii_detected=pii_detected,
+        pii_action=pii_action,
+        pii_types=pii_types,
+        policy_version=int(policy_version),
+        neutrality_version=neutrality_version,
+        governance_score=governance_score,
+        created_at_utc=created_at_utc,
+    )
 
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        status_code = 500
-        # best-effort ops log
-        try:
-            latency_ms = int(max(0.0, (time.time() - start) * 1000.0))
-            db.execute(
-                text("""
-                    INSERT INTO ops_metrics_events
-                      (clinic_id, request_id, route, status_code, latency_ms, mode, governance_replaced, created_at)
-                    VALUES
-                      (:clinic_id, :request_id, :route, :status_code, :latency_ms, :mode, false, now())
-                """),
-                {
-                    "clinic_id": clinic_id,
-                    "request_id": request_id,
-                    "route": "/v1/portal/submit",
-                    "status_code": int(status_code),
-                    "latency_ms": int(latency_ms),
-                    "mode": mode,
-                },
-            )
-            db.commit()
-        except Exception:
-            db.rollback()
-
-        raise HTTPException(status_code=500, detail=f"portal_submit failed: {type(e).__name__}: {e}")
+    return PortalSubmitResponse(receipt=receipt)
