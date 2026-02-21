@@ -31,6 +31,7 @@ from app.portal_bootstrap import router as portal_bootstrap_router
 from app.portal_submit import router as portal_submit_router
 from app.portal_read import router as portal_read_router
 from app.portal_export import router as portal_export_router
+from app.portal_ops import router as portal_ops_router
 
 from app.governance_config import (
     get_current_policy,
@@ -1450,7 +1451,8 @@ app.include_router(portal_bootstrap_router)
 app.include_router(ops_rls_router)
 app.include_router(portal_submit_router)
 app.include_router(portal_read_router)
-app.include_router(portal_export_router)   
+app.include_router(portal_export_router)
+app.include_router(portal_ops_router)
 
 # ============================================================
 # Exception handlers
