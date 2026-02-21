@@ -15,7 +15,7 @@ from app.auth_and_rls import require_clinic_user
 router = APIRouter(
     prefix="/v1/portal",
     tags=["Portal Submit"],
-    # ✅ Ensures request.state.clinic_id / clinic_user_id is set for ALL portal routes
+    # ✅ ensures request.state.clinic_id / clinic_user_id exist for all /v1/portal routes
     dependencies=[Depends(require_clinic_user)],
 )
 
@@ -129,7 +129,7 @@ def portal_submit(
     """
     Metadata-only portal submission.
     - Requires clinic JWT (router-level dependency)
-    - RLS context applied automatically by get_db() using request.state.*
+    - RLS applied automatically by get_db() using request.state.*
     - Writes:
         * clinic_governance_events (metadata only)
         * ops_metrics_events (telemetry only)
@@ -142,25 +142,18 @@ def portal_submit(
     if mode not in allowed_modes:
         raise HTTPException(status_code=400, detail="invalid mode")
 
-    # ✅ These exist because require_clinic_user ran for this request
     clinic_id = getattr(request.state, "clinic_id", None)
     clinic_user_id = getattr(request.state, "clinic_user_id", None)
 
     if not clinic_id or not clinic_user_id:
-        # Defensive: should never happen if router dependency is working
         raise HTTPException(status_code=401, detail="missing clinic context")
 
-    # stable request_id for receipt
     req_id = payload.request_id or uuid.uuid4()
 
-    # PII detection (types only; never store matches)
     pii_types = detect_pii_types(payload.text)
     pii_detected = bool(pii_types)
 
-    # Simple action semantics:
     pii_action = "warn" if pii_detected else "allow"
-
-    # Governance decision semantics:
     decision = "modified" if pii_detected else "allowed"
     risk_grade = _simple_risk_grade(pii_types)
     reason_code = _simple_reason_code(pii_types)
@@ -171,10 +164,8 @@ def portal_submit(
     latency_ms = int((time.time() - t0) * 1000)
     status_code = 200
 
-    # ✅ RLS already applied to this db session by get_db()
     policy_version = _get_active_policy_version(db)
 
-    # Write portal governance metadata
     db.execute(
         text(
             """
@@ -199,7 +190,7 @@ def portal_submit(
             "mode": mode,
             "pii_detected": bool(pii_detected),
             "pii_action": pii_action,
-            "pii_types": pii_types if pii_types else None,  # text[] column; None => NULL
+            "pii_types": pii_types if pii_types else None,
             "decision": decision,
             "risk_grade": risk_grade,
             "reason_code": reason_code,
@@ -209,7 +200,6 @@ def portal_submit(
         },
     )
 
-    # Write ops telemetry (still no content)
     db.execute(
         text(
             """
