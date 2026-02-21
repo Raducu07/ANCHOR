@@ -6,3 +6,4 @@ alembic
 PyJWT==2.8.0
 
 pydantic[email]==2.6.4
+argon2-cffi
