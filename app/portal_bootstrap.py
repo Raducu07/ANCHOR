@@ -59,6 +59,10 @@ def _hash_token(token_plain: str) -> str:
     salt = (os.getenv("INVITE_TOKEN_SALT") or "anchor-invite-salt").encode("utf-8")
     return hashlib.sha256(salt + token_plain.encode("utf-8")).hexdigest()
 
+def json_dump(obj: Any) -> str:
+    import json
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+
 
 # ---------------------------
 # Request/Response models
@@ -68,10 +72,12 @@ class BootstrapClinicRequest(BaseModel):
     clinic_name: str = Field(..., min_length=2, max_length=200)
     clinic_slug: Optional[str] = Field(default=None, max_length=64)
     admin_email: str = Field(..., min_length=5, max_length=254)
+
     data_region: str = Field(default="UK")  # UK or EU
     retention_days_governance: int = Field(default=90, ge=1, le=3650)
     retention_days_ops: int = Field(default=30, ge=1, le=3650)
     export_enabled: bool = False
+
     invite_valid_days: int = Field(default=7, ge=1, le=30)
     subscription_tier: str = Field(default="starter")
 
@@ -95,11 +101,19 @@ def bootstrap_clinic(
     _: None = Depends(require_admin),
 ):
     """
-    Creates a clinic + privacy profile + initial policy v1 + policy_state + admin invite.
+    Creates:
+      - clinics
+      - clinic_users (system actor; inactive; required for FK)
+      - clinic_privacy_profile
+      - clinic_policies v1
+      - clinic_policy_state -> v1
+      - clinic_user_invites (admin)
+
     Works with FORCE RLS by setting app.clinic_id/app.user_id to the NEW clinic during inserts.
     """
     clinic_id = uuid.uuid4()
-    # We don't have a real admin_user yet (invite not accepted), so use a deterministic system UUID:
+
+    # Deterministic system actor UUID (same value every time, OK because clinic_id scopes row visibility)
     system_user_id = uuid.uuid5(uuid.NAMESPACE_DNS, "anchor-system-bootstrap")
 
     slug = _slugify(req.clinic_slug or req.clinic_name)
@@ -107,30 +121,45 @@ def bootstrap_clinic(
     token_hash = _hash_token(invite_token)
     expires_at = _now_utc() + timedelta(days=int(req.invite_valid_days))
 
-    # Minimal default policy JSON (you can replace with your real governance policy shape)
+    # Minimal default policy JSON (replace later with your real schema)
     policy_json: Dict[str, Any] = {
         "policy_version": 1,
         "mode_defaults": {
             "clinical_note": {"pii_action": "redact"},
             "client_comm": {"pii_action": "warn"},
             "internal_summary": {"pii_action": "allow"},
-        }
+        },
     }
 
     try:
-        # Set RLS context to the new clinic so WITH CHECK passes
+        # Set RLS context to the new clinic so WITH CHECK passes under FORCE RLS
         set_rls_context(db, clinic_id=str(clinic_id), user_id=str(system_user_id))
 
-        # clinics
+        # 1) clinics
         db.execute(
             text("""
                 INSERT INTO clinics (clinic_id, clinic_name, clinic_slug, subscription_tier, active_status)
                 VALUES (:cid, :name, :slug, :tier, true)
             """),
-            {"cid": str(clinic_id), "name": req.clinic_name.strip(), "slug": slug, "tier": req.subscription_tier},
+            {
+                "cid": str(clinic_id),
+                "name": req.clinic_name.strip(),
+                "slug": slug,
+                "tier": req.subscription_tier,
+            },
         )
 
-        # privacy profile
+        # 2) system clinic user (required for FK created_by/updated_by)
+        system_email = f"system+{slug}@anchor.local"
+        db.execute(
+            text("""
+                INSERT INTO clinic_users (user_id, clinic_id, role, email, password_hash, active_status)
+                VALUES (:uid, :cid, 'admin', :email, '!', false)
+            """),
+            {"uid": str(system_user_id), "cid": str(clinic_id), "email": system_email},
+        )
+
+        # 3) privacy profile
         db.execute(
             text("""
                 INSERT INTO clinic_privacy_profile
@@ -148,16 +177,20 @@ def bootstrap_clinic(
             },
         )
 
-        # initial policy v1 (created_by uses system_user_id for now)
+        # 4) initial policy v1
         db.execute(
             text("""
                 INSERT INTO clinic_policies (clinic_id, policy_version, policy_json, created_by)
-                VALUES (:cid, 1, :pjson::jsonb, :created_by)
+                VALUES (:cid, 1, CAST(:pjson AS jsonb), :created_by)
             """),
-            {"cid": str(clinic_id), "pjson": json_dump(policy_json), "created_by": str(system_user_id)},
+            {
+                "cid": str(clinic_id),
+                "pjson": json_dump(policy_json),
+                "created_by": str(system_user_id),
+            },
         )
 
-        # active pointer
+        # 5) active policy pointer
         db.execute(
             text("""
                 INSERT INTO clinic_policy_state (clinic_id, active_policy_version, updated_by, updated_at)
@@ -166,7 +199,7 @@ def bootstrap_clinic(
             {"cid": str(clinic_id), "updated_by": str(system_user_id)},
         )
 
-        # admin invite
+        # 6) admin invite (created_by is NULL until real admin exists)
         db.execute(
             text("""
                 INSERT INTO clinic_user_invites
@@ -201,12 +234,3 @@ def bootstrap_clinic(
             clear_rls_context(db)
         except Exception:
             pass
-
-
-# ---------------------------
-# JSON helper (no extra deps)
-# ---------------------------
-
-def json_dump(obj: Any) -> str:
-    import json
-    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
