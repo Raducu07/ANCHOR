@@ -21,18 +21,22 @@ router = APIRouter(
 # -----------------------------
 # Helpers
 # -----------------------------
+
 def _parse_iso8601(ts: str) -> datetime:
     """
-    Accepts ISO8601 strings like:
-      2026-02-21T18:31:53+00:00
-      2026-02-21T18:31:53Z
-    Returns timezone-aware datetime when possible.
+    Accept ISO8601 timestamps from querystrings robustly.
+    Some clients turn '+' into space, so normalize.
     """
     s = (ts or "").strip()
     if not s:
         raise ValueError("empty timestamp")
+
+    # PowerShell / querystring edge: '+' may arrive as space
+    s = s.replace(" ", "+")
+
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
+
     return datetime.fromisoformat(s)
 
 
