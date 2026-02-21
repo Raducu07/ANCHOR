@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any
 
 import jwt
 from fastapi import APIRouter, HTTPException, Header, Request, Depends
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -133,7 +133,7 @@ def _hash_invite_token(token_plain: str) -> str:
 # -----------------------------
 class ClinicLoginRequest(BaseModel):
     clinic_slug: str = Field(..., min_length=2, max_length=80)
-    email: EmailStr
+    email: str = Field(..., min_length=3, max_length=254)  # avoid EmailStr .local rejection
     password: str = Field(..., min_length=6, max_length=200)
 
 
@@ -147,7 +147,7 @@ class ClinicLoginResponse(BaseModel):
 
 class InviteAcceptRequest(BaseModel):
     clinic_slug: str = Field(..., min_length=2, max_length=80)
-    email: EmailStr
+    email: str = Field(..., min_length=3, max_length=254)  # avoid EmailStr .local rejection
     invite_token: str = Field(..., min_length=10, max_length=300)
     password: str = Field(..., min_length=8, max_length=200)
 
@@ -164,23 +164,19 @@ class MeResponse(BaseModel):
 def _resolve_clinic_id_by_slug(db: Session, slug: str) -> str:
     """
     Slug lookup happens before we can set RLS context.
-    Your schema includes rls_clinics_login_lookup allowing SELECT where active_status=true,
-    so this should work even under FORCE RLS.
+    You removed the unsafe clinics login RLS policy, so we must NOT query clinics directly here.
+    Instead, call a SECURITY DEFINER function that returns clinic_id only when active.
     """
     row = db.execute(
-        text("""
-            SELECT clinic_id
-            FROM clinics
-            WHERE clinic_slug = :slug AND active_status = true
-            LIMIT 1
-        """),
+        text("SELECT public.resolve_clinic_id_by_slug(:slug) AS clinic_id"),
         {"slug": slug},
     ).mappings().first()
 
-    if not row:
+    cid = str(row["clinic_id"] or "") if row else ""
+    if not cid:
         raise HTTPException(status_code=401, detail="invalid credentials")
 
-    return str(row["clinic_id"])
+    return cid
 
 
 def _issue_login_token(clinic_id: str, clinic_user_id: str, role: str) -> ClinicLoginResponse:
@@ -208,48 +204,52 @@ def clinic_login(req: ClinicLoginRequest) -> ClinicLoginResponse:
     """
     Clinic portal login (canonical).
     Uses:
-      - clinics (slug -> clinic_id)
+      - resolve clinic_id by slug (security definer)
       - clinic_users (email/password)
     """
-    db = SessionLocal()
-    try:
-        clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug)
+    email_lc = (req.email or "").strip().lower()
 
-        # Must set RLS context before reading clinic_users under FORCE RLS
-        temp_user = str(uuid.uuid4())
-        set_rls_context(db, clinic_id=clinic_id, user_id=temp_user)
-
-        user = db.execute(
-            text("""
-                SELECT user_id, role, password_hash, active_status
-                FROM clinic_users
-                WHERE clinic_id = :cid AND lower(email) = :email
-                LIMIT 1
-            """),
-            {"cid": clinic_id, "email": str(req.email).lower()},
-        ).mappings().first()
-
-        if not user or not bool(user["active_status"]):
-            raise HTTPException(status_code=401, detail="invalid credentials")
-
-        stored = str(user["password_hash"] or "")
-        if not _verify_password(req.password, stored):
-            raise HTTPException(status_code=401, detail="invalid credentials")
-
-        clinic_user_id = str(user["user_id"])
-        role = str(user["role"])
-
-        # Reset context to real user (good hygiene)
-        set_rls_context(db, clinic_id=clinic_id, user_id=clinic_user_id)
-        db.commit()
-
-        return _issue_login_token(clinic_id, clinic_user_id, role)
-    finally:
+    with SessionLocal() as db:
         try:
-            clear_rls_context(db)
-        except Exception:
-            pass
-        db.close()
+            clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug)
+
+            # Must set RLS context before reading clinic_users under FORCE RLS
+            # (you currently have ENABLE, but this keeps you future-proof for FORCE)
+            temp_user = str(uuid.uuid4())
+            set_rls_context(db, clinic_id=clinic_id, user_id=temp_user)
+
+            user = db.execute(
+                text(
+                    """
+                    SELECT user_id, role, password_hash, active_status
+                    FROM clinic_users
+                    WHERE clinic_id = :cid AND lower(email) = :email
+                    LIMIT 1
+                    """
+                ),
+                {"cid": clinic_id, "email": email_lc},
+            ).mappings().first()
+
+            if not user or not bool(user["active_status"]):
+                raise HTTPException(status_code=401, detail="invalid credentials")
+
+            stored = str(user["password_hash"] or "")
+            if not _verify_password(req.password, stored):
+                raise HTTPException(status_code=401, detail="invalid credentials")
+
+            clinic_user_id = str(user["user_id"])
+            role = str(user["role"])
+
+            # Reset context to real user (hygiene)
+            set_rls_context(db, clinic_id=clinic_id, user_id=clinic_user_id)
+            db.commit()
+
+            return _issue_login_token(clinic_id, clinic_user_id, role)
+        finally:
+            try:
+                clear_rls_context(db)
+            except Exception:
+                pass
 
 
 @router.post("/v1/clinic/auth/invite/accept", response_model=ClinicLoginResponse)
@@ -259,107 +259,117 @@ def accept_invite(req: InviteAcceptRequest) -> ClinicLoginResponse:
       - verifies token_hash + expiry + unused
       - creates clinic_users row
       - marks invite used_at
-      - returns JWT (so you can login immediately)
+      - returns JWT (login immediately)
     """
-    db = SessionLocal()
-    try:
-        clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug)
+    email_lc = (req.email or "").strip().lower()
+    now = datetime.now(timezone.utc)
 
-        # Set RLS context to this clinic so we can read/write clinic-scoped tables
-        new_user_id = str(uuid.uuid4())
-        set_rls_context(db, clinic_id=clinic_id, user_id=new_user_id)
-
-        th = _hash_invite_token(req.invite_token)
-        now = datetime.now(timezone.utc)
-
-        invite = db.execute(
-            text("""
-                SELECT invite_id, role, expires_at, used_at, email
-                FROM clinic_user_invites
-                WHERE clinic_id = :cid
-                  AND token_hash = :th
-                LIMIT 1
-            """),
-            {"cid": clinic_id, "th": th},
-        ).mappings().first()
-
-        if not invite:
-            raise HTTPException(status_code=401, detail="invalid invite")
-
-        if invite["used_at"] is not None:
-            raise HTTPException(status_code=401, detail="invite already used")
-
-        exp = invite["expires_at"]
-        if exp is None or (hasattr(exp, "tzinfo") and exp < now) or (not hasattr(exp, "tzinfo") and exp < now.replace(tzinfo=None)):
-            raise HTTPException(status_code=401, detail="invite expired")
-
-        invited_email = str(invite["email"] or "").lower()
-        if invited_email != str(req.email).lower():
-            raise HTTPException(status_code=401, detail="invalid invite")
-
-        role = str(invite["role"])
-
-        # Ensure email not already registered in this clinic
-        exists = db.execute(
-            text("""
-                SELECT 1
-                FROM clinic_users
-                WHERE clinic_id = :cid AND lower(email) = :email
-                LIMIT 1
-            """),
-            {"cid": clinic_id, "email": str(req.email).lower()},
-        ).mappings().first()
-
-        if exists:
-            raise HTTPException(status_code=409, detail="user already exists")
-
-        pw_hash = _hash_password(req.password)
-
-        # Create user
-        db.execute(
-            text("""
-                INSERT INTO clinic_users (user_id, clinic_id, role, email, password_hash, active_status, created_at)
-                VALUES (:uid, :cid, :role, :email, :ph, true, now())
-            """),
-            {
-                "uid": new_user_id,
-                "cid": clinic_id,
-                "role": role,
-                "email": str(req.email).lower(),
-                "ph": pw_hash,
-            },
-        )
-
-        # Mark invite used
-        db.execute(
-            text("""
-                UPDATE clinic_user_invites
-                SET used_at = now()
-                WHERE invite_id = :iid
-            """),
-            {"iid": str(invite["invite_id"])},
-        )
-
-        db.commit()
-
-        # Set context to the newly created user (hygiene)
-        set_rls_context(db, clinic_id=clinic_id, user_id=new_user_id)
-        db.commit()
-
-        return _issue_login_token(clinic_id, new_user_id, role)
-
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"invite accept failed: {type(e).__name__}: {e}")
-    finally:
+    with SessionLocal() as db:
         try:
-            clear_rls_context(db)
-        except Exception:
-            pass
-        db.close()
+            clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug)
+
+            # Set RLS context to this clinic so we can read/write clinic-scoped tables
+            new_user_id = str(uuid.uuid4())
+            set_rls_context(db, clinic_id=clinic_id, user_id=new_user_id)
+
+            th = _hash_invite_token(req.invite_token)
+
+            invite = db.execute(
+                text(
+                    """
+                    SELECT invite_id, role, expires_at, used_at, email
+                    FROM clinic_user_invites
+                    WHERE clinic_id = :cid
+                      AND token_hash = :th
+                    LIMIT 1
+                    """
+                ),
+                {"cid": clinic_id, "th": th},
+            ).mappings().first()
+
+            if not invite:
+                raise HTTPException(status_code=401, detail="invalid invite")
+
+            if invite["used_at"] is not None:
+                raise HTTPException(status_code=401, detail="invite already used")
+
+            exp = invite["expires_at"]
+            if exp is None:
+                raise HTTPException(status_code=401, detail="invite expired")
+
+            # Normalize naive -> UTC
+            if getattr(exp, "tzinfo", None) is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+
+            if exp < now:
+                raise HTTPException(status_code=401, detail="invite expired")
+
+            invited_email = str(invite["email"] or "").strip().lower()
+            if invited_email != email_lc:
+                raise HTTPException(status_code=401, detail="invalid invite")
+
+            role = str(invite["role"])
+
+            # Ensure email not already registered in this clinic
+            exists = db.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM clinic_users
+                    WHERE clinic_id = :cid AND lower(email) = :email
+                    LIMIT 1
+                    """
+                ),
+                {"cid": clinic_id, "email": email_lc},
+            ).mappings().first()
+
+            if exists:
+                raise HTTPException(status_code=409, detail="user already exists")
+
+            pw_hash = _hash_password(req.password)
+
+            # Create user
+            db.execute(
+                text(
+                    """
+                    INSERT INTO clinic_users (user_id, clinic_id, role, email, password_hash, active_status, created_at)
+                    VALUES (:uid, :cid, :role, :email, :ph, true, now())
+                    """
+                ),
+                {"uid": new_user_id, "cid": clinic_id, "role": role, "email": email_lc, "ph": pw_hash},
+            )
+
+            # Mark invite used
+            db.execute(
+                text(
+                    """
+                    UPDATE clinic_user_invites
+                    SET used_at = now()
+                    WHERE invite_id = :iid
+                    """
+                ),
+                {"iid": str(invite["invite_id"])},
+            )
+
+            db.commit()
+
+            # Set context to the newly created user (hygiene)
+            set_rls_context(db, clinic_id=clinic_id, user_id=new_user_id)
+            db.commit()
+
+            return _issue_login_token(clinic_id, new_user_id, role)
+
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"invite accept failed: {type(e).__name__}: {e}")
+        finally:
+            try:
+                clear_rls_context(db)
+            except Exception:
+                pass
 
 
 # -----------------------------
@@ -376,14 +386,21 @@ def require_clinic_user(
     token = authorization.split(" ", 1)[1].strip()
     claims = _decode_jwt(token)
 
-    clinic_id = str(claims.get("clinic_id") or "")
-    clinic_user_id = str(claims.get("clinic_user_id") or "")
-    role = str(claims.get("role") or "")
+    clinic_id = str(claims.get("clinic_id") or "").strip()
+
+    # Support multiple claim key shapes (future-proof)
+    clinic_user_id = str(
+        claims.get("clinic_user_id")
+        or claims.get("user_id")
+        or claims.get("clinic_user")
+        or ""
+    ).strip()
+
+    role = str(claims.get("role") or "").strip()
 
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="invalid token claims")
 
-    # This is what app.db.get_db() looks for
     request.state.clinic_id = clinic_id
     request.state.clinic_user_id = clinic_user_id
 
