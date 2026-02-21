@@ -1,5 +1,5 @@
 # app/portal_ops_health.py
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -49,7 +49,10 @@ class WindowBurn(BaseModel):
     events_total: int
     rate_5xx: float
     p95_latency_ms: Optional[int] = None
+
     governance_replaced_rate: float
+    pii_warned_rate: float
+
     burn_5xx: float
     burn_latency: Optional[float] = None
     burn_governance: float
@@ -63,8 +66,12 @@ class TimeseriesPoint(BaseModel):
     rate_5xx: float
     latency_p50_ms: Optional[int] = None
     latency_p95_ms: Optional[int] = None
+
     governance_replaced: int
     governance_replaced_rate: float
+
+    pii_warned: int
+    pii_warned_rate: float
 
 
 class Contributors(BaseModel):
@@ -101,7 +108,6 @@ def _ui_message(trust_state: str, reasons: List[str]) -> str:
         return "Healthy"
     if trust_state == "red":
         return "At risk"
-    # yellow
     if "no_data" in reasons or any(r.startswith("low_data") for r in reasons):
         return "Collecting data"
     if any("5xx" in r for r in reasons):
@@ -118,7 +124,7 @@ def _trust_state_from_24h(
     rate_5xx: float,
     p95_latency_ms: Optional[int],
     gov_rate: float,
-) -> (str, List[str]):
+) -> Tuple[str, List[str]]:
     reasons: List[str] = []
     if events_total == 0:
         reasons.append("no_data")
@@ -138,7 +144,6 @@ def _trust_state_from_24h(
         reasons.append("red_gov_replaced_rate")
         return "red", reasons
 
-    # Green only if enough data
     green_ok = (
         rate_5xx <= SLO_MAX_5XX_RATE
         and (p95_latency_ms is None or p95_latency_ms <= SLO_MAX_P95_LATENCY_MS)
@@ -151,12 +156,12 @@ def _trust_state_from_24h(
     return ("green", reasons) if green_ok else ("yellow", reasons)
 
 
-def _where_clause(mode: str, route: str) -> (str, Dict[str, Any]):
-    where = ["clinic_id = app_current_clinic_id()"]
-    params: Dict[str, Any] = {}
-
+def _where_clause(mode: str, route: str) -> Tuple[str, Dict[str, Any], str, str]:
     m = (mode or _ALL).strip()
     r = (route or _ALL).strip()
+
+    where = ["clinic_id = app_current_clinic_id()"]
+    params: Dict[str, Any] = {}
 
     if m != _ALL:
         if m not in _ALLOWED_MODES:
@@ -168,7 +173,7 @@ def _where_clause(mode: str, route: str) -> (str, Dict[str, Any]):
         where.append("route = :route")
         params["route"] = r
 
-    return " AND ".join(where), params
+    return " AND ".join(where), params, m, r
 
 
 @router.get("/ops/health", response_model=PortalOpsHealthResponse)
@@ -188,6 +193,10 @@ def portal_ops_health(
       - error budget windows (1/6/24h)
       - timeseries (last N buckets)
       - contributors (routes/modes by key issues)
+
+    NOTE:
+      - governance_replaced_rate = TRUE interventions only
+      - pii_warned_rate = hygiene-only
     """
     try:
         hours = int(hours)
@@ -217,7 +226,7 @@ def portal_ops_health(
     if limit_contributors > 25:
         limit_contributors = 25
 
-    where_sql, base_params = _where_clause(mode, route)
+    where_sql, base_params, m, r = _where_clause(mode, route)
 
     # -----------------------------
     # A) Error budget windows (1/6/24h)
@@ -234,7 +243,8 @@ def portal_ops_health(
                   COUNT(*)::bigint AS events_total,
                   SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END)::bigint AS errors_5xx,
                   percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS latency_p95_ms,
-                  SUM(CASE WHEN governance_replaced THEN 1 ELSE 0 END)::bigint AS governance_replaced
+                  SUM(CASE WHEN governance_replaced THEN 1 ELSE 0 END)::bigint AS governance_replaced,
+                  SUM(CASE WHEN pii_warned THEN 1 ELSE 0 END)::bigint AS pii_warned
                 FROM ops_metrics_events
                 WHERE {where_sql}
                   AND created_at >= now() - make_interval(hours => :hours)
@@ -246,9 +256,11 @@ def portal_ops_health(
         events_total = int(row.get("events_total") or 0)
         errors_5xx = int(row.get("errors_5xx") or 0)
         gov_rep = int(row.get("governance_replaced") or 0)
+        pii_warned = int(row.get("pii_warned") or 0)
 
         rate_5xx = float(errors_5xx / events_total) if events_total > 0 else 0.0
         gov_rate = float(gov_rep / events_total) if events_total > 0 else 0.0
+        pii_rate = float(pii_warned / events_total) if events_total > 0 else 0.0
 
         p95 = row.get("latency_p95_ms")
         p95_ms = int(p95) if p95 is not None else None
@@ -270,6 +282,7 @@ def portal_ops_health(
                 rate_5xx=rate_5xx,
                 p95_latency_ms=p95_ms,
                 governance_replaced_rate=gov_rate,
+                pii_warned_rate=pii_rate,
                 burn_5xx=float(burn_5xx),
                 burn_latency=float(burn_lat) if burn_lat is not None else None,
                 burn_governance=float(burn_gov),
@@ -277,7 +290,6 @@ def portal_ops_health(
             )
         )
 
-    # Trust state derived from 24h window
     w24 = windows[-1] if windows else None
     trust_state, reasons = _trust_state_from_24h(
         events_total=w24.events_total if w24 else 0,
@@ -303,7 +315,8 @@ def portal_ops_health(
                 ) AT TIME ZONE 'UTC' AS bucket_start_utc,
                 status_code,
                 latency_ms,
-                governance_replaced
+                governance_replaced,
+                pii_warned
               FROM ops_metrics_events
               WHERE {where_sql}
                 AND created_at >= now() - make_interval(hours => :hours)
@@ -314,7 +327,8 @@ def portal_ops_health(
               SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END)::bigint AS errors_5xx,
               percentile_disc(0.50) WITHIN GROUP (ORDER BY latency_ms) AS latency_p50_ms,
               percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS latency_p95_ms,
-              SUM(CASE WHEN governance_replaced THEN 1 ELSE 0 END)::bigint AS governance_replaced
+              SUM(CASE WHEN governance_replaced THEN 1 ELSE 0 END)::bigint AS governance_replaced,
+              SUM(CASE WHEN pii_warned THEN 1 ELSE 0 END)::bigint AS pii_warned
             FROM base
             GROUP BY bucket_start_utc
             ORDER BY bucket_start_utc DESC
@@ -329,9 +343,11 @@ def portal_ops_health(
         events_total = int(row.get("events_total") or 0)
         errors_5xx = int(row.get("errors_5xx") or 0)
         gov_rep = int(row.get("governance_replaced") or 0)
+        pii_warned = int(row.get("pii_warned") or 0)
 
         rate_5xx = float(errors_5xx / events_total) if events_total > 0 else 0.0
         gov_rate = float(gov_rep / events_total) if events_total > 0 else 0.0
+        pii_rate = float(pii_warned / events_total) if events_total > 0 else 0.0
 
         b = row.get("bucket_start_utc")
         bucket_iso = b.isoformat() + "+00:00" if hasattr(b, "isoformat") and b else ""
@@ -349,6 +365,8 @@ def portal_ops_health(
                 latency_p95_ms=int(p95) if p95 is not None else None,
                 governance_replaced=gov_rep,
                 governance_replaced_rate=gov_rate,
+                pii_warned=pii_warned,
+                pii_warned_rate=pii_rate,
             )
         )
 
@@ -359,7 +377,6 @@ def portal_ops_health(
     c_params = dict(base_params)
     c_params["lim"] = limit_contributors
 
-    # Top routes by events
     contrib.top_routes_by_events = [
         {"route": str(x["route"]), "events": int(x["events"])}
         for x in db.execute(
@@ -378,7 +395,6 @@ def portal_ops_health(
         ).mappings().all()
     ]
 
-    # Top routes by 5xx
     contrib.top_routes_by_5xx = [
         {"route": str(x["route"]), "errors_5xx": int(x["errors_5xx"])}
         for x in db.execute(
@@ -399,15 +415,13 @@ def portal_ops_health(
         ).mappings().all()
     ]
 
-    # Top routes by p95 latency (requires enough rows; still fine)
     contrib.top_routes_by_p95_latency = [
         {"route": str(x["route"]), "p95_latency_ms": int(x["p95_latency_ms"])}
         for x in db.execute(
             text(
                 f"""
                 SELECT route,
-                       percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms,
-                       COUNT(*)::bigint AS events
+                       percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms
                 FROM ops_metrics_events
                 WHERE {where_sql}
                   AND created_at >= now() - make_interval(hours => 24)
@@ -420,7 +434,6 @@ def portal_ops_health(
         ).mappings().all()
     ]
 
-    # Top routes by governance rate
     contrib.top_routes_by_gov_rate = [
         {"route": str(x["route"]), "governance_replaced_rate": float(x["gov_rate"]), "events": int(x["events"])}
         for x in db.execute(
@@ -441,7 +454,6 @@ def portal_ops_health(
         ).mappings().all()
     ]
 
-    # Modes equivalents
     contrib.top_modes_by_events = [
         {"mode": str(x["mode"]), "events": int(x["events"])}
         for x in db.execute(
@@ -522,8 +534,8 @@ def portal_ops_health(
     return PortalOpsHealthResponse(
         hours=hours,
         bucket_sec=bucket_sec,
-        mode=(mode or _ALL).strip(),
-        route=(route or _ALL).strip(),
+        mode=m,
+        route=r,
         trust_state=trust_state,
         message=message,
         reasons=reasons,
