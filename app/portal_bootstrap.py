@@ -114,7 +114,8 @@ def bootstrap_clinic(
     clinic_id = uuid.uuid4()
 
     # Deterministic system actor UUID (same value every time, OK because clinic_id scopes row visibility)
-    system_user_id = uuid.uuid5(uuid.NAMESPACE_DNS, "anchor-system-bootstrap")
+    # Unique per clinic to avoid PK collisions across clinics
+    system_user_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"anchor-system-bootstrap:{clinic_id}")
 
     slug = _slugify(req.clinic_slug or req.clinic_name)
     invite_token = secrets.token_urlsafe(24)
