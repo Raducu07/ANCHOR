@@ -428,6 +428,10 @@ CREATE INDEX IF NOT EXISTS idx_clinic_gov_events_clinic_created_at
 CREATE INDEX IF NOT EXISTS idx_clinic_gov_events_clinic_request
   ON clinic_governance_events (clinic_id, request_id);
 
+-- Fast portal list + cursor pagination
+CREATE INDEX IF NOT EXISTS idx_cge_clinic_created_request
+ON clinic_governance_events (clinic_id, created_at DESC, request_id DESC);
+
 -- ops metrics events (telemetry-only)
 CREATE TABLE IF NOT EXISTS ops_metrics_events (
   event_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -443,6 +447,10 @@ CREATE TABLE IF NOT EXISTS ops_metrics_events (
 
 CREATE INDEX IF NOT EXISTS idx_ops_metrics_events_clinic_created_at
   ON ops_metrics_events (clinic_id, created_at DESC);
+
+-- Fast ops list/joins by request_id and time
+CREATE INDEX IF NOT EXISTS idx_ome_clinic_created_request
+ON ops_metrics_events (clinic_id, created_at DESC, request_id DESC);
 
 -- admin audit events (content-free)
 CREATE TABLE IF NOT EXISTS admin_audit_events (
