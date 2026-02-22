@@ -25,10 +25,8 @@ class PortalOpsKpisResponse(BaseModel):
     status: str = "ok"
     window_hours: int = Field(..., ge=1, le=168)
 
-    # NOTE: kept as "events_24h" for UI stability, but it is actually events in `window_hours`.
+    # NOTE: kept as "events_24h" for UI stability; value is actually events in `window_hours`.
     events_24h: int
-
-    # NEW: derived load metric
     events_per_hour: float
 
     # Interventions: true governance transforms only (governance_replaced)
@@ -39,8 +37,14 @@ class PortalOpsKpisResponse(BaseModel):
     pii_warned_24h: int
     pii_warned_rate_24h: float
 
-    health_state: str
+    # “What’s driving load?” (dashboard gold)
+    top_route_24h: Optional[str] = None
+    top_route_events_24h: int = 0
 
+    top_mode_24h: Optional[str] = None
+    top_mode_events_24h: int = 0
+
+    health_state: str
     last_event_at: Optional[str] = None
     as_of: str
 
@@ -58,6 +62,7 @@ def portal_ops_kpis(
     - Reads ops_metrics_events only (telemetry-only, no content).
     - Derives health_state using canonical logic from portal_ops_health.py
       to avoid threshold drift.
+    - Adds top_route/top_mode contributors for instant "what's driving load" visibility.
     """
     try:
         window_hours = int(window_hours)
@@ -73,6 +78,9 @@ def portal_ops_kpis(
     params: Dict[str, Any] = dict(base_params)
     params["hours"] = window_hours
 
+    # -----------------------------
+    # A) Aggregate KPIs (single query)
+    # -----------------------------
     row = (
         db.execute(
             text(
@@ -121,19 +129,77 @@ def portal_ops_kpis(
     if le is not None and hasattr(le, "isoformat"):
         last_event_at = le.astimezone(timezone.utc).isoformat()
 
-    # Derived: events/hour over the chosen window (UI-friendly)
-    eph = float(events_total) / float(window_hours) if window_hours > 0 else 0.0
+    events_per_hour = float(events_total) / float(window_hours) if window_hours > 0 else 0.0
+
+    # -----------------------------
+    # B) Top contributors (only if we have data)
+    # -----------------------------
+    top_route: Optional[str] = None
+    top_route_events: int = 0
+    top_mode: Optional[str] = None
+    top_mode_events: int = 0
+
+    if events_total > 0:
+        # Top route
+        rrow = (
+            db.execute(
+                text(
+                    f"""
+                    SELECT route, COUNT(*)::bigint AS events
+                    FROM ops_metrics_events
+                    WHERE {where_sql}
+                      AND created_at >= now() - make_interval(hours => :hours)
+                    GROUP BY route
+                    ORDER BY events DESC, route ASC
+                    LIMIT 1
+                    """
+                ),
+                params,
+            )
+            .mappings()
+            .first()
+        )
+        if rrow:
+            top_route = str(rrow.get("route")) if rrow.get("route") is not None else None
+            top_route_events = int(rrow.get("events") or 0)
+
+        # Top mode
+        mrow = (
+            db.execute(
+                text(
+                    f"""
+                    SELECT mode, COUNT(*)::bigint AS events
+                    FROM ops_metrics_events
+                    WHERE {where_sql}
+                      AND created_at >= now() - make_interval(hours => :hours)
+                    GROUP BY mode
+                    ORDER BY events DESC, mode ASC
+                    LIMIT 1
+                    """
+                ),
+                params,
+            )
+            .mappings()
+            .first()
+        )
+        if mrow:
+            top_mode = str(mrow.get("mode")) if mrow.get("mode") is not None else None
+            top_mode_events = int(mrow.get("events") or 0)
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
     return PortalOpsKpisResponse(
         window_hours=window_hours,
         events_24h=events_total,
-        events_per_hour=round(eph, 3),
+        events_per_hour=round(events_per_hour, 3),
         interventions_24h=interventions,
         intervention_rate_24h=round(intervention_rate, 4),
         pii_warned_24h=pii_warned,
         pii_warned_rate_24h=round(pii_rate, 4),
+        top_route_24h=top_route,
+        top_route_events_24h=top_route_events,
+        top_mode_24h=top_mode,
+        top_mode_events_24h=top_mode_events,
         health_state=health_state,
         last_event_at=last_event_at,
         as_of=now_iso,
