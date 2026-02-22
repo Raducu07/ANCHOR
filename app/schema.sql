@@ -422,6 +422,9 @@ CREATE TABLE IF NOT EXISTS clinic_governance_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cge_clinic_request
+  ON clinic_governance_events (clinic_id, request_id);
+
 CREATE INDEX IF NOT EXISTS idx_clinic_gov_events_clinic_created_at
   ON clinic_governance_events (clinic_id, created_at DESC);
 
@@ -442,15 +445,36 @@ CREATE TABLE IF NOT EXISTS ops_metrics_events (
   latency_ms integer NOT NULL CHECK (latency_ms >= 0),
   mode text CHECK (mode IN ('clinical_note','client_comm','internal_summary')),
   governance_replaced boolean NOT NULL DEFAULT false,
+  pii_warned boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Backfill/sync for existing DBs (safe + idempotent)
+ALTER TABLE ops_metrics_events
+  ADD COLUMN IF NOT EXISTS pii_warned boolean NOT NULL DEFAULT false;
+
+-- Idempotency (per clinic)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cge_clinic_request
+  ON clinic_governance_events (clinic_id, request_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ome_clinic_request
+  ON ops_metrics_events (clinic_id, request_id);
+
+-- Query helpers
 CREATE INDEX IF NOT EXISTS idx_ops_metrics_events_clinic_created_at
   ON ops_metrics_events (clinic_id, created_at DESC);
 
 -- Fast ops list/joins by request_id and time
 CREATE INDEX IF NOT EXISTS idx_ome_clinic_created_request
-ON ops_metrics_events (clinic_id, created_at DESC, request_id DESC);
+  ON ops_metrics_events (clinic_id, created_at DESC, request_id DESC);
+
+-- Optimisation for KPI aggregation by route
+CREATE INDEX IF NOT EXISTS idx_ome_clinic_route_created
+  ON ops_metrics_events (clinic_id, route, created_at DESC);
+
+-- Optimisation for KPI aggregation by mode
+CREATE INDEX IF NOT EXISTS idx_ome_clinic_mode_created
+  ON ops_metrics_events (clinic_id, mode, created_at DESC);
 
 -- admin audit events (content-free)
 CREATE TABLE IF NOT EXISTS admin_audit_events (
