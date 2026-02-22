@@ -1,103 +1,43 @@
-# app/migrate.py
 from __future__ import annotations
 
-import hashlib
+import logging
 from pathlib import Path
-from typing import List, Tuple
 
 from sqlalchemy import text
 
 from app.db import ENGINE
 
 
-MIGRATIONS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  filename TEXT PRIMARY KEY,
-  checksum TEXT NOT NULL,
-  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
-
-SELECT_APPLIED_SQL = """
-SELECT filename, checksum
-FROM schema_migrations
-ORDER BY filename ASC;
-"""
-
-INSERT_APPLIED_SQL = """
-INSERT INTO schema_migrations (filename, checksum)
-VALUES (:filename, :checksum)
-ON CONFLICT (filename) DO NOTHING;
-"""
-
-
-def _sha256(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-
-def _read_text_file(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
-
-
-def _list_migration_files(migrations_dir: Path) -> List[Path]:
-    if not migrations_dir.exists() or not migrations_dir.is_dir():
-        return []
-    # Only .sql files, sorted by name (your YYYYMMDD_XX naming works perfectly)
-    return sorted([p for p in migrations_dir.glob("*.sql") if p.is_file()])
-
-
 def run_migrations() -> None:
     """
-    Safe, idempotent migration runner:
-      1) Apply schema.sql baseline (idempotent).
-      2) Apply new migrations from ./migrations/*.sql in sorted order.
-      3) Track applied migrations + checksum in schema_migrations.
+    Runs schema.sql then all files in ./migrations/*.sql in lexical order.
+    Idempotency must be inside the SQL (IF NOT EXISTS etc.)
     """
+    root = Path(__file__).resolve().parent
+    schema_path = root / "schema.sql"
+    migrations_dir = root / "migrations"
 
-    base_dir = Path(__file__).parent
-    schema_path = base_dir / "schema.sql"
-    migrations_dir = base_dir.parent / "migrations"
+    if not schema_path.exists():
+        raise RuntimeError(f"schema.sql not found at: {schema_path}")
+
+    schema_sql = schema_path.read_text(encoding="utf-8")
+
+    migration_files = []
+    if migrations_dir.exists() and migrations_dir.is_dir():
+        migration_files = sorted(migrations_dir.glob("*.sql"))
 
     with ENGINE.begin() as conn:
-        # Ensure tracking table exists
-        conn.execute(text(MIGRATIONS_TABLE_SQL))
+        # 1) Base schema
+        conn.execute(text(schema_sql))
 
-        # Load applied migrations
-        applied_rows: List[Tuple[str, str]] = [
-            (str(r[0]), str(r[1])) for r in conn.execute(text(SELECT_APPLIED_SQL)).fetchall()
-        ]
-        applied = {fn: chk for fn, chk in applied_rows}
-
-        # 1) Baseline schema (idempotent, safe to run repeatedly)
-        if schema_path.exists():
-            schema_sql = _read_text_file(schema_path).strip()
-            if schema_sql:
-                conn.execute(text(schema_sql))
-
-        # 2) Apply migrations (only those not already applied)
-        for path in _list_migration_files(migrations_dir):
-            filename = path.name
-            sql = _read_text_file(path).strip()
+        # 2) Additive migrations
+        for f in migration_files:
+            sql = f.read_text(encoding="utf-8").strip()
             if not sql:
-                # Empty file: still record it to avoid re-checking every deploy
-                conn.execute(text(INSERT_APPLIED_SQL), {"filename": filename, "checksum": _sha256("")})
                 continue
-
-            checksum = _sha256(sql)
-
-            if filename in applied:
-                # If the file changed after being applied, fail fast (protects prod consistency)
-                if applied[filename] != checksum:
-                    raise RuntimeError(
-                        f"Migration checksum mismatch for {filename}. "
-                        f"Applied={applied[filename]} Current={checksum}. "
-                        f"Do not edit applied migrations; create a new one."
-                    )
-                # Already applied, skip
-                continue
-
-            # Apply migration file
             conn.execute(text(sql))
 
-            # Record it
-            conn.execute(text(INSERT_APPLIED_SQL), {"filename": filename, "checksum": checksum})
+    logging.getLogger(__name__).info(
+        "migrations_ok",
+        extra={"schema": str(schema_path), "count": len(migration_files)},
+    )
