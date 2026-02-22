@@ -27,14 +27,21 @@ class PortalOpsKpisResponse(BaseModel):
 
     # NOTE: kept as "events_24h" for UI stability, but it is actually events in `window_hours`.
     events_24h: int
+
+    # NEW: derived load metric
+    events_per_hour: float
+
+    # Interventions: true governance transforms only (governance_replaced)
+    interventions_24h: int
     intervention_rate_24h: float
+
+    # PII hygiene: warned (not an intervention)
+    pii_warned_24h: int
     pii_warned_rate_24h: float
 
     health_state: str
 
-    # NEW: last observed ops event in this window (UTC ISO) or None when no data
     last_event_at: Optional[str] = None
-
     as_of: str
 
 
@@ -91,11 +98,11 @@ def portal_ops_kpis(
 
     events_total = int(row.get("events_total") or 0)
     errors_5xx = int(row.get("errors_5xx") or 0)
-    gov_rep = int(row.get("governance_replaced") or 0)
+    interventions = int(row.get("governance_replaced") or 0)
     pii_warned = int(row.get("pii_warned") or 0)
 
     rate_5xx = float(errors_5xx / events_total) if events_total > 0 else 0.0
-    gov_rate = float(gov_rep / events_total) if events_total > 0 else 0.0
+    intervention_rate = float(interventions / events_total) if events_total > 0 else 0.0
     pii_rate = float(pii_warned / events_total) if events_total > 0 else 0.0
 
     p95 = row.get("latency_p95_ms")
@@ -105,22 +112,27 @@ def portal_ops_kpis(
         events_total=events_total,
         rate_5xx=rate_5xx,
         p95_latency_ms=p95_ms,
-        gov_rate=gov_rate,
+        gov_rate=intervention_rate,
     )
 
     # last_event_at is a datetime or None
     le = row.get("last_event_at")
     last_event_at: Optional[str] = None
     if le is not None and hasattr(le, "isoformat"):
-        # ensure explicit UTC suffix for UI
         last_event_at = le.astimezone(timezone.utc).isoformat()
+
+    # Derived: events/hour over the chosen window (UI-friendly)
+    eph = float(events_total) / float(window_hours) if window_hours > 0 else 0.0
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
     return PortalOpsKpisResponse(
         window_hours=window_hours,
         events_24h=events_total,
-        intervention_rate_24h=round(gov_rate, 4),
+        events_per_hour=round(eph, 3),
+        interventions_24h=interventions,
+        intervention_rate_24h=round(intervention_rate, 4),
+        pii_warned_24h=pii_warned,
         pii_warned_rate_24h=round(pii_rate, 4),
         health_state=health_state,
         last_event_at=last_event_at,
