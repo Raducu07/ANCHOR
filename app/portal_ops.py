@@ -29,6 +29,10 @@ class PortalOpsKpisResponse(BaseModel):
     events_24h: int
     events_per_hour: float
 
+    # Reliability + performance (CEO metrics)
+    rate_5xx_24h: float
+    p95_latency_ms_24h: Optional[int] = None
+
     # Interventions: true governance transforms only (governance_replaced)
     interventions_24h: int
     intervention_rate_24h: float
@@ -140,7 +144,6 @@ def portal_ops_kpis(
     top_mode_events: int = 0
 
     if events_total > 0:
-        # Top route
         rrow = (
             db.execute(
                 text(
@@ -163,7 +166,6 @@ def portal_ops_kpis(
             top_route = str(rrow.get("route")) if rrow.get("route") is not None else None
             top_route_events = int(rrow.get("events") or 0)
 
-        # Top mode
         mrow = (
             db.execute(
                 text(
@@ -192,6 +194,8 @@ def portal_ops_kpis(
         window_hours=window_hours,
         events_24h=events_total,
         events_per_hour=round(events_per_hour, 3),
+        rate_5xx_24h=round(rate_5xx, 4),
+        p95_latency_ms_24h=p95_ms,
         interventions_24h=interventions,
         intervention_rate_24h=round(intervention_rate, 4),
         pii_warned_24h=pii_warned,
