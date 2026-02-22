@@ -491,17 +491,17 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_events_clinic_created_at
   ON admin_audit_events (clinic_id, created_at DESC);
 
 -- =========================
--- Safe public lookup view for login (UPDATED)
--- - Replaces unsafe RLS policy that leaked all active clinics.
--- - This view exposes only slug + active_status.
+-- Safe public lookup view
 -- =========================
 
 CREATE OR REPLACE VIEW clinics_public AS
 SELECT clinic_slug, active_status
 FROM clinics;
 
--- Safe clinic resolver for login: returns clinic_id only for active clinics.
--- SECURITY DEFINER bypasses RLS safely without exposing extra fields.
+-- =========================
+-- Safe clinic resolver
+-- =========================
+
 CREATE OR REPLACE FUNCTION public.resolve_clinic_id_by_slug(p_slug text)
 RETURNS uuid
 LANGUAGE sql
@@ -515,18 +515,8 @@ AS $$
   LIMIT 1
 $$;
 
--- Lock down function execution: only runtime role if it exists.
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anchor_app') THEN
-    REVOKE ALL ON FUNCTION public.resolve_clinic_id_by_slug(text) FROM PUBLIC;
-    GRANT EXECUTE ON FUNCTION public.resolve_clinic_id_by_slug(text) TO anchor_app;
-  END IF;
-END $$;
-
 -- =========================
--- RLS: ENABLE only (safe).
--- FORCE comes after login+middleware sets app.clinic_id on every clinic route.
+-- ENABLE RLS
 -- =========================
 
 ALTER TABLE clinics ENABLE ROW LEVEL SECURITY;
@@ -539,7 +529,10 @@ ALTER TABLE clinic_governance_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ops_metrics_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_audit_events ENABLE ROW LEVEL SECURITY;
 
--- tenant policies (clinic_id must match session setting)
+-- =========================
+-- TENANT POLICIES
+-- =========================
+
 DROP POLICY IF EXISTS rls_clinics_tenant ON clinics;
 CREATE POLICY rls_clinics_tenant ON clinics
   USING (clinic_id = app_current_clinic_id())
@@ -584,28 +577,3 @@ DROP POLICY IF EXISTS rls_admin_audit_tenant ON admin_audit_events;
 CREATE POLICY rls_admin_audit_tenant ON admin_audit_events
   USING (clinic_id = app_current_clinic_id())
   WITH CHECK (clinic_id = app_current_clinic_id());
-
--- =========================
--- IMPORTANT UPDATE:
--- Remove unsafe policy that OR'd with tenant policy and exposed all active clinics.
--- =========================
-DROP POLICY IF EXISTS rls_clinics_login_lookup ON clinics;
-
--- =========================
--- Optional privilege tightening for runtime role (UPDATED)
--- Safe: only runs if role exists.
---
--- We keep SELECT on base clinics table (RLS-scoped) so authenticated requests
--- can read their own clinic record when app.clinic_id is set.
--- We also grant SELECT on clinics_public for slug lookup.
--- =========================
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anchor_app') THEN
-    -- Ensure runtime role can read the public lookup view
-    GRANT SELECT ON clinics_public TO anchor_app;
-
-    -- Allow runtime role to read clinics, but only through RLS tenant policy
-    GRANT SELECT ON clinics TO anchor_app;
-  END IF;
-END $$;
