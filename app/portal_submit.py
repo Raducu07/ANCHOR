@@ -7,6 +7,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth_and_rls import require_clinic_user
@@ -149,7 +150,67 @@ def portal_submit(
 
     req_id = payload.request_id or uuid.uuid4()
 
-    # PII detection (types only; never store matches)
+    # -----------------------------
+    # Idempotency guard:
+    # If client supplies request_id and we already processed it, return the existing receipt.
+    # Requires a UNIQUE constraint on (clinic_id, request_id) in clinic_governance_events.
+    # -----------------------------
+    if payload.request_id is not None:
+        existing = (
+            db.execute(
+                text(
+                    """
+                    SELECT
+                      request_id,
+                      clinic_id,
+                      user_id AS clinic_user_id,
+                      mode,
+                      decision,
+                      risk_grade,
+                      reason_code,
+                      pii_detected,
+                      pii_action,
+                      COALESCE(pii_types, ARRAY[]::text[]) AS pii_types,
+                      policy_version,
+                      neutrality_version,
+                      governance_score,
+                      created_at AT TIME ZONE 'UTC' AS created_at_utc
+                    FROM clinic_governance_events
+                    WHERE clinic_id = app_current_clinic_id()
+                      AND request_id = :request_id
+                    LIMIT 1
+                    """
+                ),
+                {"request_id": str(req_id)},
+            )
+            .mappings()
+            .first()
+        )
+
+        if existing:
+            receipt = GovernanceReceipt(
+                request_id=uuid.UUID(str(existing["request_id"])),
+                clinic_id=uuid.UUID(str(existing["clinic_id"])),
+                clinic_user_id=uuid.UUID(str(existing["clinic_user_id"])),
+                mode=str(existing["mode"]),
+                decision=str(existing["decision"]),
+                risk_grade=str(existing["risk_grade"]),
+                reason_code=str(existing["reason_code"]),
+                pii_detected=bool(existing["pii_detected"]),
+                pii_action=str(existing["pii_action"]),
+                pii_types=list(existing["pii_types"] or []),
+                policy_version=int(existing["policy_version"]),
+                neutrality_version=str(existing["neutrality_version"]),
+                governance_score=existing["governance_score"],
+                created_at_utc=existing["created_at_utc"].isoformat() + "+00:00"
+                if hasattr(existing["created_at_utc"], "isoformat")
+                else str(existing["created_at_utc"]),
+            )
+            return PortalSubmitResponse(receipt=receipt)
+
+    # -----------------------------
+    # Compute metadata
+    # -----------------------------
     pii_types = detect_pii_types(payload.text)
     pii_detected = bool(pii_types)
 
@@ -157,7 +218,6 @@ def portal_submit(
     # - Warn if PII detected, but this is NOT an intervention (no replace/block).
     pii_action = "warn" if pii_detected else "allow"
 
-    # ✅ Option A (recommended): decision stays "allowed".
     # Reserve "modified/replaced/blocked" for true transforms or blocking.
     decision = "allowed"
 
@@ -166,82 +226,168 @@ def portal_submit(
 
     governance_score = None
     neutrality_version = "v1.1"
-
-    latency_ms = int((time.time() - t0) * 1000)
-    status_code = 200
-
     policy_version = _get_active_policy_version(db)
 
-    # ---- clinic governance metadata (no content) ----
-    db.execute(
-        text(
-            """
-            INSERT INTO clinic_governance_events (
-                clinic_id, request_id, user_id, mode,
-                pii_detected, pii_action, pii_types,
-                decision, risk_grade, reason_code,
-                governance_score, policy_version, neutrality_version
-            )
-            VALUES (
-                :clinic_id, :request_id, :user_id, :mode,
-                :pii_detected, :pii_action, :pii_types,
-                :decision, :risk_grade, :reason_code,
-                :governance_score, :policy_version, :neutrality_version
-            )
-            """
-        ),
-        {
-            "clinic_id": str(clinic_id),
-            "request_id": str(req_id),
-            "user_id": str(clinic_user_id),
-            "mode": mode,
-            "pii_detected": bool(pii_detected),
-            "pii_action": pii_action,
-            "pii_types": pii_types if pii_types else None,  # text[] column; None => NULL
-            "decision": decision,
-            "risk_grade": risk_grade,
-            "reason_code": reason_code,
-            "governance_score": governance_score,
-            "policy_version": int(policy_version),
-            "neutrality_version": neutrality_version,
-        },
-    )
+    # Latency: clamp to at least 1ms to avoid 0ms percentiles in tiny datasets
+    latency_ms = max(1, int((time.time() - t0) * 1000))
+    status_code = 200
 
     # ---- ops telemetry (no content) ----
-    # ✅ split signals:
+    # split signals:
     # - pii_warned: hygiene flag
     # - governance_replaced: true interventions only (false here)
     pii_warned = bool(pii_detected)
     governance_replaced = False
 
-    db.execute(
-        text(
-            """
-            INSERT INTO ops_metrics_events (
-                clinic_id, request_id, route, status_code, latency_ms,
-                mode, governance_replaced, pii_warned
+    # -----------------------------
+    # Write both rows atomically
+    # -----------------------------
+    try:
+        db.execute(
+            text(
+                """
+                INSERT INTO clinic_governance_events (
+                    clinic_id, request_id, user_id, mode,
+                    pii_detected, pii_action, pii_types,
+                    decision, risk_grade, reason_code,
+                    governance_score, policy_version, neutrality_version
+                )
+                VALUES (
+                    :clinic_id, :request_id, :user_id, :mode,
+                    :pii_detected, :pii_action, :pii_types,
+                    :decision, :risk_grade, :reason_code,
+                    :governance_score, :policy_version, :neutrality_version
+                )
+                """
+            ),
+            {
+                "clinic_id": str(clinic_id),
+                "request_id": str(req_id),
+                "user_id": str(clinic_user_id),
+                "mode": mode,
+                "pii_detected": bool(pii_detected),
+                "pii_action": pii_action,
+                # Store empty array instead of NULL to keep semantics consistent
+                "pii_types": pii_types,
+                "decision": decision,
+                "risk_grade": risk_grade,
+                "reason_code": reason_code,
+                "governance_score": governance_score,
+                "policy_version": int(policy_version),
+                "neutrality_version": neutrality_version,
+            },
+        )
+
+        db.execute(
+            text(
+                """
+                INSERT INTO ops_metrics_events (
+                    clinic_id, request_id, route, status_code, latency_ms,
+                    mode, governance_replaced, pii_warned
+                )
+                VALUES (
+                    :clinic_id, :request_id, :route, :status_code, :latency_ms,
+                    :mode, :gov_replaced, :pii_warned
+                )
+                """
+            ),
+            {
+                "clinic_id": str(clinic_id),
+                "request_id": str(req_id),
+                "route": request.url.path,
+                "status_code": int(status_code),
+                "latency_ms": int(latency_ms),
+                "mode": mode,
+                "gov_replaced": bool(governance_replaced),
+                "pii_warned": bool(pii_warned),
+            },
+        )
+
+        db.commit()
+
+    except IntegrityError:
+        # Idempotency race (duplicate request_id) or constraint issue
+        db.rollback()
+        # If client supplied request_id, attempt to fetch + return the existing receipt
+        if payload.request_id is not None:
+            existing = (
+                db.execute(
+                    text(
+                        """
+                        SELECT
+                          request_id,
+                          clinic_id,
+                          user_id AS clinic_user_id,
+                          mode,
+                          decision,
+                          risk_grade,
+                          reason_code,
+                          pii_detected,
+                          pii_action,
+                          COALESCE(pii_types, ARRAY[]::text[]) AS pii_types,
+                          policy_version,
+                          neutrality_version,
+                          governance_score,
+                          created_at AT TIME ZONE 'UTC' AS created_at_utc
+                        FROM clinic_governance_events
+                        WHERE clinic_id = app_current_clinic_id()
+                          AND request_id = :request_id
+                        LIMIT 1
+                        """
+                    ),
+                    {"request_id": str(req_id)},
+                )
+                .mappings()
+                .first()
             )
-            VALUES (
-                :clinic_id, :request_id, :route, :status_code, :latency_ms,
-                :mode, :gov_replaced, :pii_warned
-            )
-            """
-        ),
-        {
-            "clinic_id": str(clinic_id),
-            "request_id": str(req_id),
-            "route": request.url.path,
-            "status_code": int(status_code),
-            "latency_ms": int(latency_ms),
-            "mode": mode,
-            "gov_replaced": bool(governance_replaced),
-            "pii_warned": bool(pii_warned),
-        },
+            if existing:
+                receipt = GovernanceReceipt(
+                    request_id=uuid.UUID(str(existing["request_id"])),
+                    clinic_id=uuid.UUID(str(existing["clinic_id"])),
+                    clinic_user_id=uuid.UUID(str(existing["clinic_user_id"])),
+                    mode=str(existing["mode"]),
+                    decision=str(existing["decision"]),
+                    risk_grade=str(existing["risk_grade"]),
+                    reason_code=str(existing["reason_code"]),
+                    pii_detected=bool(existing["pii_detected"]),
+                    pii_action=str(existing["pii_action"]),
+                    pii_types=list(existing["pii_types"] or []),
+                    policy_version=int(existing["policy_version"]),
+                    neutrality_version=str(existing["neutrality_version"]),
+                    governance_score=existing["governance_score"],
+                    created_at_utc=existing["created_at_utc"].isoformat() + "+00:00"
+                    if hasattr(existing["created_at_utc"], "isoformat")
+                    else str(existing["created_at_utc"]),
+                )
+                return PortalSubmitResponse(receipt=receipt)
+
+        raise HTTPException(status_code=409, detail="duplicate request_id")
+
+    # Pull the server-side created_at for receipt consistency
+    created = (
+        db.execute(
+            text(
+                """
+                SELECT created_at AT TIME ZONE 'UTC' AS created_at_utc
+                FROM clinic_governance_events
+                WHERE clinic_id = app_current_clinic_id()
+                  AND request_id = :request_id
+                LIMIT 1
+                """
+            ),
+            {"request_id": str(req_id)},
+        )
+        .mappings()
+        .first()
+        or {}
     )
 
-    db.commit()
-
-    created_at_utc = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+    created_at_dt = created.get("created_at_utc")
+    created_at_utc = (
+        created_at_dt.isoformat() + "+00:00"
+        if hasattr(created_at_dt, "isoformat") and created_at_dt is not None
+        else time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+    )
 
     receipt = GovernanceReceipt(
         request_id=req_id,
