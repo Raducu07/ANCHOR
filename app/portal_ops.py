@@ -29,9 +29,9 @@ class PortalOpsKpisResponse(BaseModel):
     events_24h: int
     events_per_hour: float
 
-    # Reliability + performance (CEO metrics)
+    # Reliability + performance
     rate_5xx_24h: float
-    p95_latency_ms_24h: Optional[int] = None
+    p95_latency_ms_24h: Optional[int] = None  # NULL if no data
 
     # Interventions: true governance transforms only (governance_replaced)
     interventions_24h: int
@@ -41,7 +41,7 @@ class PortalOpsKpisResponse(BaseModel):
     pii_warned_24h: int
     pii_warned_rate_24h: float
 
-    # “What’s driving load?” (dashboard gold)
+    # “What’s driving load?”
     top_route_24h: Optional[str] = None
     top_route_events_24h: int = 0
 
@@ -92,10 +92,18 @@ def portal_ops_kpis(
                 SELECT
                   COUNT(*)::bigint AS events_total,
                   MAX(created_at) AS last_event_at,
+
                   SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END)::bigint AS errors_5xx,
+
+                  -- percentile_disc returns NULL if there are no rows
                   percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS latency_p95_ms,
+
                   SUM(CASE WHEN governance_replaced THEN 1 ELSE 0 END)::bigint AS governance_replaced,
-                  SUM(CASE WHEN pii_warned THEN 1 ELSE 0 END)::bigint AS pii_warned
+                  SUM(CASE WHEN pii_warned THEN 1 ELSE 0 END)::bigint AS pii_warned,
+
+                  -- optional: SQL-side derived rates (safe math)
+                  (SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END)::float
+                    / NULLIF(COUNT(*)::float, 0)) AS rate_5xx_sql
                 FROM ops_metrics_events
                 WHERE {where_sql}
                   AND created_at >= now() - make_interval(hours => :hours)
@@ -113,13 +121,16 @@ def portal_ops_kpis(
     interventions = int(row.get("governance_replaced") or 0)
     pii_warned = int(row.get("pii_warned") or 0)
 
+    # Python-side rates (explicit, stable)
     rate_5xx = float(errors_5xx / events_total) if events_total > 0 else 0.0
     intervention_rate = float(interventions / events_total) if events_total > 0 else 0.0
     pii_rate = float(pii_warned / events_total) if events_total > 0 else 0.0
 
+    # p95: return NULL when no data (avoid misleading 0)
     p95 = row.get("latency_p95_ms")
     p95_ms: Optional[int] = int(p95) if p95 is not None else None
 
+    # Canonical health computation
     health_state, _reasons = _trust_state_from_24h(
         events_total=events_total,
         rate_5xx=rate_5xx,
@@ -127,10 +138,10 @@ def portal_ops_kpis(
         gov_rate=intervention_rate,
     )
 
-    # last_event_at is a datetime or None
+    # last_event_at -> UTC ISO
     le = row.get("last_event_at")
     last_event_at: Optional[str] = None
-    if le is not None and hasattr(le, "isoformat"):
+    if le is not None and hasattr(le, "astimezone") and hasattr(le, "isoformat"):
         last_event_at = le.astimezone(timezone.utc).isoformat()
 
     events_per_hour = float(events_total) / float(window_hours) if window_hours > 0 else 0.0
