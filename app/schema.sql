@@ -530,89 +530,50 @@ ALTER TABLE ops_metrics_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_audit_events ENABLE ROW LEVEL SECURITY;
 
 -- =========================
--- TENANT POLICIES (guarded, idempotent, production-safe)
+-- TENANT POLICIES
 -- =========================
 
-DO $$
-BEGIN
-  IF to_regclass('public.clinics') IS NOT NULL THEN
-    EXECUTE 'DROP POLICY IF EXISTS rls_clinics_tenant ON clinics';
-    EXECUTE '
-      CREATE POLICY rls_clinics_tenant ON clinics
-      USING (clinic_id = app_current_clinic_id())
-      WITH CHECK (clinic_id = app_current_clinic_id())
-    ';
-  END IF;
+DROP POLICY IF EXISTS rls_clinics_tenant ON clinics;
+CREATE POLICY rls_clinics_tenant ON clinics
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
 
-  IF to_regclass('public.clinic_users') IS NOT NULL THEN
-    EXECUTE 'DROP POLICY IF EXISTS rls_clinic_users_tenant ON clinic_users';
-    EXECUTE '
-      CREATE POLICY rls_clinic_users_tenant ON clinic_users
-      USING (clinic_id = app_current_clinic_id())
-      WITH CHECK (clinic_id = app_current_clinic_id())
-    ';
-  END IF;
+DROP POLICY IF EXISTS rls_clinic_users_tenant ON clinic_users;
+CREATE POLICY rls_clinic_users_tenant ON clinic_users
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
 
-  IF to_regclass('public.clinic_user_invites') IS NOT NULL THEN
-    EXECUTE 'DROP POLICY IF EXISTS rls_clinic_invites_tenant ON clinic_user_invites';
-    EXECUTE '
-      CREATE POLICY rls_clinic_invites_tenant ON clinic_user_invites
-      USING (clinic_id = app_current_clinic_id())
-      WITH CHECK (clinic_id = app_current_clinic_id())
-    ';
-  END IF;
+DROP POLICY IF EXISTS rls_clinic_invites_tenant ON clinic_user_invites;
+CREATE POLICY rls_clinic_invites_tenant ON clinic_user_invites
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
 
-  IF to_regclass('public.clinic_policies') IS NOT NULL THEN
-    EXECUTE 'DROP POLICY IF EXISTS rls_clinic_policies_tenant ON clinic_policies';
-    EXECUTE '
-      CREATE POLICY rls_clinic_policies_tenant ON clinic_policies
-      USING (clinic_id = app_current_clinic_id())
-      WITH CHECK (clinic_id = app_current_clinic_id())
-    ';
-  END IF;
+DROP POLICY IF EXISTS rls_clinic_policies_tenant ON clinic_policies;
+CREATE POLICY rls_clinic_policies_tenant ON clinic_policies
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
 
-  IF to_regclass('public.clinic_policy_state') IS NOT NULL THEN
-    EXECUTE 'DROP POLICY IF EXISTS rls_clinic_policy_state_tenant ON clinic_policy_state';
-    EXECUTE '
-      CREATE POLICY rls_clinic_policy_state_tenant ON clinic_policy_state
-      USING (clinic_id = app_current_clinic_id())
-      WITH CHECK (clinic_id = app_current_clinic_id())
-    ';
-  END IF;
+DROP POLICY IF EXISTS rls_clinic_policy_state_tenant ON clinic_policy_state;
+CREATE POLICY rls_clinic_policy_state_tenant ON clinic_policy_state
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
 
-  IF to_regclass('public.clinic_privacy_profile') IS NOT NULL THEN
-    EXECUTE 'DROP POLICY IF EXISTS rls_privacy_profile_tenant ON clinic_privacy_profile';
-    EXECUTE '
-      CREATE POLICY rls_privacy_profile_tenant ON clinic_privacy_profile
-      USING (clinic_id = app_current_clinic_id())
-      WITH CHECK (clinic_id = app_current_clinic_id())
-    ';
-  END IF;
+DROP POLICY IF EXISTS rls_privacy_profile_tenant ON clinic_privacy_profile;
+CREATE POLICY rls_privacy_profile_tenant ON clinic_privacy_profile
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
 
-  IF to_regclass('public.clinic_governance_events') IS NOT NULL THEN
-    EXECUTE 'DROP POLICY IF EXISTS rls_clinic_gov_events_tenant ON clinic_governance_events';
-    EXECUTE '
-      CREATE POLICY rls_clinic_gov_events_tenant ON clinic_governance_events
-      USING (clinic_id = app_current_clinic_id())
-      WITH CHECK (clinic_id = app_current_clinic_id())
-    ';
-  END IF;
+DROP POLICY IF EXISTS rls_clinic_gov_events_tenant ON clinic_governance_events;
+CREATE POLICY rls_clinic_gov_events_tenant ON clinic_governance_events
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
 
-  IF to_regclass('public.ops_metrics_events') IS NOT NULL THEN
-    EXECUTE 'DROP POLICY IF EXISTS rls_ops_metrics_tenant ON ops_metrics_events';
-    EXECUTE '
-      CREATE POLICY rls_ops_metrics_tenant ON ops_metrics_events
-      USING (clinic_id = app_current_clinic_id())
-      WITH CHECK (clinic_id = app_current_clinic_id())
-    ';
-  END IF;
+DROP POLICY IF EXISTS rls_ops_metrics_tenant ON ops_metrics_events;
+CREATE POLICY rls_ops_metrics_tenant ON ops_metrics_events
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
 
-  IF to_regclass('public.admin_audit_events') IS NOT NULL THEN
-    EXECUTE 'DROP POLICY IF EXISTS rls_admin_audit_tenant ON admin_audit_events';
-    EXECUTE '
-      CREATE POLICY rls_admin_audit_tenant ON admin_audit_events
-      USING (clinic_id = app_current_clinic_id())
-      WITH CHECK (clinic_id = app_current_clinic_id())
-    ';
-  END IF;
-END $$;
+DROP POLICY IF EXISTS rls_admin_audit_tenant ON admin_audit_events;
+CREATE POLICY rls_admin_audit_tenant ON admin_audit_events
+  USING (clinic_id = app_current_clinic_id())
+  WITH CHECK (clinic_id = app_current_clinic_id());
