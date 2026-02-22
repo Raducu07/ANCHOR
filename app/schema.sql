@@ -516,21 +516,7 @@ AS $$
 $$;
 
 -- =========================
--- ENABLE RLS
--- =========================
-
-ALTER TABLE clinics ENABLE ROW LEVEL SECURITY;
-ALTER TABLE clinic_users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE clinic_user_invites ENABLE ROW LEVEL SECURITY;
-ALTER TABLE clinic_policies ENABLE ROW LEVEL SECURITY;
-ALTER TABLE clinic_policy_state ENABLE ROW LEVEL SECURITY;
-ALTER TABLE clinic_privacy_profile ENABLE ROW LEVEL SECURITY;
-ALTER TABLE clinic_governance_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ops_metrics_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE admin_audit_events ENABLE ROW LEVEL SECURITY;
-
--- =========================
--- TENANT POLICIES
+-- TENANT POLICIES (create first)
 -- =========================
 
 DROP POLICY IF EXISTS rls_clinics_tenant ON clinics;
@@ -577,3 +563,17 @@ DROP POLICY IF EXISTS rls_admin_audit_tenant ON admin_audit_events;
 CREATE POLICY rls_admin_audit_tenant ON admin_audit_events
   USING (clinic_id = app_current_clinic_id())
   WITH CHECK (clinic_id = app_current_clinic_id());
+
+-- =========================
+-- ENABLE RLS (after policies exist)
+-- =========================
+
+ALTER TABLE clinics ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clinic_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clinic_user_invites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clinic_policies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clinic_policy_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clinic_privacy_profile ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clinic_governance_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ops_metrics_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_audit_events ENABLE ROW LEVEL SECURITY;
