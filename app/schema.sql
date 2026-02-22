@@ -410,7 +410,7 @@ CREATE TABLE IF NOT EXISTS clinic_governance_events (
 
   pii_detected boolean NOT NULL DEFAULT false,
   pii_action text NOT NULL CHECK (pii_action IN ('allow','warn','block','redact')),
-  pii_types text[],
+  pii_types text[] NOT NULL DEFAULT ARRAY[]::text[],
 
   decision text NOT NULL CHECK (decision IN ('allowed','blocked','replaced','modified')),
   risk_grade text NOT NULL CHECK (risk_grade IN ('low','med','high')),
@@ -422,18 +422,17 @@ CREATE TABLE IF NOT EXISTS clinic_governance_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Idempotency (per clinic)
 CREATE UNIQUE INDEX IF NOT EXISTS uq_cge_clinic_request
   ON clinic_governance_events (clinic_id, request_id);
 
+-- Query helpers
 CREATE INDEX IF NOT EXISTS idx_clinic_gov_events_clinic_created_at
   ON clinic_governance_events (clinic_id, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_clinic_gov_events_clinic_request
-  ON clinic_governance_events (clinic_id, request_id);
-
 -- Fast portal list + cursor pagination
 CREATE INDEX IF NOT EXISTS idx_cge_clinic_created_request
-ON clinic_governance_events (clinic_id, created_at DESC, request_id DESC);
+  ON clinic_governance_events (clinic_id, created_at DESC, request_id DESC);
 
 -- ops metrics events (telemetry-only)
 CREATE TABLE IF NOT EXISTS ops_metrics_events (
@@ -450,31 +449,32 @@ CREATE TABLE IF NOT EXISTS ops_metrics_events (
 );
 
 -- Backfill/sync for existing DBs (safe + idempotent)
-ALTER TABLE ops_metrics_events
-  ADD COLUMN IF NOT EXISTS pii_warned boolean NOT NULL DEFAULT false;
+DO $$
+BEGIN
+  IF to_regclass('public.ops_metrics_events') IS NOT NULL THEN
+    ALTER TABLE ops_metrics_events
+      ADD COLUMN IF NOT EXISTS pii_warned boolean NOT NULL DEFAULT false;
 
--- Idempotency (per clinic)
-CREATE UNIQUE INDEX IF NOT EXISTS uq_cge_clinic_request
-  ON clinic_governance_events (clinic_id, request_id);
+    EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS uq_ome_clinic_request ON ops_metrics_events (clinic_id, request_id)';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_ops_metrics_events_clinic_created_at ON ops_metrics_events (clinic_id, created_at DESC)';
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_ome_clinic_request
-  ON ops_metrics_events (clinic_id, request_id);
+    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_ome_clinic_created_request ON ops_metrics_events (clinic_id, created_at DESC, request_id DESC)';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_ome_clinic_route_created ON ops_metrics_events (clinic_id, route, created_at DESC)';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_ome_clinic_mode_created ON ops_metrics_events (clinic_id, mode, created_at DESC)';
+  END IF;
 
--- Query helpers
-CREATE INDEX IF NOT EXISTS idx_ops_metrics_events_clinic_created_at
-  ON ops_metrics_events (clinic_id, created_at DESC);
+  IF to_regclass('public.clinic_governance_events') IS NOT NULL THEN
+    UPDATE clinic_governance_events
+    SET pii_types = ARRAY[]::text[]
+    WHERE pii_types IS NULL;
 
--- Fast ops list/joins by request_id and time
-CREATE INDEX IF NOT EXISTS idx_ome_clinic_created_request
-  ON ops_metrics_events (clinic_id, created_at DESC, request_id DESC);
+    ALTER TABLE clinic_governance_events
+      ALTER COLUMN pii_types SET DEFAULT ARRAY[]::text[];
 
--- Optimisation for KPI aggregation by route
-CREATE INDEX IF NOT EXISTS idx_ome_clinic_route_created
-  ON ops_metrics_events (clinic_id, route, created_at DESC);
-
--- Optimisation for KPI aggregation by mode
-CREATE INDEX IF NOT EXISTS idx_ome_clinic_mode_created
-  ON ops_metrics_events (clinic_id, mode, created_at DESC);
+    ALTER TABLE clinic_governance_events
+      ALTER COLUMN pii_types SET NOT NULL;
+  END IF;
+END $$;
 
 -- admin audit events (content-free)
 CREATE TABLE IF NOT EXISTS admin_audit_events (
