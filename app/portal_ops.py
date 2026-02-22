@@ -1,7 +1,7 @@
 # app/portal_ops.py
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -12,6 +12,8 @@ from app.auth_and_rls import require_clinic_user
 from app.db import get_db
 
 # Canonical logic (single source of truth)
+# - _where_clause validates mode/route and returns clinic-scoped SQL via RLS
+# - _trust_state_from_24h derives (green/yellow/red, reasons)
 from app.portal_ops_health import _where_clause, _trust_state_from_24h
 
 router = APIRouter(
@@ -25,11 +27,15 @@ class PortalOpsKpisResponse(BaseModel):
     status: str = "ok"
     window_hours: int = Field(..., ge=1, le=168)
 
+    # NOTE: kept as "events_24h" for UI stability, but it is actually events in `window_hours`.
     events_24h: int
+
     intervention_rate_24h: float
     pii_warned_rate_24h: float
 
+    # Derived from canonical trust_state logic (same thresholds as /v1/portal/ops/health)
     health_state: str
+
     as_of: str
 
 
@@ -44,10 +50,10 @@ def portal_ops_kpis(
     UI-ready KPI surface for the portal dashboard (clinic-scoped via RLS).
 
     - Reads ops_metrics_events only (telemetry-only, no content).
+    - window_hours bounded to [1, 168] (1h .. 7d).
     - Derives health_state using canonical logic from portal_ops_health.py
-      to avoid threshold drift.
+      to avoid threshold drift across endpoints.
     """
-
     try:
         window_hours = int(window_hours)
     except Exception:
@@ -96,7 +102,6 @@ def portal_ops_kpis(
     p95 = row.get("latency_p95_ms")
     p95_ms: Optional[int] = int(p95) if p95 is not None else None
 
-    # Canonical health (same as /ops/health trust_state)
     health_state, _reasons = _trust_state_from_24h(
         events_total=events_total,
         rate_5xx=rate_5xx,
@@ -108,7 +113,7 @@ def portal_ops_kpis(
 
     return PortalOpsKpisResponse(
         window_hours=window_hours,
-        events_24h=events_total,
+        events_24h=events_total,  # events in window_hours (kept name for UI stability)
         intervention_rate_24h=round(gov_rate, 4),
         pii_warned_rate_24h=round(pii_rate, 4),
         health_state=health_state,
