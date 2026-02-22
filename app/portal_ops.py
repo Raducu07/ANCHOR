@@ -1,7 +1,7 @@
 # app/portal_ops.py
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -12,8 +12,6 @@ from app.auth_and_rls import require_clinic_user
 from app.db import get_db
 
 # Canonical logic (single source of truth)
-# - _where_clause validates mode/route and returns clinic-scoped SQL via RLS
-# - _trust_state_from_24h derives (green/yellow/red, reasons)
 from app.portal_ops_health import _where_clause, _trust_state_from_24h
 
 router = APIRouter(
@@ -29,12 +27,13 @@ class PortalOpsKpisResponse(BaseModel):
 
     # NOTE: kept as "events_24h" for UI stability, but it is actually events in `window_hours`.
     events_24h: int
-
     intervention_rate_24h: float
     pii_warned_rate_24h: float
 
-    # Derived from canonical trust_state logic (same thresholds as /v1/portal/ops/health)
     health_state: str
+
+    # NEW: last observed ops event in this window (UTC ISO) or None when no data
+    last_event_at: Optional[str] = None
 
     as_of: str
 
@@ -50,9 +49,8 @@ def portal_ops_kpis(
     UI-ready KPI surface for the portal dashboard (clinic-scoped via RLS).
 
     - Reads ops_metrics_events only (telemetry-only, no content).
-    - window_hours bounded to [1, 168] (1h .. 7d).
     - Derives health_state using canonical logic from portal_ops_health.py
-      to avoid threshold drift across endpoints.
+      to avoid threshold drift.
     """
     try:
         window_hours = int(window_hours)
@@ -74,6 +72,7 @@ def portal_ops_kpis(
                 f"""
                 SELECT
                   COUNT(*)::bigint AS events_total,
+                  MAX(created_at) AS last_event_at,
                   SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END)::bigint AS errors_5xx,
                   percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS latency_p95_ms,
                   SUM(CASE WHEN governance_replaced THEN 1 ELSE 0 END)::bigint AS governance_replaced,
@@ -109,13 +108,21 @@ def portal_ops_kpis(
         gov_rate=gov_rate,
     )
 
+    # last_event_at is a datetime or None
+    le = row.get("last_event_at")
+    last_event_at: Optional[str] = None
+    if le is not None and hasattr(le, "isoformat"):
+        # ensure explicit UTC suffix for UI
+        last_event_at = le.astimezone(timezone.utc).isoformat()
+
     now_iso = datetime.now(timezone.utc).isoformat()
 
     return PortalOpsKpisResponse(
         window_hours=window_hours,
-        events_24h=events_total,  # events in window_hours (kept name for UI stability)
+        events_24h=events_total,
         intervention_rate_24h=round(gov_rate, 4),
         pii_warned_rate_24h=round(pii_rate, 4),
         health_state=health_state,
+        last_event_at=last_event_at,
         as_of=now_iso,
     )
