@@ -1,5 +1,7 @@
 # app/portal_read.py
 import uuid
+import json
+import hashlib
 from datetime import datetime
 from typing import List, Optional, Any, Dict
 
@@ -9,7 +11,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.auth_and_rls import require_clinic_user
+from app.auth_and_rls import require_clinic_user, JWT_ISSUER, JWT_AUDIENCE
+from app.governance_config import get_current_policy
 
 router = APIRouter(
     prefix="/v1/portal",
@@ -21,6 +24,15 @@ router = APIRouter(
 # -----------------------------
 # Helpers
 # -----------------------------
+
+def _policy_hash(policy_obj: Dict[str, Any]) -> str:
+    """
+    Stable hash for an immutable policy reference on receipts.
+    Uses canonical JSON (sorted keys, compact separators).
+    """
+    blob = json.dumps(policy_obj or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
 
 def _parse_iso8601(ts: str) -> datetime:
     """
@@ -40,13 +52,23 @@ def _parse_iso8601(ts: str) -> datetime:
     return datetime.fromisoformat(s)
 
 
+def _iso_or_empty(dt: Any) -> str:
+    if dt is None:
+        return ""
+    try:
+        return dt.isoformat()
+    except Exception:
+        return str(dt)
+
+
 # -----------------------------
 # Models
 # -----------------------------
+
 class GovernanceEventItem(BaseModel):
     request_id: uuid.UUID
     clinic_id: uuid.UUID
-    user_id: uuid.UUID
+    clinic_user_id: uuid.UUID
     mode: str
 
     decision: str
@@ -70,18 +92,49 @@ class GovernanceEventsResponse(BaseModel):
     next_cursor_request_id: Optional[uuid.UUID] = None
 
 
-class GovernanceReceiptResponse(BaseModel):
-    receipt: GovernanceEventItem
+class ReceiptV1(BaseModel):
+    request_id: str
+    clinic_id: str
+    clinic_user_id: str
+
+    mode: str
+    decision: str
+    risk_grade: Optional[str] = None
+    reason_code: Optional[str] = None
+
+    pii_detected: bool = False
+    pii_action: Optional[str] = None
+    pii_types: List[str] = Field(default_factory=list)
+
+    policy_version: int
+    policy_hash: str
+
+    neutrality_version: Optional[str] = None
+    governance_score: Optional[float] = None
+
+    # "receipt-grade" fields
+    receipt_version: str = "1.0"
+    jwt_iss: str
+    jwt_aud: str
+    tenant_isolation: Dict[str, Any] = Field(default_factory=lambda: {"rls_forced": True})
+    no_content_stored: bool = True
+
+    created_at_utc: str
+
+
+class ReceiptEnvelope(BaseModel):
+    receipt: ReceiptV1
 
 
 # -----------------------------
 # SQL
 # -----------------------------
+# NOTE: We alias user_id -> clinic_user_id for naming consistency.
 _SQL_LIST_EVENTS = """
 SELECT
   request_id,
   clinic_id,
-  user_id,
+  user_id AS clinic_user_id,
   mode,
   decision,
   risk_grade,
@@ -104,7 +157,7 @@ _SQL_GET_RECEIPT = """
 SELECT
   request_id,
   clinic_id,
-  user_id,
+  user_id AS clinic_user_id,
   mode,
   decision,
   risk_grade,
@@ -167,14 +220,13 @@ def list_governance_events(
 
     items: List[GovernanceEventItem] = []
     for r in rows:
-        created = r.get("created_at")
-        created_at_utc = created.isoformat() if hasattr(created, "isoformat") and created else ""
+        created_at_utc = _iso_or_empty(r.get("created_at"))
 
         items.append(
             GovernanceEventItem(
                 request_id=uuid.UUID(str(r["request_id"])),
                 clinic_id=uuid.UUID(str(r["clinic_id"])),
-                user_id=uuid.UUID(str(r["user_id"])),
+                clinic_user_id=uuid.UUID(str(r["clinic_user_id"])),
                 mode=str(r["mode"]),
 
                 decision=str(r["decision"]),
@@ -204,40 +256,58 @@ def list_governance_events(
     )
 
 
-@router.get("/receipt/{request_id}", response_model=GovernanceReceiptResponse)
+@router.get("/receipt/{request_id}", response_model=ReceiptEnvelope)
 def get_receipt(
     request_id: uuid.UUID,
     db: Session = Depends(get_db),
-) -> GovernanceReceiptResponse:
+) -> ReceiptEnvelope:
     """
+    Canonical receipt endpoint (receipt-grade).
     Fetch a single governance receipt by request_id for the current clinic only (RLS enforced).
     """
     row = db.execute(text(_SQL_GET_RECEIPT), {"rid": str(request_id)}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="receipt not found")
 
-    created = row.get("created_at")
-    created_at_utc = created.isoformat() if hasattr(created, "isoformat") and created else ""
+    created_at_utc = _iso_or_empty(row.get("created_at"))
 
-    item = GovernanceEventItem(
-        request_id=uuid.UUID(str(row["request_id"])),
-        clinic_id=uuid.UUID(str(row["clinic_id"])),
-        user_id=uuid.UUID(str(row["user_id"])),
+    # immutable policy reference
+    policy_obj = get_current_policy()
+    ph = _policy_hash(policy_obj)
+
+    receipt = ReceiptV1(
+        request_id=str(row["request_id"]),
+        clinic_id=str(row["clinic_id"]),
+        clinic_user_id=str(row["clinic_user_id"]),
         mode=str(row["mode"]),
-
         decision=str(row["decision"]),
-        risk_grade=str(row["risk_grade"]),
-        reason_code=str(row["reason_code"]),
-
-        pii_detected=bool(row["pii_detected"]),
-        pii_action=str(row["pii_action"]),
+        risk_grade=(str(row["risk_grade"]) if row.get("risk_grade") is not None else None),
+        reason_code=(str(row["reason_code"]) if row.get("reason_code") is not None else None),
+        pii_detected=bool(row.get("pii_detected") or False),
+        pii_action=(str(row["pii_action"]) if row.get("pii_action") is not None else None),
         pii_types=list(row.get("pii_types") or []),
-
-        policy_version=int(row["policy_version"]),
-        neutrality_version=str(row["neutrality_version"]),
-        governance_score=row.get("governance_score", None),
-
+        policy_version=int(row.get("policy_version") or 0),
+        policy_hash=ph,
+        neutrality_version=(str(row["neutrality_version"]) if row.get("neutrality_version") is not None else None),
+        governance_score=(float(row["governance_score"]) if row.get("governance_score") is not None else None),
+        jwt_iss=str(JWT_ISSUER),
+        jwt_aud=str(JWT_AUDIENCE),
         created_at_utc=created_at_utc,
     )
 
-    return GovernanceReceiptResponse(receipt=item)
+    return ReceiptEnvelope(receipt=receipt)
+
+
+@router.get(
+    "/receipts/{request_id}",
+    response_model=ReceiptEnvelope,
+    deprecated=True,
+)
+def get_receipt_legacy(
+    request_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> ReceiptEnvelope:
+    """
+    Backward-compatible alias for older clients.
+    """
+    return get_receipt(request_id=request_id, db=db)
