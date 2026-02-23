@@ -69,12 +69,16 @@ def db_ping() -> bool:
 
 _SET_GUC_SQL = text("SELECT set_config(:k, :v, false)")
 
+
 def _set_guc(db: Session, key: str, value: str) -> None:
-    # value must be text; use "" as a cleared state
     db.execute(_SET_GUC_SQL, {"k": key, "v": value})
 
 
-def set_rls_context(db: Session, clinic_id: Optional[str] = None, user_id: Optional[str] = None) -> None:
+def set_rls_context(
+    db: Session,
+    clinic_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> None:
     """
     Apply tenant/user scoping to the CURRENT DB connection (session GUCs).
     Call this at the START of every request.
@@ -95,10 +99,9 @@ def clear_rls_context(db: Session) -> None:
 
 def _apply_rls_from_request(db: Session, request: Optional[Request]) -> None:
     """
-    If your auth middleware decodes a clinic JWT and sets:
+    If auth sets:
       request.state.clinic_id
       request.state.clinic_user_id
-
     then apply them so all queries are RLS-scoped for this request.
     """
     if request is None:
@@ -107,13 +110,13 @@ def _apply_rls_from_request(db: Session, request: Optional[Request]) -> None:
     clinic_id = getattr(request.state, "clinic_id", None)
     user_id = getattr(request.state, "clinic_user_id", None)
 
-    # ✅ Apply clinic_id whenever present (even if user_id is missing)
-    if clinic_id is not None:
-        set_rls_context(db, clinic_id=str(clinic_id))
-
-    # ✅ Apply user_id when present (optional)
-    if user_id is not None:
-        set_rls_context(db, user_id=str(user_id))
+    # Apply both in one function call (less chatter)
+    if clinic_id is not None or user_id is not None:
+        set_rls_context(
+            db,
+            clinic_id=str(clinic_id) if clinic_id is not None else None,
+            user_id=str(user_id) if user_id is not None else None,
+        )
 
 
 # ============================================================
@@ -124,10 +127,9 @@ def _apply_rls_from_request(db: Session, request: Optional[Request]) -> None:
 # - Endpoints should explicitly commit/rollback.
 # ============================================================
 
-def get_db(request: Request) -> Generator[Session, None, None]:
+def get_db(request: Optional[Request] = None) -> Generator[Session, None, None]:
     db: Session = SessionLocal()
     try:
-        # Forces a connection early and sets per-connection GUCs for RLS
         _apply_rls_from_request(db, request)
         yield db
     except Exception:
@@ -137,6 +139,5 @@ def get_db(request: Request) -> Generator[Session, None, None]:
         try:
             clear_rls_context(db)
         except Exception:
-            # Never block response teardown on cleanup failures
             pass
         db.close()
