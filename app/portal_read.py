@@ -82,6 +82,7 @@ class GovernanceEventItem(BaseModel):
     neutrality_version: str
     governance_score: Optional[float] = None
 
+    # API name stays *_utc even if DB column is created_at
     created_at_utc: str
 
 
@@ -130,7 +131,7 @@ class ReceiptEnvelope(BaseModel):
 # -----------------------------
 # NOTE:
 # - We alias user_id -> clinic_user_id for naming consistency.
-# - We use created_at_utc (matches your existing outputs).
+# - DB column is created_at (NOT created_at_utc).
 _SQL_LIST_EVENTS = """
 SELECT
   request_id,
@@ -146,11 +147,11 @@ SELECT
   policy_version,
   neutrality_version,
   governance_score,
-  created_at_utc
+  created_at
 FROM clinic_governance_events
 WHERE clinic_id = app_current_clinic_id()
 {cursor_clause}
-ORDER BY created_at_utc DESC, request_id DESC
+ORDER BY created_at DESC, request_id DESC
 LIMIT :limit
 """
 
@@ -169,7 +170,7 @@ SELECT
   policy_version,
   neutrality_version,
   governance_score,
-  created_at_utc
+  created_at
 FROM clinic_governance_events
 WHERE clinic_id = app_current_clinic_id()
   AND request_id = :rid
@@ -208,11 +209,10 @@ def list_governance_events(
         except Exception:
             raise HTTPException(status_code=400, detail="invalid cursor_created_at_utc")
 
-        # If caller supplies created_at cursor but not request_id, use a max UUID
-        # so we paginate correctly on ties.
         cursor_rid = cursor_request_id or uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
 
-        cursor_clause = "AND (created_at_utc, request_id) < (:cursor_dt, :cursor_rid)"
+        # DB column is created_at
+        cursor_clause = "AND (created_at, request_id) < (:cursor_dt, :cursor_rid)"
         params["cursor_dt"] = cursor_dt
         params["cursor_rid"] = str(cursor_rid)
 
@@ -221,7 +221,7 @@ def list_governance_events(
 
     items: List[GovernanceEventItem] = []
     for r in rows:
-        created_at_utc = _iso_or_empty(r.get("created_at_utc"))
+        created_at_utc = _iso_or_empty(r.get("created_at"))
 
         items.append(
             GovernanceEventItem(
@@ -246,7 +246,6 @@ def list_governance_events(
             )
         )
 
-    # next cursor = last item in this page (for fetching older items)
     next_created = items[-1].created_at_utc if items else None
     next_rid = items[-1].request_id if items else None
 
@@ -270,9 +269,8 @@ def get_receipt(
     if not row:
         raise HTTPException(status_code=404, detail="receipt not found")
 
-    created_at_utc = _iso_or_empty(row.get("created_at_utc"))
+    created_at_utc = _iso_or_empty(row.get("created_at"))
 
-    # immutable policy reference
     policy_obj = get_current_policy()
     ph = _policy_hash(policy_obj)
 
