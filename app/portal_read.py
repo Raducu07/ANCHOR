@@ -271,8 +271,9 @@ def get_receipt(
 
     created_at_utc = _iso_or_empty(row.get("created_at"))
 
+    # ✅ IMPORTANT: your get_current_policy requires db
     policy_obj = get_current_policy(db)
-    ph = _policy_hash(policy_obj)
+    ph = _policy_hash(policy_obj if isinstance(policy_obj, dict) else {"policy": policy_obj})
 
     receipt = ReceiptV1(
         request_id=str(row["request_id"]),
