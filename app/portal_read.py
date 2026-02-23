@@ -336,10 +336,22 @@ def get_receipt(
 
     created_at_utc = _iso_or_empty(row.get("created_at"))
 
-    policy_obj = get_current_policy(db)
-    ph = _policy_hash(policy_obj)
-    policy_dict = _policy_to_dict(policy_obj)
-    policy_id = policy_dict.get("id")
+policy_obj = get_current_policy(db)
+ph = _policy_hash(policy_obj)
+
+# try to extract policy_id reliably
+policy_id = None
+try:
+    d = _policy_to_dict(policy_obj)
+    policy_id = d.get("id")
+except Exception:
+    policy_id = None
+
+# fallback: query latest governance_config.id directly (matches get_current_policy order)
+if policy_id is None:
+    pid_row = db.execute(text("SELECT id FROM governance_config ORDER BY updated_at DESC LIMIT 1")).first()
+    if pid_row:
+        policy_id = pid_row[0]
 
     receipt = ReceiptV1(
         request_id=str(row["request_id"]),
