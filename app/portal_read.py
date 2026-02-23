@@ -25,12 +25,63 @@ router = APIRouter(
 # Helpers
 # -----------------------------
 
-def _policy_hash(policy_obj: Dict[str, Any]) -> str:
+def _policy_to_dict(policy_obj: Any) -> Dict[str, Any]:
+    """
+    Normalize policy object to a plain dict for stable hashing.
+    Supports:
+      - dict
+      - Pydantic v2 models (model_dump)
+      - Pydantic v1 models (dict)
+      - objects with __dict__
+      - JSON strings
+    """
+    if policy_obj is None:
+        return {}
+
+    if isinstance(policy_obj, dict):
+        return policy_obj
+
+    if isinstance(policy_obj, str):
+        s = policy_obj.strip()
+        if not s:
+            return {}
+        try:
+            v = json.loads(s)
+            return v if isinstance(v, dict) else {"value": v}
+        except Exception:
+            return {"value": s}
+
+    # Pydantic v2
+    if hasattr(policy_obj, "model_dump"):
+        try:
+            d = policy_obj.model_dump()
+            return d if isinstance(d, dict) else {"value": d}
+        except Exception:
+            pass
+
+    # Pydantic v1
+    if hasattr(policy_obj, "dict"):
+        try:
+            d = policy_obj.dict()
+            return d if isinstance(d, dict) else {"value": d}
+        except Exception:
+            pass
+
+    # Fallback
+    try:
+        d = dict(getattr(policy_obj, "__dict__", {}) or {})
+        return d if isinstance(d, dict) else {"value": str(policy_obj)}
+    except Exception:
+        return {"value": str(policy_obj)}
+
+
+def _policy_hash(policy_obj: Any) -> str:
     """
     Stable hash for an immutable policy reference on receipts.
     Uses canonical JSON (sorted keys, compact separators).
     """
-    blob = json.dumps(policy_obj or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    d = _policy_to_dict(policy_obj)
+    blob = json.dumps(d, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
