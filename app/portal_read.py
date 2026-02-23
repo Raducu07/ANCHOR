@@ -19,7 +19,6 @@ from app.governance_config import get_current_policy
 router = APIRouter(
     prefix="/v1/portal",
     tags=["Portal Read"],
-    # ✅ every /v1/portal/* endpoint is clinic-auth protected
     dependencies=[Depends(require_clinic_user)],
 )
 
@@ -29,10 +28,10 @@ router = APIRouter(
 RECEIPT_SIGNING_SECRET = (os.getenv("ANCHOR_RECEIPT_SIGNING_SECRET", "") or "").strip()
 RECEIPT_SIGNING_KID = (os.getenv("ANCHOR_RECEIPT_SIGNING_KID", "v1") or "v1").strip()
 
+
 # -----------------------------
 # Helpers
 # -----------------------------
-
 def _policy_to_dict(policy_obj: Any) -> Dict[str, Any]:
     if policy_obj is None:
         return {}
@@ -55,8 +54,8 @@ def _policy_to_dict(policy_obj: Any) -> Dict[str, Any]:
 
 def _policy_semantic_projection(d: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Only include fields that define policy meaning (not timestamps/cache artifacts).
-    Matches what get_current_policy selects from governance_config.
+    Hash only meaning-bearing fields (avoid timestamps/cache artifacts).
+    Matches get_current_policy() SELECT fields.
     """
     return {
         "id": d.get("id"),
@@ -77,20 +76,12 @@ def _policy_hash(policy_obj: Any) -> str:
 
 
 def _parse_iso8601(ts: str) -> datetime:
-    """
-    Accept ISO8601 timestamps from querystrings robustly.
-    Some clients turn '+' into space, so normalize.
-    """
     s = (ts or "").strip()
     if not s:
         raise ValueError("empty timestamp")
-
-    # PowerShell / querystring edge: '+' may arrive as space
     s = s.replace(" ", "+")
-
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
-
     return datetime.fromisoformat(s)
 
 
@@ -104,20 +95,12 @@ def _iso_or_empty(dt: Any) -> str:
 
 
 def _canonical_json_bytes(obj: Any) -> bytes:
-    """
-    Canonical JSON for deterministic signatures/hashes.
-    """
     s = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
     return s.encode("utf-8")
 
 
 def _hmac_sha256_b64url(key: str, msg: bytes) -> str:
-    """
-    Return base64url (no padding) of HMAC-SHA256.
-    Avoid importing jwt libs here; we just need a stable signature.
-    """
     mac = hmac.new(key.encode("utf-8"), msg, hashlib.sha256).digest()
-    # base64url without padding
     import base64
     return base64.urlsafe_b64encode(mac).decode("ascii").rstrip("=")
 
@@ -143,7 +126,6 @@ class GovernanceEventItem(BaseModel):
     neutrality_version: str
     governance_score: Optional[float] = None
 
-    # API name stays *_utc even if DB column is created_at
     created_at_utc: str
 
 
@@ -169,12 +151,11 @@ class ReceiptV1(BaseModel):
 
     policy_version: int
     policy_hash: str
-    policy_id: Optional[str] = None  # ✅ tiny improvement
+    policy_id: Optional[str] = None
 
     neutrality_version: Optional[str] = None
     governance_score: Optional[float] = None
 
-    # "receipt-grade" fields
     receipt_version: str = "1.0"
     jwt_iss: str
     jwt_aud: str
@@ -200,9 +181,6 @@ class SignedReceiptEnvelope(BaseModel):
 # -----------------------------
 # SQL
 # -----------------------------
-# NOTE:
-# - We alias user_id -> clinic_user_id for naming consistency.
-# - DB column is created_at (NOT created_at_utc).
 _SQL_LIST_EVENTS = """
 SELECT
   request_id,
@@ -260,10 +238,6 @@ def list_governance_events(
     cursor_created_at_utc: Optional[str] = None,
     cursor_request_id: Optional[uuid.UUID] = None,
 ) -> GovernanceEventsResponse:
-    """
-    Returns recent governance events for the current clinic only (RLS enforced).
-    Cursor pagination returns events strictly "older than" the cursor.
-    """
     limit = int(limit)
     if limit < 1:
         limit = 1
@@ -280,8 +254,6 @@ def list_governance_events(
             raise HTTPException(status_code=400, detail="invalid cursor_created_at_utc")
 
         cursor_rid = cursor_request_id or uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
-
-        # DB column is created_at
         cursor_clause = "AND (created_at, request_id) < (:cursor_dt, :cursor_rid)"
         params["cursor_dt"] = cursor_dt
         params["cursor_rid"] = str(cursor_rid)
@@ -291,7 +263,6 @@ def list_governance_events(
 
     items: List[GovernanceEventItem] = []
     for r in rows:
-        created_at_utc = _iso_or_empty(r.get("created_at"))
         items.append(
             GovernanceEventItem(
                 request_id=uuid.UUID(str(r["request_id"])),
@@ -307,7 +278,7 @@ def list_governance_events(
                 policy_version=int(r["policy_version"]),
                 neutrality_version=str(r["neutrality_version"]),
                 governance_score=r.get("governance_score", None),
-                created_at_utc=created_at_utc,
+                created_at_utc=_iso_or_empty(r.get("created_at")),
             )
         )
 
@@ -326,32 +297,26 @@ def get_receipt(
     request_id: uuid.UUID,
     db: Session = Depends(get_db),
 ) -> ReceiptEnvelope:
-    """
-    Canonical receipt endpoint (receipt-grade).
-    Fetch a single governance receipt by request_id for the current clinic only (RLS enforced).
-    """
     row = db.execute(text(_SQL_GET_RECEIPT), {"rid": str(request_id)}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="receipt not found")
 
     created_at_utc = _iso_or_empty(row.get("created_at"))
 
-policy_obj = get_current_policy(db)
-ph = _policy_hash(policy_obj)
+    policy_obj = get_current_policy(db)
+    ph = _policy_hash(policy_obj)
 
-# try to extract policy_id reliably
-policy_id = None
-try:
-    d = _policy_to_dict(policy_obj)
-    policy_id = d.get("id")
-except Exception:
     policy_id = None
+    try:
+        policy_dict = _policy_to_dict(policy_obj)
+        policy_id = policy_dict.get("id")
+    except Exception:
+        policy_id = None
 
-# fallback: query latest governance_config.id directly (matches get_current_policy order)
-if policy_id is None:
-    pid_row = db.execute(text("SELECT id FROM governance_config ORDER BY updated_at DESC LIMIT 1")).first()
-    if pid_row:
-        policy_id = pid_row[0]
+    if policy_id is None:
+        pid_row = db.execute(text("SELECT id FROM governance_config ORDER BY updated_at DESC LIMIT 1")).first()
+        if pid_row:
+            policy_id = pid_row[0]
 
     receipt = ReceiptV1(
         request_id=str(row["request_id"]),
@@ -382,11 +347,6 @@ def get_receipt_signed(
     request_id: uuid.UUID,
     db: Session = Depends(get_db),
 ) -> SignedReceiptEnvelope:
-    """
-    Returns a signed receipt payload suitable for export/attestation.
-    Signature = HMAC-SHA256 over canonical JSON of the receipt object.
-    Requires ANCHOR_RECEIPT_SIGNING_SECRET to be set.
-    """
     if not RECEIPT_SIGNING_SECRET:
         raise HTTPException(status_code=501, detail="receipt signing not configured")
 
@@ -409,16 +369,9 @@ def get_receipt_signed(
     )
 
 
-@router.get(
-    "/receipts/{request_id}",
-    response_model=ReceiptEnvelope,
-    deprecated=True,
-)
+@router.get("/receipts/{request_id}", response_model=ReceiptEnvelope, deprecated=True)
 def get_receipt_legacy(
     request_id: uuid.UUID,
     db: Session = Depends(get_db),
 ) -> ReceiptEnvelope:
-    """
-    Backward-compatible alias for older clients.
-    """
     return get_receipt(request_id=request_id, db=db)
