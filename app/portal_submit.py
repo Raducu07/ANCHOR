@@ -1,5 +1,5 @@
+# app/portal_submit.py
 import re
-import time
 import uuid
 from typing import List, Optional
 
@@ -39,6 +39,7 @@ def detect_pii_types(text_value: str) -> List[str]:
     if _UK_POSTCODE_RE.search(t):
         types.append("postcode")
 
+    # stable de-dupe
     seen = set()
     out: List[str] = []
     for x in types:
@@ -48,7 +49,25 @@ def detect_pii_types(text_value: str) -> List[str]:
     return out
 
 
+def _set_rls_context(db: Session, *, clinic_id: uuid.UUID, clinic_user_id: uuid.UUID) -> None:
+    """
+    Critical: set LOCAL RLS context in the *same transaction/connection*.
+    Using set_config(..., true) makes it LOCAL to the current transaction.
+    """
+    db.execute(
+        text("SELECT set_config('app.clinic_id', :cid, true)"),
+        {"cid": str(clinic_id)},
+    )
+    db.execute(
+        text("SELECT set_config('app.user_id', :uid, true)"),
+        {"uid": str(clinic_user_id)},
+    )
+
+
 def _get_active_policy_version(db: Session) -> int:
+    """
+    Must be called AFTER _set_rls_context() so app_current_clinic_id() is non-null.
+    """
     row = db.execute(
         text(
             """
@@ -67,14 +86,6 @@ def _get_active_policy_version(db: Session) -> int:
         return int(row[0])
     except Exception:
         return 1
-
-
-def _simple_risk_grade(pii_types: List[str]) -> str:
-    return "med" if pii_types else "low"
-
-
-def _simple_reason_code(pii_types: List[str]) -> str:
-    return "pii_detected" if pii_types else "ok"
 
 
 # ---------------------------------------------------------------------
@@ -132,7 +143,7 @@ class SubmissionsListResponse(BaseModel):
 
 def _row_to_receipt(row) -> GovernanceReceipt:
     created_at = row["created_at"]
-    created_iso = created_at.isoformat()
+    created_iso = created_at.isoformat() if created_at else ""
 
     return GovernanceReceipt(
         request_id=uuid.UUID(str(row["request_id"])),
@@ -147,11 +158,23 @@ def _row_to_receipt(row) -> GovernanceReceipt:
         pii_types=list(row["pii_types"] or []),
         policy_version=int(row["policy_version"]),
         neutrality_version=row["neutrality_version"],
-        governance_score=(
-            float(row["governance_score"]) if row["governance_score"] else None
-        ),
+        governance_score=(float(row["governance_score"]) if row["governance_score"] is not None else None),
         created_at_utc=created_iso,
     )
+
+
+def _parse_cursor(cursor: str) -> Optional[dict]:
+    """
+    cursor format: "<created_at_iso>|<request_id>"
+    Returns dict with cursor_created_at, cursor_request_id or None if invalid.
+    """
+    try:
+        created_at_str, request_id_str = cursor.split("|", 1)
+        # Let Postgres parse created_at_str as timestamptz; validate UUID here:
+        _ = uuid.UUID(request_id_str)
+        return {"cursor_created_at": created_at_str, "cursor_request_id": request_id_str}
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------
@@ -161,20 +184,23 @@ def _row_to_receipt(row) -> GovernanceReceipt:
 @router.post("/submit", response_model=PortalSubmitResponse)
 def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = Depends(get_db)):
 
-    mode = payload.mode.strip()
+    mode = (payload.mode or "").strip()
     if mode not in _ALLOWED_MODES:
         raise HTTPException(status_code=400, detail="invalid mode")
 
     clinic_id = getattr(request.state, "clinic_id", None)
     clinic_user_id = getattr(request.state, "clinic_user_id", None)
-
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
+
+    # Ensure we're operating under tenant context for ALL queries in this request
+    _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
 
     req_id = payload.request_id or uuid.uuid4()
 
     pii_types = detect_pii_types(payload.text)
     pii_detected = bool(pii_types)
+    pii_action = "warn" if pii_detected else "allow"
 
     policy_version = _get_active_policy_version(db)
 
@@ -182,6 +208,7 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
     clinic_user_id_s = str(clinic_user_id)
     req_id_s = str(req_id)
 
+    # Insert governance event (idempotent)
     gov_row = (
         db.execute(
             text(
@@ -212,7 +239,7 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
                 "user_id": clinic_user_id_s,
                 "mode": mode,
                 "pii_detected": pii_detected,
-                "pii_action": "warn" if pii_detected else "allow",
+                "pii_action": pii_action,
                 "pii_types": pii_types,
                 "policy_version": policy_version,
             },
@@ -221,6 +248,7 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
         .first()
     )
 
+    # Insert ops metrics (idempotent)
     db.execute(
         text(
             """
@@ -249,18 +277,23 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
     if gov_row:
         return PortalSubmitResponse(receipt=_row_to_receipt(gov_row))
 
-    existing = db.execute(
-        text(
-            """
-            SELECT *
-            FROM clinic_governance_events
-            WHERE clinic_id = :clinic_id
-              AND request_id = :request_id
-            LIMIT 1
-            """
-        ),
-        {"clinic_id": clinic_id_s, "request_id": req_id_s},
-    ).mappings().first()
+    # If the governance insert conflicted, fetch existing row (still under RLS)
+    existing = (
+        db.execute(
+            text(
+                """
+                SELECT *
+                FROM clinic_governance_events
+                WHERE clinic_id = :clinic_id
+                  AND request_id = :request_id
+                LIMIT 1
+                """
+            ),
+            {"clinic_id": clinic_id_s, "request_id": req_id_s},
+        )
+        .mappings()
+        .first()
+    )
 
     if not existing:
         raise HTTPException(status_code=500, detail="idempotency failure")
@@ -276,21 +309,28 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
 def get_receipt(request_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
 
     clinic_id = getattr(request.state, "clinic_id", None)
-    if not clinic_id:
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
 
-    row = db.execute(
-        text(
-            """
-            SELECT *
-            FROM clinic_governance_events
-            WHERE clinic_id = :clinic_id
-              AND request_id = :request_id
-            LIMIT 1
-            """
-        ),
-        {"clinic_id": str(clinic_id), "request_id": str(request_id)},
-    ).mappings().first()
+    _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
+
+    row = (
+        db.execute(
+            text(
+                """
+                SELECT *
+                FROM clinic_governance_events
+                WHERE clinic_id = :clinic_id
+                  AND request_id = :request_id
+                LIMIT 1
+                """
+            ),
+            {"clinic_id": str(clinic_id), "request_id": str(request_id)},
+        )
+        .mappings()
+        .first()
+    )
 
     if not row:
         raise HTTPException(status_code=404, detail="receipt not found")
@@ -299,7 +339,7 @@ def get_receipt(request_id: uuid.UUID, request: Request, db: Session = Depends(g
 
 
 # ---------------------------------------------------------------------
-# GET /submissions  (with filtering)
+# GET /submissions  (with filtering + cursor pagination)
 # ---------------------------------------------------------------------
 
 @router.get("/submissions", response_model=SubmissionsListResponse)
@@ -313,57 +353,66 @@ def list_submissions(
 ):
 
     clinic_id = getattr(request.state, "clinic_id", None)
-    if not clinic_id:
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
 
-    limit = max(1, min(100, limit))
+    _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
+
+    limit = max(1, min(100, int(limit)))
 
     filters = []
     params = {"clinic_id": str(clinic_id), "limit": limit}
 
     if mode:
+        mode = mode.strip()
         if mode not in _ALLOWED_MODES:
             raise HTTPException(status_code=400, detail="invalid mode filter")
         filters.append("mode = :mode")
         params["mode"] = mode
 
     if decision:
+        decision = decision.strip()
         filters.append("decision = :decision")
         params["decision"] = decision
 
     cursor_clause = ""
     if cursor:
-        created_at_str, request_id_str = cursor.split("|", 1)
+        parsed = _parse_cursor(cursor)
+        if parsed is None:
+            raise HTTPException(status_code=400, detail="invalid cursor")
         cursor_clause = """
             AND (
-                created_at < :cursor_created_at
-                OR (created_at = :cursor_created_at AND request_id < :cursor_request_id)
+                created_at < :cursor_created_at::timestamptz
+                OR (created_at = :cursor_created_at::timestamptz AND request_id < :cursor_request_id::uuid)
             )
         """
-        params["cursor_created_at"] = created_at_str
-        params["cursor_request_id"] = request_id_str
+        params.update(parsed)
 
     where_extra = ""
     if filters:
         where_extra = " AND " + " AND ".join(filters)
 
-    rows = db.execute(
-        text(
-            f"""
-            SELECT *
-            FROM clinic_governance_events
-            WHERE clinic_id = :clinic_id
-            {where_extra}
-            {cursor_clause}
-            ORDER BY created_at DESC, request_id DESC
-            LIMIT :limit
-            """
-        ),
-        params,
-    ).mappings().all()
+    rows = (
+        db.execute(
+            text(
+                f"""
+                SELECT *
+                FROM clinic_governance_events
+                WHERE clinic_id = :clinic_id
+                {where_extra}
+                {cursor_clause}
+                ORDER BY created_at DESC, request_id DESC
+                LIMIT :limit
+                """
+            ),
+            params,
+        )
+        .mappings()
+        .all()
+    )
 
     items: List[SubmissionItem] = []
-
     for row in rows:
         items.append(
             SubmissionItem(
