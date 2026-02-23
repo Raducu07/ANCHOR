@@ -1,8 +1,10 @@
 # app/portal_read.py
+import os
 import uuid
 import json
+import hmac
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,66 +24,55 @@ router = APIRouter(
 )
 
 # -----------------------------
+# Signing config (for export)
+# -----------------------------
+RECEIPT_SIGNING_SECRET = (os.getenv("ANCHOR_RECEIPT_SIGNING_SECRET", "") or "").strip()
+RECEIPT_SIGNING_KID = (os.getenv("ANCHOR_RECEIPT_SIGNING_KID", "v1") or "v1").strip()
+
+# -----------------------------
 # Helpers
 # -----------------------------
 
 def _policy_to_dict(policy_obj: Any) -> Dict[str, Any]:
-    """
-    Normalize policy object to a plain dict for stable hashing.
-    Supports:
-      - dict
-      - Pydantic v2 models (model_dump)
-      - Pydantic v1 models (dict)
-      - objects with __dict__
-      - JSON strings
-    """
     if policy_obj is None:
         return {}
-
     if isinstance(policy_obj, dict):
         return policy_obj
-
-    if isinstance(policy_obj, str):
-        s = policy_obj.strip()
-        if not s:
-            return {}
-        try:
-            v = json.loads(s)
-            return v if isinstance(v, dict) else {"value": v}
-        except Exception:
-            return {"value": s}
-
-    # Pydantic v2
-    if hasattr(policy_obj, "model_dump"):
+    if hasattr(policy_obj, "model_dump"):  # pydantic v2
         try:
             d = policy_obj.model_dump()
             return d if isinstance(d, dict) else {"value": d}
         except Exception:
-            pass
-
-    # Pydantic v1
-    if hasattr(policy_obj, "dict"):
+            return {}
+    if hasattr(policy_obj, "dict"):  # pydantic v1
         try:
             d = policy_obj.dict()
             return d if isinstance(d, dict) else {"value": d}
         except Exception:
-            pass
+            return {}
+    return {"value": str(policy_obj)}
 
-    # Fallback
-    try:
-        d = dict(getattr(policy_obj, "__dict__", {}) or {})
-        return d if isinstance(d, dict) else {"value": str(policy_obj)}
-    except Exception:
-        return {"value": str(policy_obj)}
+
+def _policy_semantic_projection(d: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Only include fields that define policy meaning (not timestamps/cache artifacts).
+    Matches what get_current_policy selects from governance_config.
+    """
+    return {
+        "id": d.get("id"),
+        "policy_version": d.get("policy_version"),
+        "neutrality_version": d.get("neutrality_version"),
+        "min_score_allow": d.get("min_score_allow"),
+        "hard_block_rules": d.get("hard_block_rules") or [],
+        "soft_rules": d.get("soft_rules") or [],
+        "max_findings": d.get("max_findings"),
+    }
 
 
 def _policy_hash(policy_obj: Any) -> str:
-    """
-    Stable hash for an immutable policy reference on receipts.
-    Uses canonical JSON (sorted keys, compact separators).
-    """
     d = _policy_to_dict(policy_obj)
-    blob = json.dumps(d, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+    proj = _policy_semantic_projection(d)
+    blob = json.dumps(proj, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
@@ -110,6 +101,25 @@ def _iso_or_empty(dt: Any) -> str:
         return dt.isoformat()
     except Exception:
         return str(dt)
+
+
+def _canonical_json_bytes(obj: Any) -> bytes:
+    """
+    Canonical JSON for deterministic signatures/hashes.
+    """
+    s = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+    return s.encode("utf-8")
+
+
+def _hmac_sha256_b64url(key: str, msg: bytes) -> str:
+    """
+    Return base64url (no padding) of HMAC-SHA256.
+    Avoid importing jwt libs here; we just need a stable signature.
+    """
+    mac = hmac.new(key.encode("utf-8"), msg, hashlib.sha256).digest()
+    # base64url without padding
+    import base64
+    return base64.urlsafe_b64encode(mac).decode("ascii").rstrip("=")
 
 
 # -----------------------------
@@ -159,6 +169,7 @@ class ReceiptV1(BaseModel):
 
     policy_version: int
     policy_hash: str
+    policy_id: Optional[str] = None  # ✅ tiny improvement
 
     neutrality_version: Optional[str] = None
     governance_score: Optional[float] = None
@@ -175,6 +186,15 @@ class ReceiptV1(BaseModel):
 
 class ReceiptEnvelope(BaseModel):
     receipt: ReceiptV1
+
+
+class SignedReceiptEnvelope(BaseModel):
+    receipt: ReceiptV1
+    signature: str
+    alg: str = "HS256"
+    kid: str = Field(default=RECEIPT_SIGNING_KID)
+    signed_at_utc: str
+    payload_hash: str
 
 
 # -----------------------------
@@ -244,7 +264,6 @@ def list_governance_events(
     Returns recent governance events for the current clinic only (RLS enforced).
     Cursor pagination returns events strictly "older than" the cursor.
     """
-    # safety bounds
     limit = int(limit)
     if limit < 1:
         limit = 1
@@ -273,26 +292,21 @@ def list_governance_events(
     items: List[GovernanceEventItem] = []
     for r in rows:
         created_at_utc = _iso_or_empty(r.get("created_at"))
-
         items.append(
             GovernanceEventItem(
                 request_id=uuid.UUID(str(r["request_id"])),
                 clinic_id=uuid.UUID(str(r["clinic_id"])),
                 clinic_user_id=uuid.UUID(str(r["clinic_user_id"])),
                 mode=str(r["mode"]),
-
                 decision=str(r["decision"]),
                 risk_grade=str(r["risk_grade"]),
                 reason_code=str(r["reason_code"]),
-
                 pii_detected=bool(r["pii_detected"]),
                 pii_action=str(r["pii_action"]),
                 pii_types=list(r.get("pii_types") or []),
-
                 policy_version=int(r["policy_version"]),
                 neutrality_version=str(r["neutrality_version"]),
                 governance_score=r.get("governance_score", None),
-
                 created_at_utc=created_at_utc,
             )
         )
@@ -322,9 +336,10 @@ def get_receipt(
 
     created_at_utc = _iso_or_empty(row.get("created_at"))
 
-    # ✅ IMPORTANT: your get_current_policy requires db
     policy_obj = get_current_policy(db)
-    ph = _policy_hash(policy_obj if isinstance(policy_obj, dict) else {"policy": policy_obj})
+    ph = _policy_hash(policy_obj)
+    policy_dict = _policy_to_dict(policy_obj)
+    policy_id = policy_dict.get("id")
 
     receipt = ReceiptV1(
         request_id=str(row["request_id"]),
@@ -339,6 +354,7 @@ def get_receipt(
         pii_types=list(row.get("pii_types") or []),
         policy_version=int(row.get("policy_version") or 0),
         policy_hash=ph,
+        policy_id=str(policy_id) if policy_id is not None else None,
         neutrality_version=(str(row["neutrality_version"]) if row.get("neutrality_version") is not None else None),
         governance_score=(float(row["governance_score"]) if row.get("governance_score") is not None else None),
         jwt_iss=str(JWT_ISSUER),
@@ -347,6 +363,38 @@ def get_receipt(
     )
 
     return ReceiptEnvelope(receipt=receipt)
+
+
+@router.get("/receipt/{request_id}/signed", response_model=SignedReceiptEnvelope)
+def get_receipt_signed(
+    request_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> SignedReceiptEnvelope:
+    """
+    Returns a signed receipt payload suitable for export/attestation.
+    Signature = HMAC-SHA256 over canonical JSON of the receipt object.
+    Requires ANCHOR_RECEIPT_SIGNING_SECRET to be set.
+    """
+    if not RECEIPT_SIGNING_SECRET:
+        raise HTTPException(status_code=501, detail="receipt signing not configured")
+
+    env = get_receipt(request_id=request_id, db=db)
+    receipt = env.receipt
+
+    payload_obj = receipt.model_dump()
+    payload_bytes = _canonical_json_bytes(payload_obj)
+    payload_hash = hashlib.sha256(payload_bytes).hexdigest()
+
+    signature = _hmac_sha256_b64url(RECEIPT_SIGNING_SECRET, payload_bytes)
+    signed_at_utc = datetime.now(timezone.utc).isoformat()
+
+    return SignedReceiptEnvelope(
+        receipt=receipt,
+        signature=signature,
+        kid=RECEIPT_SIGNING_KID,
+        signed_at_utc=signed_at_utc,
+        payload_hash=payload_hash,
+    )
 
 
 @router.get(
