@@ -4,9 +4,9 @@
 -- Idempotent: safe to run repeatedly.
 --
 -- IMPORTANT:
---  - NO DO $$ blocks (they frequently break app-start migrations)
---  - NO RLS ENABLE / POLICIES at startup (apply once via DB console)
---  - NO SECURITY DEFINER at startup (apply once via DB console)
+--  - NO DO $$ blocks at startup
+--  - NO RLS ENABLE / POLICIES at startup (apply once via security.sql)
+--  - NO SECURITY DEFINER at startup (apply once via security.sql)
 -- =========================
 
 -- Extensions
@@ -420,7 +420,7 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_events_clinic_created_at
   ON admin_audit_events (clinic_id, created_at DESC);
 
 -- =========================
--- Safe public lookup view (no RLS dependency)
+-- Safe public lookup view (boot-safe)
 -- =========================
 
 CREATE OR REPLACE VIEW clinics_public AS
