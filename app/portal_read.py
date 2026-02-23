@@ -271,7 +271,7 @@ def get_receipt(
 
     created_at_utc = _iso_or_empty(row.get("created_at"))
 
-    policy_obj = get_current_policy()
+    policy_obj = get_current_policy(db)
     ph = _policy_hash(policy_obj)
 
     receipt = ReceiptV1(
