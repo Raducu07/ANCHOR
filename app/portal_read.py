@@ -64,7 +64,6 @@ def _iso_or_empty(dt: Any) -> str:
 # -----------------------------
 # Models
 # -----------------------------
-
 class GovernanceEventItem(BaseModel):
     request_id: uuid.UUID
     clinic_id: uuid.UUID
@@ -129,7 +128,9 @@ class ReceiptEnvelope(BaseModel):
 # -----------------------------
 # SQL
 # -----------------------------
-# NOTE: We alias user_id -> clinic_user_id for naming consistency.
+# NOTE:
+# - We alias user_id -> clinic_user_id for naming consistency.
+# - We use created_at_utc (matches your existing outputs).
 _SQL_LIST_EVENTS = """
 SELECT
   request_id,
@@ -145,11 +146,11 @@ SELECT
   policy_version,
   neutrality_version,
   governance_score,
-  created_at
+  created_at_utc
 FROM clinic_governance_events
 WHERE clinic_id = app_current_clinic_id()
 {cursor_clause}
-ORDER BY created_at DESC, request_id DESC
+ORDER BY created_at_utc DESC, request_id DESC
 LIMIT :limit
 """
 
@@ -168,7 +169,7 @@ SELECT
   policy_version,
   neutrality_version,
   governance_score,
-  created_at
+  created_at_utc
 FROM clinic_governance_events
 WHERE clinic_id = app_current_clinic_id()
   AND request_id = :rid
@@ -211,7 +212,7 @@ def list_governance_events(
         # so we paginate correctly on ties.
         cursor_rid = cursor_request_id or uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
 
-        cursor_clause = "AND (created_at, request_id) < (:cursor_dt, :cursor_rid)"
+        cursor_clause = "AND (created_at_utc, request_id) < (:cursor_dt, :cursor_rid)"
         params["cursor_dt"] = cursor_dt
         params["cursor_rid"] = str(cursor_rid)
 
@@ -220,7 +221,7 @@ def list_governance_events(
 
     items: List[GovernanceEventItem] = []
     for r in rows:
-        created_at_utc = _iso_or_empty(r.get("created_at"))
+        created_at_utc = _iso_or_empty(r.get("created_at_utc"))
 
         items.append(
             GovernanceEventItem(
@@ -269,7 +270,7 @@ def get_receipt(
     if not row:
         raise HTTPException(status_code=404, detail="receipt not found")
 
-    created_at_utc = _iso_or_empty(row.get("created_at"))
+    created_at_utc = _iso_or_empty(row.get("created_at_utc"))
 
     # immutable policy reference
     policy_obj = get_current_policy()
