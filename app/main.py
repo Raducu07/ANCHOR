@@ -36,6 +36,7 @@ from app.portal_ops_timeseries import router as portal_ops_timeseries_router
 from app.portal_trust_state import router as portal_trust_state_router
 from app.portal_error_budget import router as portal_error_budget_router
 from app.portal_ops_health import router as portal_ops_health_router
+from app.portal_dashboard import router as portal_dashboard_router
 
 from app.governance_config import (
     get_current_policy,
@@ -1461,6 +1462,7 @@ app.include_router(portal_ops_timeseries_router)
 app.include_router(portal_trust_state_router)
 app.include_router(portal_error_budget_router)
 app.include_router(portal_ops_health_router)
+app.include_router(portal_dashboard_router)
 
 # ============================================================
 # Exception handlers
