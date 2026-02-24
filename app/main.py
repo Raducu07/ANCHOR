@@ -437,7 +437,7 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
     else:
         log_event(logging.INFO, "trusted_host_disabled")
 
-    allow_origins = _parse_csv_env("CORS_ALLOW_ORIGINS")
+    allow_origins = _parse_csv_env("CORS_ALLOW_ORIGINS") or []
     if allow_origins:
         allow_credentials = _env_truthy("CORS_ALLOW_CREDENTIALS", default=False)
         if allow_credentials and any(o == "*" for o in allow_origins):
