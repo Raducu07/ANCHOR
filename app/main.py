@@ -22,14 +22,13 @@ from sqlalchemy import text
 
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from app.auth_and_rls import router as clinic_auth_router
-
 from app.db import SessionLocal, db_ping
 from app.migrate import run_migrations
+
+from app.auth_and_rls import router as clinic_auth_router
 from app.ops_rls_test import router as ops_rls_router
 from app.portal_bootstrap import router as portal_bootstrap_router
 from app.portal_submit import router as portal_submit_router
-from app.portal_receipt import router as portal_receipt_router
 from app.portal_read import router as portal_read_router
 from app.portal_export import router as portal_export_router
 from app.portal_ops import router as portal_ops_router
@@ -1457,7 +1456,6 @@ app.include_router(clinic_auth_router)
 app.include_router(portal_bootstrap_router)
 app.include_router(ops_rls_router)
 app.include_router(portal_submit_router)
-app.include_router(portal_receipt_router)
 app.include_router(portal_read_router)
 app.include_router(portal_export_router)
 app.include_router(portal_ops_router)
