@@ -601,9 +601,9 @@ def list_submissions(
                 pii_detected=bool(row["pii_detected"]),
                 policy_version=int(row["policy_version"]),
                 neutrality_version=row["neutrality_version"],
-                ai_assisted=row.get("ai_assisted"),
-                user_confirmed_review=row.get("user_confirmed_review"),
-                override_flag=row.get("override_flag"),
+                ai_assisted=bool(row.get("ai_assisted") or False),
+                user_confirmed_review=bool(True if row.get("user_confirmed_review") is None else row.get("user_confirmed_review")),
+                override_flag=bool(row.get("override_flag") or False),
                 override_reason=row.get("override_reason"),
                 override_at_utc=(row["override_at"].isoformat() if row.get("override_at") else None),
                 override_by_user_id=(
