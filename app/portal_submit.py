@@ -1,7 +1,6 @@
 # app/portal_submit.py
 import re
 import uuid
-from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -89,16 +88,6 @@ def _get_active_policy_version(db: Session) -> int:
         return 1
 
 
-def _iso_utc(dt) -> str:
-    if not dt:
-        return ""
-    try:
-        # if tz-aware already, keep it
-        return dt.isoformat()
-    except Exception:
-        return str(dt)
-
-
 # ---------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------
@@ -108,17 +97,16 @@ class PortalSubmitRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=20000)
     request_id: Optional[uuid.UUID] = Field(default=None)
 
-    # -------------------------------------------------------------
-    # R1: explicit declarations (user-level accountability signals)
-    # -------------------------------------------------------------
-    ai_assisted: bool = Field(
-        default=False,
-        description="User declares AI assistance was used to create/edit this text.",
-    )
+    # R1: explicit declarations (defaults are safe / non-breaking)
+    ai_assisted: bool = Field(default=False, description="User declares AI assistance was used.")
     user_confirmed_review: bool = Field(
         default=True,
-        description="User confirms they reviewed the AI-assisted output before submission.",
+        description="User confirms they reviewed the AI-assisted output.",
     )
+
+
+class OverrideRequest(BaseModel):
+    override_reason: str = Field(..., min_length=3, max_length=500)
 
 
 class GovernanceReceipt(BaseModel):
@@ -135,20 +123,17 @@ class GovernanceReceipt(BaseModel):
     policy_version: int
     neutrality_version: str
     governance_score: Optional[float] = None
-    created_at_utc: str
 
-    # ----------------
     # R1 fields
-    # ----------------
     ai_assisted: bool = False
     user_confirmed_review: bool = True
 
-    # ----------------
-    # R3 fields
-    # ----------------
+    # R3 override fields
     override_flag: bool = False
     override_reason: Optional[str] = None
     override_at_utc: Optional[str] = None
+
+    created_at_utc: str
 
 
 class PortalSubmitResponse(BaseModel):
@@ -165,12 +150,13 @@ class SubmissionItem(BaseModel):
     pii_detected: bool
     policy_version: int
     neutrality_version: str
-    created_at_utc: str
 
-    # expose R1/R3 summary fields in list view (optional but useful)
-    ai_assisted: bool = False
-    user_confirmed_review: bool = True
-    override_flag: bool = False
+    # Useful in list views (optional, but low-risk to include)
+    ai_assisted: Optional[bool] = None
+    user_confirmed_review: Optional[bool] = None
+    override_flag: Optional[bool] = None
+
+    created_at_utc: str
 
 
 class SubmissionsListResponse(BaseModel):
@@ -178,17 +164,16 @@ class SubmissionsListResponse(BaseModel):
     next_cursor: Optional[str] = None
 
 
-class OverrideRequest(BaseModel):
-    override_reason: str = Field(..., min_length=2, max_length=2000)
-
-
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
 
 def _row_to_receipt(row) -> GovernanceReceipt:
-    created_iso = _iso_utc(row.get("created_at"))
-    override_iso = _iso_utc(row.get("override_at")) if row.get("override_at") else None
+    created_at = row.get("created_at")
+    created_iso = created_at.isoformat() if created_at else ""
+
+    override_at = row.get("override_at")
+    override_at_iso = override_at.isoformat() if override_at else None
 
     return GovernanceReceipt(
         request_id=uuid.UUID(str(row["request_id"])),
@@ -200,16 +185,21 @@ def _row_to_receipt(row) -> GovernanceReceipt:
         reason_code=row["reason_code"],
         pii_detected=bool(row["pii_detected"]),
         pii_action=row["pii_action"],
-        pii_types=list(row["pii_types"] or []),
+        pii_types=list(row.get("pii_types") or []),
         policy_version=int(row["policy_version"]),
         neutrality_version=row["neutrality_version"],
         governance_score=(float(row["governance_score"]) if row.get("governance_score") is not None else None),
-        created_at_utc=created_iso,
+
+        # R1
         ai_assisted=bool(row.get("ai_assisted") or False),
-        user_confirmed_review=bool(row.get("user_confirmed_review") if row.get("user_confirmed_review") is not None else True),
+        user_confirmed_review=bool(True if row.get("user_confirmed_review") is None else row.get("user_confirmed_review")),
+
+        # R3
         override_flag=bool(row.get("override_flag") or False),
         override_reason=row.get("override_reason"),
-        override_at_utc=override_iso,
+        override_at_utc=override_at_iso,
+
+        created_at_utc=created_iso,
     )
 
 
@@ -242,7 +232,6 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
 
-    # Ensure we're operating under tenant context for ALL queries in this request
     _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
 
     req_id = payload.request_id or uuid.uuid4()
@@ -256,17 +245,6 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
     clinic_id_s = str(clinic_id)
     clinic_user_id_s = str(clinic_user_id)
     req_id_s = str(req_id)
-
-    # ------------------------------------------------------------
-    # One important integration note (R1):
-    # You already compute decision/risk_grade/reason_code/etc.
-    # in this endpoint. R1 simply threads:
-    #   - ai_assisted
-    #   - user_confirmed_review
-    # into the governance insert. Nothing else changes.
-    # ------------------------------------------------------------
-    ai_assisted = bool(payload.ai_assisted)
-    user_confirmed_review = bool(payload.user_confirmed_review)
 
     # Insert governance event (idempotent)
     gov_row = (
@@ -290,8 +268,11 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
                   NULL,
                   :policy_version,
                   'v1.1',
-                  :ai_assisted, :user_confirmed_review,
-                  false, NULL, NULL
+                  :ai_assisted,
+                  :user_confirmed_review,
+                  false,
+                  NULL,
+                  NULL
                 )
                 ON CONFLICT (clinic_id, request_id) DO NOTHING
                 RETURNING *
@@ -306,8 +287,8 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
                 "pii_action": pii_action,
                 "pii_types": pii_types,
                 "policy_version": policy_version,
-                "ai_assisted": ai_assisted,
-                "user_confirmed_review": user_confirmed_review,
+                "ai_assisted": bool(payload.ai_assisted),
+                "user_confirmed_review": bool(payload.user_confirmed_review),
             },
         )
         .mappings()
@@ -409,20 +390,15 @@ def get_receipt(request_id: uuid.UUID, request: Request, db: Session = Depends(g
 # ---------------------------------------------------------------------
 
 @router.post("/override/{request_id}", response_model=PortalSubmitResponse)
-def override_receipt(
+def override_submission(
     request_id: uuid.UUID,
     payload: OverrideRequest,
     request: Request,
     db: Session = Depends(get_db),
 ):
     """
-    R3: Override logging.
-    Only the author (clinic_user_id) can override their own event.
-
-    This does NOT change the underlying decision. It records:
-      - override_flag=true
-      - override_reason
-      - override_at
+    Marks an existing submission as manually overridden/reviewed.
+    Metadata-only.
     """
     clinic_id = getattr(request.state, "clinic_id", None)
     clinic_user_id = getattr(request.state, "clinic_user_id", None)
@@ -431,17 +407,14 @@ def override_receipt(
 
     _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
 
-    now = datetime.now(timezone.utc).isoformat()
-
     row = (
         db.execute(
             text(
                 """
                 UPDATE clinic_governance_events
-                SET
-                    override_flag = true,
-                    override_reason = :override_reason,
-                    override_at = :override_at::timestamptz
+                SET override_flag = true,
+                    override_reason = :reason,
+                    override_at = now()
                 WHERE clinic_id = :clinic_id
                   AND request_id = :request_id
                   AND user_id = :user_id
@@ -452,8 +425,7 @@ def override_receipt(
                 "clinic_id": str(clinic_id),
                 "request_id": str(request_id),
                 "user_id": str(clinic_user_id),
-                "override_reason": payload.override_reason.strip(),
-                "override_at": now,
+                "reason": payload.override_reason.strip(),
             },
         )
         .mappings()
@@ -461,8 +433,8 @@ def override_receipt(
     )
 
     if not row:
-        # Not found OR not owned by this user (same response to avoid leaking existence)
-        raise HTTPException(status_code=404, detail="not_found_or_not_owner")
+        # Either not found, or not owned by this user in this clinic
+        raise HTTPException(status_code=404, detail="receipt not found")
 
     db.commit()
     return PortalSubmitResponse(receipt=_row_to_receipt(row))
@@ -555,12 +527,10 @@ def list_submissions(
                 pii_detected=bool(row["pii_detected"]),
                 policy_version=int(row["policy_version"]),
                 neutrality_version=row["neutrality_version"],
+                ai_assisted=row.get("ai_assisted"),
+                user_confirmed_review=row.get("user_confirmed_review"),
+                override_flag=row.get("override_flag"),
                 created_at_utc=row["created_at"].isoformat(),
-                ai_assisted=bool(row.get("ai_assisted") or False),
-                user_confirmed_review=bool(
-                    row.get("user_confirmed_review") if row.get("user_confirmed_review") is not None else True
-                ),
-                override_flag=bool(row.get("override_flag") or False),
             )
         )
 
