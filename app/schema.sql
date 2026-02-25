@@ -447,6 +447,9 @@ CREATE TABLE IF NOT EXISTS admin_audit_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE IF EXISTS admin_audit_events
+  ADD COLUMN IF NOT EXISTS meta jsonb NOT NULL DEFAULT '{}'::jsonb;
+
 CREATE INDEX IF NOT EXISTS idx_admin_audit_events_clinic_created_at
   ON admin_audit_events (clinic_id, created_at DESC);
 
