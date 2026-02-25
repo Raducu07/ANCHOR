@@ -172,34 +172,6 @@ CREATE INDEX IF NOT EXISTS idx_governance_events_neutrality_version
 CREATE INDEX IF NOT EXISTS idx_governance_events_decision_trace_gin
   ON governance_events USING GIN (decision_trace);
 
--- ============================================================
--- R1-R3: AI usage declarations + user review + override logging
--- ============================================================
-
-ALTER TABLE IF EXISTS governance_events
-  ADD COLUMN IF NOT EXISTS ai_assisted boolean;
-
-ALTER TABLE IF EXISTS governance_events
-  ADD COLUMN IF NOT EXISTS user_confirmed_review boolean;
-
-ALTER TABLE IF EXISTS governance_events
-  ADD COLUMN IF NOT EXISTS override_flag boolean;
-
-ALTER TABLE IF EXISTS governance_events
-  ADD COLUMN IF NOT EXISTS override_reason text;
-
-ALTER TABLE IF EXISTS governance_events
-  ADD COLUMN IF NOT EXISTS override_at timestamptz;
-
-ALTER TABLE IF EXISTS governance_events
-  ALTER COLUMN ai_assisted SET DEFAULT false;
-
-ALTER TABLE IF EXISTS governance_events
-  ALTER COLUMN user_confirmed_review SET DEFAULT true;
-
-ALTER TABLE IF EXISTS governance_events
-  ALTER COLUMN override_flag SET DEFAULT false;
-
 -- =========================
 -- Governance config
 -- =========================
@@ -396,6 +368,37 @@ CREATE TABLE IF NOT EXISTS clinic_governance_events (
   neutrality_version text NOT NULL DEFAULT 'v1.1',
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- ============================================================
+-- Portal R1–R3 (tenant table): AI usage + review + override log
+-- Table: clinic_governance_events
+-- Boot-safe + idempotent
+-- ============================================================
+
+ALTER TABLE IF EXISTS clinic_governance_events
+  ADD COLUMN IF NOT EXISTS ai_assisted boolean;
+
+ALTER TABLE IF EXISTS clinic_governance_events
+  ADD COLUMN IF NOT EXISTS user_confirmed_review boolean;
+
+ALTER TABLE IF EXISTS clinic_governance_events
+  ADD COLUMN IF NOT EXISTS override_flag boolean;
+
+ALTER TABLE IF EXISTS clinic_governance_events
+  ADD COLUMN IF NOT EXISTS override_reason text;
+
+ALTER TABLE IF EXISTS clinic_governance_events
+  ADD COLUMN IF NOT EXISTS override_at timestamptz;
+
+-- Defaults (safe; does not rewrite old rows)
+ALTER TABLE IF EXISTS clinic_governance_events
+  ALTER COLUMN ai_assisted SET DEFAULT false;
+
+ALTER TABLE IF EXISTS clinic_governance_events
+  ALTER COLUMN user_confirmed_review SET DEFAULT true;
+
+ALTER TABLE IF EXISTS clinic_governance_events
+  ALTER COLUMN override_flag SET DEFAULT false;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_cge_clinic_request
   ON clinic_governance_events (clinic_id, request_id);
