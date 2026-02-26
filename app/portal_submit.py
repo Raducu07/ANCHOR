@@ -151,6 +151,7 @@ class SubmissionItem(BaseModel):
 
     # WHO overrode (from admin_audit_events)
     override_by_user_id: Optional[uuid.UUID] = None
+    override_by_email: Optional[str] = None
     override_logged_at_utc: Optional[str] = None
 
     created_at_utc: str
@@ -502,7 +503,8 @@ def override_submission(
 
 # ---------------------------------------------------------------------
 # GET /submissions  (with filtering + cursor pagination)
-# - Includes override "who + when" from admin_audit_events
+# - Includes override "who + when" from admin_audit_events (latest per request)
+# - Also returns override_by_email (joined via clinic_users) for UI/audit readability
 # ---------------------------------------------------------------------
 
 @router.get("/submissions", response_model=SubmissionsListResponse)
@@ -523,8 +525,8 @@ def list_submissions(
 
     limit = max(1, min(100, int(limit)))
 
-    filters = []
-    params = {"clinic_id": str(clinic_id), "limit": limit}
+    filters: List[str] = []
+    params: dict = {"clinic_id": str(clinic_id), "limit": limit}
 
     if mode:
         mode = mode.strip()
@@ -544,10 +546,13 @@ def list_submissions(
         if parsed is None:
             raise HTTPException(status_code=400, detail="invalid cursor")
         cursor_clause = """
-            AND (
-                cge.created_at < :cursor_created_at::timestamptz
-                OR (cge.created_at = :cursor_created_at::timestamptz AND cge.request_id < :cursor_request_id::uuid)
+          AND (
+            cge.created_at < :cursor_created_at::timestamptz
+            OR (
+              cge.created_at = :cursor_created_at::timestamptz
+              AND cge.request_id < :cursor_request_id::uuid
             )
+          )
         """
         params.update(parsed)
 
@@ -555,7 +560,7 @@ def list_submissions(
     if filters:
         where_extra = " AND " + " AND ".join(filters)
 
-    # Latest override audit event per request_id (if any)
+    # Latest override audit event per request_id (if any), clinic-scoped
     rows = (
         db.execute(
             text(
@@ -563,15 +568,22 @@ def list_submissions(
                 SELECT
                   cge.*,
                   ae.admin_user_id::text AS override_by_user_id,
+                  ae.admin_email AS override_by_email,
                   ae.created_at AS override_logged_at
                 FROM clinic_governance_events cge
                 LEFT JOIN LATERAL (
-                  SELECT admin_user_id, created_at
-                  FROM admin_audit_events
-                  WHERE clinic_id = cge.clinic_id
-                    AND action = 'override_submission'
-                    AND target_id = cge.request_id
-                  ORDER BY created_at DESC
+                  SELECT
+                    a.admin_user_id,
+                    cu.email AS admin_email,
+                    a.created_at
+                  FROM admin_audit_events a
+                  JOIN clinic_users cu
+                    ON cu.user_id = a.admin_user_id
+                   AND cu.clinic_id = a.clinic_id
+                  WHERE a.clinic_id = cge.clinic_id
+                    AND a.action = 'override_submission'
+                    AND a.target_id = cge.request_id
+                  ORDER BY a.created_at DESC
                   LIMIT 1
                 ) ae ON true
                 WHERE cge.clinic_id = :clinic_id
@@ -590,6 +602,7 @@ def list_submissions(
     items: List[SubmissionItem] = []
     for row in rows:
         override_logged_at = row.get("override_logged_at")
+
         items.append(
             SubmissionItem(
                 request_id=uuid.UUID(str(row["request_id"])),
@@ -601,15 +614,23 @@ def list_submissions(
                 pii_detected=bool(row["pii_detected"]),
                 policy_version=int(row["policy_version"]),
                 neutrality_version=row["neutrality_version"],
+
+                # normalize nulls for legacy rows
                 ai_assisted=bool(row.get("ai_assisted") or False),
-                user_confirmed_review=bool(True if row.get("user_confirmed_review") is None else row.get("user_confirmed_review")),
+                user_confirmed_review=bool(
+                    True if row.get("user_confirmed_review") is None else row.get("user_confirmed_review")
+                ),
                 override_flag=bool(row.get("override_flag") or False),
+
                 override_reason=row.get("override_reason"),
                 override_at_utc=(row["override_at"].isoformat() if row.get("override_at") else None),
+
                 override_by_user_id=(
                     uuid.UUID(row["override_by_user_id"]) if row.get("override_by_user_id") else None
                 ),
+                override_by_email=row.get("override_by_email"),
                 override_logged_at_utc=(override_logged_at.isoformat() if override_logged_at else None),
+
                 created_at_utc=row["created_at"].isoformat(),
             )
         )
