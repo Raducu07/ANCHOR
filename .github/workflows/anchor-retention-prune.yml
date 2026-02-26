@@ -3,7 +3,7 @@ name: Anchor Retention Prune
 on:
   schedule:
     - cron: "15 3 * * *"   # daily at 03:15 UTC
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   prune:
@@ -12,12 +12,12 @@ jobs:
     steps:
       - name: Call retention prune endpoint
         env:
-          ANCHOR_API_BASE: ${{ secrets.ANCHOR_API_BASE }}
+          ANCHOR_BASE: ${{ secrets.ANCHOR_BASE }}
           ANCHOR_ADMIN_TOKEN: ${{ secrets.ANCHOR_ADMIN_TOKEN }}
         run: |
           set -e
           echo "Calling retention prune..."
-          curl -sS -X POST "${ANCHOR_API_BASE}/v1/admin/retention/prune?days=90" \
+          curl -sS -X POST "${ANCHOR_BASE}/v1/admin/retention/prune?days=90" \
             -H "Authorization: Bearer ${ANCHOR_ADMIN_TOKEN}" \
             -H "Content-Type: application/json" \
             --fail
