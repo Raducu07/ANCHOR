@@ -1,6 +1,6 @@
 # app/db.py
 import os
-from typing import Generator
+from typing import Generator, Optional
 
 from fastapi import HTTPException, Request
 from sqlalchemy import create_engine, text
@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 # ============================================================
 # Database URL (Render-friendly) + engine/session
+# - Normalizes postgres:// -> postgresql://
+# - Prefers psycopg v3 driver if installed
 # ============================================================
 
 def _normalize_database_url(url: str) -> str:
@@ -37,8 +39,8 @@ DATABASE_URL = _normalize_database_url(os.getenv("DATABASE_URL", ""))
 ENGINE = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-    pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
-    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
+    pool_size=int(os.getenv("DB_POOL_SIZE", "5") or "5"),
+    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10") or "10"),
 )
 
 SessionLocal = sessionmaker(bind=ENGINE, autocommit=False, autoflush=False)
@@ -55,37 +57,36 @@ def db_ping() -> bool:
 
 
 # ============================================================
-# RLS Context Helpers
+# RLS Context Helpers (FORCE RLS / multi-tenant)
 # ============================================================
-
-# Endpoints that must be able to open a DB session BEFORE clinic context exists.
-# These handlers are responsible for setting SET LOCAL app.clinic_id/app.user_id themselves.
-NO_CLINIC_CONTEXT_PATHS = {
-    "/v1/admin/bootstrap/clinic",
-    "/v1/clinic/auth/login",
-    "/v1/clinic/auth/invite/accept",
-}
-
 
 def set_rls_context(db: Session, *, clinic_id: str, user_id: str) -> None:
     """
     Sets tenant context for FORCE RLS using:
       current_setting('app.clinic_id', true)
       current_setting('app.user_id', true)
+
+    IMPORTANT: these are session-level settings; always clear them.
     """
     db.execute(text("SELECT set_config('app.clinic_id', :cid, true)"), {"cid": str(clinic_id)})
     db.execute(text("SELECT set_config('app.user_id', :uid, true)"), {"uid": str(user_id)})
 
 
 def clear_rls_context(db: Session) -> None:
+    """
+    Clears tenant context for the current DB session.
+    Safe to call even if nothing was set.
+    """
     db.execute(text("SELECT set_config('app.clinic_id', '', true)"))
     db.execute(text("SELECT set_config('app.user_id', '', true)"))
 
 
 def _apply_rls_from_request(db: Session, request: Request) -> None:
     """
-    Applies RLS context using request.state values.
-    IMPORTANT: Request must NOT be Optional in FastAPI dependencies.
+    Applies RLS context using request.state values set by your auth dependency.
+    Expects:
+      request.state.clinic_id
+      request.state.clinic_user_id
     """
     clinic_id = getattr(request.state, "clinic_id", None)
     user_id = getattr(request.state, "clinic_user_id", None)
@@ -105,31 +106,13 @@ def get_db(request: Request) -> Generator[Session, None, None]:
     FastAPI dependency.
 
     Expects request.state.clinic_id and request.state.clinic_user_id
-    to be set by auth dependency (require_clinic_user).
-
-    Special-case: some endpoints must open a DB session *without* an incoming
-    clinic context (bootstrap/login/invite-accept). Those endpoints MUST set
-    RLS context manually (typically using SET LOCAL) before touching tenant tables.
+    to be set by auth dependency (e.g., require_clinic_user).
     """
     db = SessionLocal()
     try:
-        path = ""
-        try:
-            path = request.url.path
-        except Exception:
-            path = ""
-
-        if path in NO_CLINIC_CONTEXT_PATHS:
-            # Do NOT enforce clinic context here.
-            # Handler will set RLS context manually (or operate on non-tenant tables).
-            yield db
-            db.commit()
-            return
-
         _apply_rls_from_request(db, request)
         yield db
         db.commit()
-
     except HTTPException:
         db.rollback()
         raise
@@ -137,7 +120,6 @@ def get_db(request: Request) -> Generator[Session, None, None]:
         db.rollback()
         raise
     finally:
-        # Always clear any tenant context that might have been set during the request
         try:
             clear_rls_context(db)
         except Exception:
@@ -151,8 +133,12 @@ def get_db(request: Request) -> Generator[Session, None, None]:
 
 def db_session() -> Generator[Session, None, None]:
     """
-    Use this for background jobs, bootstrap, or admin endpoints
-    that manage RLS manually.
+    Use this for bootstrap, admin endpoints, and background jobs.
+
+    RLS must be managed manually:
+      - call set_rls_context(...)
+      - do work
+      - call clear_rls_context(...)
     """
     db = SessionLocal()
     try:
