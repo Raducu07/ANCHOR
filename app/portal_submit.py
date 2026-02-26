@@ -374,7 +374,9 @@ def get_receipt(request_id: uuid.UUID, request: Request, db: Session = Depends(g
 
 
 # ---------------------------------------------------------------------
-# POST /override/{request_id}   (R3) — admin clinic-wide
+# POST /override/{request_id}   (R3)
+# - Admin can override ANY submission in the clinic
+# - Idempotent: only first override mutates + writes audit event
 # ---------------------------------------------------------------------
 
 @router.post("/override/{request_id}", response_model=PortalSubmitResponse)
@@ -400,11 +402,14 @@ def override_submission(
     _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
 
     try:
+        # 1) Load the target row (we need original submitter for audit meta)
         original = (
             db.execute(
                 text(
                     """
-                    SELECT user_id::text AS original_user_id
+                    SELECT
+                      user_id::text AS original_user_id,
+                      COALESCE(override_flag, false) AS override_flag
                     FROM clinic_governance_events
                     WHERE clinic_id = :clinic_id
                       AND request_id = :request_id
@@ -420,57 +425,90 @@ def override_submission(
             raise HTTPException(status_code=404, detail="receipt not found")
 
         original_user_id = original.get("original_user_id")
+        already_overridden = bool(original.get("override_flag") or False)
 
-        row = (
-            db.execute(
-                text(
-                    """
-                    UPDATE clinic_governance_events
-                    SET
-                      override_flag = true,
-                      override_reason = CASE
-                        WHEN override_flag IS TRUE THEN override_reason
-                        ELSE :reason
-                      END,
-                      override_at = CASE
-                        WHEN override_flag IS TRUE THEN override_at
-                        ELSE now()
-                      END
-                    WHERE clinic_id = :clinic_id
-                      AND request_id = :request_id
-                    RETURNING *
-                    """
-                ),
-                {"clinic_id": str(clinic_id), "request_id": str(request_id), "reason": reason},
+        # 2) Only mutate if NOT already overridden (true idempotency)
+        updated = None
+        if not already_overridden:
+            updated = (
+                db.execute(
+                    text(
+                        """
+                        UPDATE clinic_governance_events
+                        SET
+                          override_flag = true,
+                          override_reason = :reason,
+                          override_at = now()
+                        WHERE clinic_id = :clinic_id
+                          AND request_id = :request_id
+                          AND COALESCE(override_flag, false) IS DISTINCT FROM true
+                        RETURNING *
+                        """
+                    ),
+                    {
+                        "clinic_id": str(clinic_id),
+                        "request_id": str(request_id),
+                        "reason": reason,
+                    },
+                )
+                .mappings()
+                .first()
             )
-            .mappings()
-            .first()
-        )
+
+            # If update matched nothing (race), treat as already overridden and just read row
+            if updated:
+                # 3) Append-only audit event (casts remove type ambiguity)
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO admin_audit_events (
+                          clinic_id, admin_user_id, action, target_id, meta
+                        )
+                        VALUES (
+                          :clinic_id::uuid,
+                          :admin_user_id::uuid,
+                          :action,
+                          :target_id::uuid,
+                          :meta::jsonb
+                        )
+                        """
+                    ),
+                    {
+                        "clinic_id": str(clinic_id),
+                        "admin_user_id": str(clinic_user_id),
+                        "action": "override_submission",
+                        "target_id": str(request_id),
+                        "meta": json.dumps(
+                            {
+                                "original_user_id": str(original_user_id),
+                                "override_reason_len": len(reason),
+                            }
+                        ),
+                    },
+                )
+
+        # 4) If we didn’t update (already overridden), fetch current row and return it
+        row = updated
+        if not row:
+            row = (
+                db.execute(
+                    text(
+                        """
+                        SELECT *
+                        FROM clinic_governance_events
+                        WHERE clinic_id = :clinic_id
+                          AND request_id = :request_id
+                        LIMIT 1
+                        """
+                    ),
+                    {"clinic_id": str(clinic_id), "request_id": str(request_id)},
+                )
+                .mappings()
+                .first()
+            )
+
         if not row:
             raise HTTPException(status_code=404, detail="receipt not found")
-
-        # Append-only audit trail (store original submitter in meta)
-        db.execute(
-            text(
-                """
-                INSERT INTO admin_audit_events (
-                  clinic_id, admin_user_id, action, target_id, meta
-                )
-                VALUES (
-                  :clinic_id, :admin_user_id, :action, :target_id, :meta::jsonb
-                )
-                """
-            ),
-            {
-                "clinic_id": str(clinic_id),
-                "admin_user_id": str(clinic_user_id),
-                "action": "override_submission",
-                "target_id": str(request_id),
-                "meta": json.dumps(
-                    {"original_user_id": str(original_user_id), "override_reason_len": len(reason)}
-                ),
-            },
-        )
 
         db.commit()
         return PortalSubmitResponse(receipt=_row_to_receipt(row))
