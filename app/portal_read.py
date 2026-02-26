@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.auth_and_rls import require_clinic_user, JWT_ISSUER, JWT_AUDIENCE
-from app.governance_config import get_current_policy
 
 router = APIRouter(
     prefix="/v1/portal",
@@ -32,47 +31,13 @@ RECEIPT_SIGNING_KID = (os.getenv("ANCHOR_RECEIPT_SIGNING_KID", "v1") or "v1").st
 # -----------------------------
 # Helpers
 # -----------------------------
-def _policy_to_dict(policy_obj: Any) -> Dict[str, Any]:
-    if policy_obj is None:
-        return {}
-    if isinstance(policy_obj, dict):
-        return policy_obj
-    if hasattr(policy_obj, "model_dump"):  # pydantic v2
-        try:
-            d = policy_obj.model_dump()
-            return d if isinstance(d, dict) else {"value": d}
-        except Exception:
-            return {}
-    if hasattr(policy_obj, "dict"):  # pydantic v1
-        try:
-            d = policy_obj.dict()
-            return d if isinstance(d, dict) else {"value": d}
-        except Exception:
-            return {}
-    return {"value": str(policy_obj)}
-
-
-def _policy_semantic_projection(d: Dict[str, Any]) -> Dict[str, Any]:
+def _set_rls_context(db: Session, *, clinic_id: uuid.UUID, clinic_user_id: uuid.UUID) -> None:
     """
-    Hash only meaning-bearing fields (avoid timestamps/cache artifacts).
-    Matches get_current_policy() SELECT fields.
+    Explicit RLS context set per request.
+    Matches portal_submit.py behaviour (safe even if get_db also sets it).
     """
-    return {
-        "id": d.get("id"),
-        "policy_version": d.get("policy_version"),
-        "neutrality_version": d.get("neutrality_version"),
-        "min_score_allow": d.get("min_score_allow"),
-        "hard_block_rules": d.get("hard_block_rules") or [],
-        "soft_rules": d.get("soft_rules") or [],
-        "max_findings": d.get("max_findings"),
-    }
-
-
-def _policy_hash(policy_obj: Any) -> str:
-    d = _policy_to_dict(policy_obj)
-    proj = _policy_semantic_projection(d)
-    blob = json.dumps(proj, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    db.execute(text("SELECT set_config('app.clinic_id', :cid, true)"), {"cid": str(clinic_id)})
+    db.execute(text("SELECT set_config('app.user_id', :uid, true)"), {"uid": str(clinic_user_id)})
 
 
 def _parse_iso8601(ts: str) -> datetime:
@@ -105,6 +70,41 @@ def _hmac_sha256_b64url(key: str, msg: bytes) -> str:
     return base64.urlsafe_b64encode(mac).decode("ascii").rstrip("=")
 
 
+def _hash_policy_json(policy_json: Any) -> str:
+    """
+    Hash clinic policy JSON (semantic = the whole JSON).
+    Stable canonical encoding.
+    """
+    blob = json.dumps(policy_json or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _get_clinic_policy_json(db: Session, *, policy_version: int) -> Optional[Dict[str, Any]]:
+    """
+    Fetch clinic policy JSON for the given version under RLS.
+    """
+    row = db.execute(
+        text(
+            """
+            SELECT policy_json
+            FROM clinic_policies
+            WHERE clinic_id = app_current_clinic_id()
+              AND policy_version = :pv
+            LIMIT 1
+            """
+        ),
+        {"pv": int(policy_version)},
+    ).mappings().first()
+
+    if not row:
+        return None
+
+    try:
+        return dict(row["policy_json"])
+    except Exception:
+        return row["policy_json"]
+
+
 # -----------------------------
 # Models
 # -----------------------------
@@ -125,6 +125,11 @@ class GovernanceEventItem(BaseModel):
     policy_version: int
     neutrality_version: str
     governance_score: Optional[float] = None
+
+    # Effective override (append-only truth from admin_audit_events; legacy fallback)
+    override_flag: bool = False
+    override_reason: Optional[str] = None
+    override_at_utc: Optional[str] = None
 
     created_at_utc: str
 
@@ -156,6 +161,11 @@ class ReceiptV1(BaseModel):
     neutrality_version: Optional[str] = None
     governance_score: Optional[float] = None
 
+    # Effective override (append-only truth)
+    override_flag: bool = False
+    override_reason: Optional[str] = None
+    override_at_utc: Optional[str] = None
+
     receipt_version: str = "1.0"
     jwt_iss: str
     jwt_aud: str
@@ -183,46 +193,80 @@ class SignedReceiptEnvelope(BaseModel):
 # -----------------------------
 _SQL_LIST_EVENTS = """
 SELECT
-  request_id,
-  clinic_id,
-  user_id AS clinic_user_id,
-  mode,
-  decision,
-  risk_grade,
-  reason_code,
-  pii_detected,
-  pii_action,
-  COALESCE(pii_types, ARRAY[]::text[]) AS pii_types,
-  policy_version,
-  neutrality_version,
-  governance_score,
-  created_at
-FROM clinic_governance_events
-WHERE clinic_id = app_current_clinic_id()
+  g.request_id,
+  g.clinic_id,
+  g.user_id AS clinic_user_id,
+  g.mode,
+  g.decision,
+  g.risk_grade,
+  g.reason_code,
+  g.pii_detected,
+  g.pii_action,
+  COALESCE(g.pii_types, ARRAY[]::text[]) AS pii_types,
+  g.policy_version,
+  g.neutrality_version,
+  g.governance_score,
+
+  -- effective override fields (audit truth + legacy fallback)
+  (ae.override_logged_at IS NOT NULL OR COALESCE(g.override_flag, false)) AS override_flag,
+  COALESCE(ae.override_reason, g.override_reason) AS override_reason,
+  COALESCE(ae.override_logged_at, g.override_at) AS override_at,
+
+  g.created_at
+FROM clinic_governance_events g
+LEFT JOIN LATERAL (
+  SELECT
+    a.created_at AS override_logged_at,
+    a.meta->>'override_reason' AS override_reason
+  FROM admin_audit_events a
+  WHERE a.clinic_id = g.clinic_id
+    AND a.action = 'override_submission'
+    AND a.target_id = g.request_id
+  ORDER BY a.created_at DESC, a.event_id DESC
+  LIMIT 1
+) ae ON TRUE
+WHERE g.clinic_id = app_current_clinic_id()
 {cursor_clause}
-ORDER BY created_at DESC, request_id DESC
+ORDER BY g.created_at DESC, g.request_id DESC
 LIMIT :limit
 """
 
 _SQL_GET_RECEIPT = """
 SELECT
-  request_id,
-  clinic_id,
-  user_id AS clinic_user_id,
-  mode,
-  decision,
-  risk_grade,
-  reason_code,
-  pii_detected,
-  pii_action,
-  COALESCE(pii_types, ARRAY[]::text[]) AS pii_types,
-  policy_version,
-  neutrality_version,
-  governance_score,
-  created_at
-FROM clinic_governance_events
-WHERE clinic_id = app_current_clinic_id()
-  AND request_id = :rid
+  g.request_id,
+  g.clinic_id,
+  g.user_id AS clinic_user_id,
+  g.mode,
+  g.decision,
+  g.risk_grade,
+  g.reason_code,
+  g.pii_detected,
+  g.pii_action,
+  COALESCE(g.pii_types, ARRAY[]::text[]) AS pii_types,
+  g.policy_version,
+  g.neutrality_version,
+  g.governance_score,
+
+  -- effective override fields (audit truth + legacy fallback)
+  (ae.override_logged_at IS NOT NULL OR COALESCE(g.override_flag, false)) AS override_flag,
+  COALESCE(ae.override_reason, g.override_reason) AS override_reason,
+  COALESCE(ae.override_logged_at, g.override_at) AS override_at,
+
+  g.created_at
+FROM clinic_governance_events g
+LEFT JOIN LATERAL (
+  SELECT
+    a.created_at AS override_logged_at,
+    a.meta->>'override_reason' AS override_reason
+  FROM admin_audit_events a
+  WHERE a.clinic_id = g.clinic_id
+    AND a.action = 'override_submission'
+    AND a.target_id = g.request_id
+  ORDER BY a.created_at DESC, a.event_id DESC
+  LIMIT 1
+) ae ON TRUE
+WHERE g.clinic_id = app_current_clinic_id()
+  AND g.request_id = CAST(:rid AS uuid)
 LIMIT 1
 """
 
@@ -238,6 +282,13 @@ def list_governance_events(
     cursor_created_at_utc: Optional[str] = None,
     cursor_request_id: Optional[uuid.UUID] = None,
 ) -> GovernanceEventsResponse:
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
+
+    _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
+
     limit = int(limit)
     if limit < 1:
         limit = 1
@@ -254,7 +305,7 @@ def list_governance_events(
             raise HTTPException(status_code=400, detail="invalid cursor_created_at_utc")
 
         cursor_rid = cursor_request_id or uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
-        cursor_clause = "AND (created_at, request_id) < (:cursor_dt, :cursor_rid)"
+        cursor_clause = "AND (g.created_at, g.request_id) < (:cursor_dt, :cursor_rid)"
         params["cursor_dt"] = cursor_dt
         params["cursor_rid"] = str(cursor_rid)
 
@@ -263,6 +314,7 @@ def list_governance_events(
 
     items: List[GovernanceEventItem] = []
     for r in rows:
+        override_at = r.get("override_at")
         items.append(
             GovernanceEventItem(
                 request_id=uuid.UUID(str(r["request_id"])),
@@ -278,6 +330,11 @@ def list_governance_events(
                 policy_version=int(r["policy_version"]),
                 neutrality_version=str(r["neutrality_version"]),
                 governance_score=r.get("governance_score", None),
+
+                override_flag=bool(r.get("override_flag") or False),
+                override_reason=(str(r["override_reason"]) if r.get("override_reason") is not None else None),
+                override_at_utc=(override_at.isoformat() if override_at is not None else None),
+
                 created_at_utc=_iso_or_empty(r.get("created_at")),
             )
         )
@@ -295,28 +352,30 @@ def list_governance_events(
 @router.get("/receipt/{request_id}", response_model=ReceiptEnvelope)
 def get_receipt(
     request_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> ReceiptEnvelope:
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
+
+    _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
+
     row = db.execute(text(_SQL_GET_RECEIPT), {"rid": str(request_id)}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="receipt not found")
 
     created_at_utc = _iso_or_empty(row.get("created_at"))
+    override_at = row.get("override_at")
 
-    policy_obj = get_current_policy(db)
-    ph = _policy_hash(policy_obj)
+    # policy hash from clinic policy version used by this event
+    pv = int(row.get("policy_version") or 0)
+    policy_json = _get_clinic_policy_json(db, policy_version=pv)
+    policy_hash = _hash_policy_json(policy_json)
 
-    policy_id = None
-    try:
-        policy_dict = _policy_to_dict(policy_obj)
-        policy_id = policy_dict.get("id")
-    except Exception:
-        policy_id = None
-
-    if policy_id is None:
-        pid_row = db.execute(text("SELECT id FROM governance_config ORDER BY updated_at DESC LIMIT 1")).first()
-        if pid_row:
-            policy_id = pid_row[0]
+    # policy_id: stable, tenant-local identifier
+    policy_id = f"clinic_policy:{pv}"
 
     receipt = ReceiptV1(
         request_id=str(row["request_id"]),
@@ -329,11 +388,16 @@ def get_receipt(
         pii_detected=bool(row.get("pii_detected") or False),
         pii_action=(str(row["pii_action"]) if row.get("pii_action") is not None else None),
         pii_types=list(row.get("pii_types") or []),
-        policy_version=int(row.get("policy_version") or 0),
-        policy_hash=ph,
-        policy_id=str(policy_id) if policy_id is not None else None,
+        policy_version=pv,
+        policy_hash=policy_hash,
+        policy_id=policy_id,
         neutrality_version=(str(row["neutrality_version"]) if row.get("neutrality_version") is not None else None),
         governance_score=(float(row["governance_score"]) if row.get("governance_score") is not None else None),
+
+        override_flag=bool(row.get("override_flag") or False),
+        override_reason=(str(row["override_reason"]) if row.get("override_reason") is not None else None),
+        override_at_utc=(override_at.isoformat() if override_at is not None else None),
+
         jwt_iss=str(JWT_ISSUER),
         jwt_aud=str(JWT_AUDIENCE),
         created_at_utc=created_at_utc,
@@ -345,12 +409,13 @@ def get_receipt(
 @router.get("/receipt/{request_id}/signed", response_model=SignedReceiptEnvelope)
 def get_receipt_signed(
     request_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> SignedReceiptEnvelope:
     if not RECEIPT_SIGNING_SECRET:
         raise HTTPException(status_code=501, detail="receipt signing not configured")
 
-    env = get_receipt(request_id=request_id, db=db)
+    env = get_receipt(request_id=request_id, request=request, db=db)
     receipt = env.receipt
 
     payload_obj = receipt.model_dump()
@@ -372,6 +437,7 @@ def get_receipt_signed(
 @router.get("/receipts/{request_id}", response_model=ReceiptEnvelope, deprecated=True)
 def get_receipt_legacy(
     request_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> ReceiptEnvelope:
-    return get_receipt(request_id=request_id, db=db)
+    return get_receipt(request_id=request_id, request=request, db=db)
