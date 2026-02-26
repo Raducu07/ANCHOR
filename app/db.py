@@ -22,7 +22,7 @@ def _normalize_database_url(url: str) -> str:
 
     # Prefer psycopg v3 if available
     try:
-        import psycopg  # noqa
+        import psycopg  # noqa: F401
         if url.startswith("postgresql://") and not url.startswith("postgresql+psycopg://"):
             url = url.replace("postgresql://", "postgresql+psycopg://", 1)
     except Exception:
@@ -57,6 +57,15 @@ def db_ping() -> bool:
 # ============================================================
 # RLS Context Helpers
 # ============================================================
+
+# Endpoints that must be able to open a DB session BEFORE clinic context exists.
+# These handlers are responsible for setting SET LOCAL app.clinic_id/app.user_id themselves.
+NO_CLINIC_CONTEXT_PATHS = {
+    "/v1/admin/bootstrap/clinic",
+    "/v1/clinic/auth/login",
+    "/v1/clinic/auth/invite/accept",
+}
+
 
 def set_rls_context(db: Session, *, clinic_id: str, user_id: str) -> None:
     """
@@ -97,12 +106,30 @@ def get_db(request: Request) -> Generator[Session, None, None]:
 
     Expects request.state.clinic_id and request.state.clinic_user_id
     to be set by auth dependency (require_clinic_user).
+
+    Special-case: some endpoints must open a DB session *without* an incoming
+    clinic context (bootstrap/login/invite-accept). Those endpoints MUST set
+    RLS context manually (typically using SET LOCAL) before touching tenant tables.
     """
     db = SessionLocal()
     try:
+        path = ""
+        try:
+            path = request.url.path
+        except Exception:
+            path = ""
+
+        if path in NO_CLINIC_CONTEXT_PATHS:
+            # Do NOT enforce clinic context here.
+            # Handler will set RLS context manually (or operate on non-tenant tables).
+            yield db
+            db.commit()
+            return
+
         _apply_rls_from_request(db, request)
         yield db
         db.commit()
+
     except HTTPException:
         db.rollback()
         raise
@@ -110,6 +137,7 @@ def get_db(request: Request) -> Generator[Session, None, None]:
         db.rollback()
         raise
     finally:
+        # Always clear any tenant context that might have been set during the request
         try:
             clear_rls_context(db)
         except Exception:
