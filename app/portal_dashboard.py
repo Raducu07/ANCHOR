@@ -1,17 +1,15 @@
 # app/portal_dashboard.py
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.auth_and_rls import require_clinic_user
-from app.portal_read import ReceiptV1, _policy_hash, _policy_to_dict
-from app.governance_config import get_current_policy
+from app.portal_read import ReceiptV1, _hash_policy_json, _get_clinic_policy_json, _set_rls_context
 
 router = APIRouter(
     prefix="/v1/portal",
@@ -66,7 +64,7 @@ class PortalDashboardResponse(BaseModel):
 
 
 # -----------------------------
-# SQL (RLS enforced by get_db)
+# SQL (RLS enforced by explicit set_config)
 # -----------------------------
 _SQL_RECENT = """
 SELECT
@@ -98,7 +96,7 @@ WITH w AS (
 )
 SELECT
   (SELECT COUNT(*) FROM w) AS events_24h,
-  (SELECT COUNT(*) FROM w WHERE decision IN ('replaced','blocked','denied')) AS interventions_24h,
+  (SELECT COUNT(*) FROM w WHERE decision IN ('replaced','blocked')) AS interventions_24h,
   (SELECT COUNT(*) FROM w WHERE COALESCE(pii_action,'') = 'warn') AS pii_warned_24h,
   (SELECT mode FROM w GROUP BY mode ORDER BY COUNT(*) DESC, mode ASC LIMIT 1) AS top_mode_24h
 """
@@ -114,12 +112,6 @@ def _iso(dt: Any) -> str:
 
 
 def _derive_trust_state(*, events: int, interventions: int, pii_warned: int) -> DashboardTrustState:
-    """
-    Transparent v1 heuristic for dashboard loading.
-    - red: high intervention rate when there is sufficient volume
-    - yellow: dominated by pii warnings (common early testing)
-    - yellow: no events (no signal)
-    """
     reasons: List[str] = []
     health = "green"
 
@@ -144,24 +136,11 @@ def _derive_trust_state(*, events: int, interventions: int, pii_warned: int) -> 
 def _build_latest_receipt(db: Session, row: Dict[str, Any]) -> ReceiptV1:
     created_at_utc = _iso(row.get("created_at"))
 
-    # policy hash + policy id
-    policy_obj = get_current_policy(db)
-    ph = _policy_hash(policy_obj)
+    pv = int(row.get("policy_version") or 0)
+    policy_json = _get_clinic_policy_json(db, policy_version=pv)
+    ph = _hash_policy_json(policy_json)
+    policy_id = f"clinic_policy:{pv}"
 
-    policy_id = None
-    try:
-        d = _policy_to_dict(policy_obj)
-        policy_id = d.get("id")
-    except Exception:
-        policy_id = None
-
-    # fallback: match get_current_policy order
-    if policy_id is None:
-        pid_row = db.execute(text("SELECT id FROM governance_config ORDER BY updated_at DESC LIMIT 1")).first()
-        if pid_row:
-            policy_id = pid_row[0]
-
-    # IMPORTANT: ReceiptV1 is imported from portal_read.py; keep fields aligned.
     return ReceiptV1(
         request_id=str(row["request_id"]),
         clinic_id=str(row["clinic_id"]),
@@ -173,11 +152,17 @@ def _build_latest_receipt(db: Session, row: Dict[str, Any]) -> ReceiptV1:
         pii_detected=bool(row.get("pii_detected") or False),
         pii_action=(str(row["pii_action"]) if row.get("pii_action") is not None else None),
         pii_types=list(row.get("pii_types") or []),
-        policy_version=int(row.get("policy_version") or 0),
+        policy_version=pv,
         policy_hash=ph,
-        policy_id=str(policy_id) if policy_id is not None else None,
+        policy_id=policy_id,
         neutrality_version=(str(row["neutrality_version"]) if row.get("neutrality_version") is not None else None),
         governance_score=(float(row["governance_score"]) if row.get("governance_score") is not None else None),
+
+        # Dashboard doesn't need override fields; keep defaults
+        override_flag=False,
+        override_reason=None,
+        override_at_utc=None,
+
         # Keep consistent with portal_read receipt output
         jwt_iss="anchor",
         jwt_aud="anchor-portal",
@@ -187,19 +172,17 @@ def _build_latest_receipt(db: Session, row: Dict[str, Any]) -> ReceiptV1:
 
 @router.get("/dashboard", response_model=PortalDashboardResponse)
 def portal_dashboard(
+    request: Request,
     db: Session = Depends(get_db),
     limit: int = 20,
 ) -> PortalDashboardResponse:
-    """
-    One-call dashboard endpoint for UI.
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
 
-    Derived-only: uses clinic_governance_events (RLS) to return:
-      - trust_state (derived_v1)
-      - kpis_24h (derived)
-      - recent_submissions (latest N)
-      - latest_receipt (inline receipt-grade object for newest request)
-      - latest_signed_receipt_url (micro-polish for UI)
-    """
+    _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
+
     limit = int(limit)
     if limit < 1:
         limit = 1
@@ -271,6 +254,7 @@ def portal_dashboard(
 
     return PortalDashboardResponse(
         now_utc=now_utc,
+        clinic_id=str(clinic_id) if clinic_id is not None else None,
         trust_state=trust_state,
         kpis_24h=kpis,
         recent_submissions=recent,
