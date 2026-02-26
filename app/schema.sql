@@ -409,6 +409,22 @@ CREATE INDEX IF NOT EXISTS idx_clinic_gov_events_clinic_created_at
 CREATE INDEX IF NOT EXISTS idx_cge_clinic_created_request
   ON clinic_governance_events (clinic_id, created_at DESC, request_id DESC);
 
+-- ============================================================
+-- M2.7 Hardening: explainability + tamper evidence
+-- Table: clinic_governance_events
+-- Boot-safe + idempotent
+-- ============================================================
+
+ALTER TABLE IF EXISTS clinic_governance_events
+  ADD COLUMN IF NOT EXISTS policy_sha256 text;
+
+ALTER TABLE IF EXISTS clinic_governance_events
+  ADD COLUMN IF NOT EXISTS rules_fired jsonb;
+
+-- Optional: app can populate a hash of canonical event JSON
+ALTER TABLE IF EXISTS clinic_governance_events
+  ADD COLUMN IF NOT EXISTS event_sha256 text;
+
 CREATE TABLE IF NOT EXISTS ops_metrics_events (
   event_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   clinic_id uuid NOT NULL REFERENCES clinics(clinic_id) ON DELETE CASCADE,
@@ -450,8 +466,30 @@ CREATE TABLE IF NOT EXISTS admin_audit_events (
 ALTER TABLE IF EXISTS admin_audit_events
   ADD COLUMN IF NOT EXISTS meta jsonb NOT NULL DEFAULT '{}'::jsonb;
 
+-- ============================================================
+-- M2.7 Hardening: DB-enforced idempotency for admin actions
+-- Table: admin_audit_events
+-- Boot-safe + idempotent
+-- ============================================================
+
+ALTER TABLE IF EXISTS admin_audit_events
+  ADD COLUMN IF NOT EXISTS idempotency_key text;
+
+-- DB-enforced idempotency (partial unique index allows NULL)
+CREATE UNIQUE INDEX IF NOT EXISTS admin_audit_events_idem_uq
+  ON admin_audit_events (clinic_id, action, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_admin_audit_events_clinic_created_at
   ON admin_audit_events (clinic_id, created_at DESC);
+
+-- Needed for fast "latest override" LATERAL join by target_id
+CREATE INDEX IF NOT EXISTS idx_admin_audit_events_clinic_target_created
+  ON admin_audit_events (clinic_id, target_id, created_at DESC);
+
+-- Helpful for filtering/timelines by action
+CREATE INDEX IF NOT EXISTS idx_admin_audit_events_clinic_action_created
+  ON admin_audit_events (clinic_id, action, created_at DESC);
 
 -- =========================
 -- Safe public lookup view (boot-safe)
