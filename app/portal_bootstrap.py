@@ -121,29 +121,25 @@ def _auth_via_bearer(authorization: str) -> Optional[AdminAuthResult]:
 
 def require_admin(
     request: Request,
-    x_anchor_admin_token: Optional[str] = Header(default=None, alias="X-ANCHOR-ADMIN-TOKEN"),
-    authorization: str = Header(default=""),
-) -> AdminAuthResult:
-    """
-    Accept either:
-      - X-ANCHOR-ADMIN-TOKEN (preferred)
-      - Authorization: Bearer <ADMIN_BEARER_TOKEN> (back-compat)
+    x_anchor_admin_token: str | None = Header(default=None, alias="X-ANCHOR-ADMIN-TOKEN"),
+) -> None:
+    # keep it simple here OR import a shared require_admin from a common module
+    token = (os.getenv("ANCHOR_ADMIN_TOKEN") or "").strip()
+    tokens_raw = (os.getenv("ANCHOR_ADMIN_TOKENS") or "").strip()
 
-    Returns metadata only (method + token fingerprint).
-    """
-    # Prefer X header if present
-    res = _auth_via_x_anchor(x_anchor_admin_token)
-    if res:
-        return res
+    allowed = set()
+    if token:
+        allowed.add(token)
+    if tokens_raw:
+        for p in [x.strip() for x in tokens_raw.split(",") if x.strip()]:
+            allowed.add(p.split("|", 1)[0].strip())
 
-    # Fall back to bearer if configured
-    res = _auth_via_bearer(authorization)
-    if res:
-        return res
+    if not x_anchor_admin_token:
+        raise HTTPException(status_code=403, detail="Unauthorized")
 
-    # Provide a crisp error
-    raise HTTPException(status_code=403, detail="Forbidden")
-
+    ok = any(hmac.compare_digest(x_anchor_admin_token, t) for t in allowed)
+    if not ok:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
 # ============================================================
 # Helpers
