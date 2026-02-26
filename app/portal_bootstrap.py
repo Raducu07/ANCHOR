@@ -22,7 +22,13 @@ router = APIRouter()
 # Admin auth (unified)
 # Supports:
 #   - X-ANCHOR-ADMIN-TOKEN (ANCHOR_ADMIN_TOKENS / ANCHOR_ADMIN_TOKEN)
+#       ANCHOR_ADMIN_TOKENS="tokA,tokB"
+#       ANCHOR_ADMIN_TOKENS="tokA|2026-12-31T23:59:59Z,tokB"
 #   - Authorization: Bearer (ADMIN_BEARER_TOKEN)  [back-compat]
+# Notes:
+#   - If X-ANCHOR-ADMIN-TOKEN is present, we authenticate via ANCHOR_* tokens.
+#   - Else, we fall back to Bearer if ADMIN_BEARER_TOKEN is set.
+#   - Returns AdminAuthResult (so endpoint can log method/fingerprint if desired).
 # ============================================================
 
 @dataclass(frozen=True)
@@ -37,6 +43,7 @@ def _utc_now() -> datetime:
 
 def _parse_iso_z(dt_str: str) -> datetime:
     # Expect e.g. "2026-12-31T23:59:59Z"
+    dt_str = (dt_str or "").strip()
     if not dt_str.endswith("Z"):
         raise ValueError("expiry must end with 'Z'")
     return datetime.fromisoformat(dt_str.replace("Z", "+00:00")).astimezone(timezone.utc)
@@ -52,6 +59,8 @@ def _load_anchor_admin_tokens() -> Tuple[Set[str], Dict[str, Optional[datetime]]
       ANCHOR_ADMIN_TOKENS="tokenA,tokenB"
       ANCHOR_ADMIN_TOKENS="tokenA|2026-12-31T23:59:59Z,tokenB"
       ANCHOR_ADMIN_TOKEN="legacySingleToken" (back-compat)
+    Returns:
+      (tokens_set, expiry_map[token] -> expires_at_utc_or_None)
     """
     raw = (os.getenv("ANCHOR_ADMIN_TOKENS") or "").strip()
     tokens: Set[str] = set()
@@ -91,7 +100,7 @@ _ANCHOR_TOKENS, _ANCHOR_EXPIRY = _load_anchor_admin_tokens()
 def _auth_via_x_anchor(token: Optional[str]) -> Optional[AdminAuthResult]:
     if not token:
         return None
-    # constant-time compare against set
+
     match = None
     for t in _ANCHOR_TOKENS:
         if hmac.compare_digest(token, t):
@@ -113,33 +122,57 @@ def _auth_via_bearer(authorization: str) -> Optional[AdminAuthResult]:
         return None
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
+
     provided = authorization.split(" ", 1)[1].strip()
     if not hmac.compare_digest(provided, token):
         return None
+
     return AdminAuthResult(method="bearer", token_fp=_token_fingerprint(token))
 
 
 def require_admin(
     request: Request,
-    x_anchor_admin_token: str | None = Header(default=None, alias="X-ANCHOR-ADMIN-TOKEN"),
-) -> None:
-    # keep it simple here OR import a shared require_admin from a common module
-    token = (os.getenv("ANCHOR_ADMIN_TOKEN") or "").strip()
-    tokens_raw = (os.getenv("ANCHOR_ADMIN_TOKENS") or "").strip()
+    x_anchor_admin_token: Optional[str] = Header(default=None, alias="X-ANCHOR-ADMIN-TOKEN"),
+    authorization: str = Header(default=""),
+) -> AdminAuthResult:
+    """
+    Prefer X-ANCHOR-ADMIN-TOKEN (ANCHOR_ADMIN_TOKENS / ANCHOR_ADMIN_TOKEN).
+    Fall back to Authorization: Bearer (ADMIN_BEARER_TOKEN) for back-compat.
+    """
 
-    allowed = set()
-    if token:
-        allowed.add(token)
-    if tokens_raw:
-        for p in [x.strip() for x in tokens_raw.split(",") if x.strip()]:
-            allowed.add(p.split("|", 1)[0].strip())
+    # Always load fresh env-backed tokens (avoid stale cache across deploy/env tweaks)
+    tokens, expiry = _load_anchor_admin_tokens()
 
-    if not x_anchor_admin_token:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    def auth_via_x(token: str) -> Optional[AdminAuthResult]:
+        # constant-time compare against set
+        match = None
+        for t in tokens:
+            if hmac.compare_digest(token, t):
+                match = t
+                break
+        if not match:
+            return None
+        exp = expiry.get(match)
+        if exp is not None and _utc_now() >= exp:
+            return None
+        return AdminAuthResult(method="x-header", token_fp=_token_fingerprint(match))
 
-    ok = any(hmac.compare_digest(x_anchor_admin_token, t) for t in allowed)
-    if not ok:
+    # Prefer X header if present and non-empty
+    if x_anchor_admin_token:
+        res = auth_via_x(x_anchor_admin_token.strip())
+        if res:
+            return res
+        # X header present but invalid -> hard fail (don't fall back)
         raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Otherwise try Bearer back-compat
+    res2 = _auth_via_bearer(authorization)
+    if res2:
+        return res2
+
+    # If nothing works, be intentionally vague
+    raise HTTPException(status_code=403, detail="Unauthorized")
+
 
 # ============================================================
 # Helpers
