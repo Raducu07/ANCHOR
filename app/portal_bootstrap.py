@@ -4,40 +4,150 @@ import hmac
 import uuid
 import hashlib
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Set, Tuple
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.db import get_db, set_rls_context, clear_rls_context
+from app.db import db_session, set_rls_context, clear_rls_context
 
 router = APIRouter()
 
-# ---------------------------
-# Admin auth (single-token)
-# Keep consistent with ops_rls_test.py for now
-# ---------------------------
 
-def require_admin(authorization: str = Header(default="")) -> None:
+# ============================================================
+# Admin auth (unified)
+# Supports:
+#   - X-ANCHOR-ADMIN-TOKEN (ANCHOR_ADMIN_TOKENS / ANCHOR_ADMIN_TOKEN)
+#   - Authorization: Bearer (ADMIN_BEARER_TOKEN)  [back-compat]
+# ============================================================
+
+@dataclass(frozen=True)
+class AdminAuthResult:
+    method: str  # "x-header" | "bearer"
+    token_fp: str
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso_z(dt_str: str) -> datetime:
+    # Expect e.g. "2026-12-31T23:59:59Z"
+    if not dt_str.endswith("Z"):
+        raise ValueError("expiry must end with 'Z'")
+    return datetime.fromisoformat(dt_str.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def _load_anchor_admin_tokens() -> Tuple[Set[str], Dict[str, Optional[datetime]]]:
+    """
+    Supports:
+      ANCHOR_ADMIN_TOKENS="tokenA,tokenB"
+      ANCHOR_ADMIN_TOKENS="tokenA|2026-12-31T23:59:59Z,tokenB"
+      ANCHOR_ADMIN_TOKEN="legacySingleToken" (back-compat)
+    """
+    raw = (os.getenv("ANCHOR_ADMIN_TOKENS") or "").strip()
+    tokens: Set[str] = set()
+    expiry: Dict[str, Optional[datetime]] = {}
+
+    if raw:
+        for part in [p.strip() for p in raw.split(",") if p.strip()]:
+            if "|" in part:
+                tok, exp = part.split("|", 1)
+                tok = tok.strip()
+                exp = exp.strip()
+                if not tok:
+                    continue
+                try:
+                    expiry[tok] = _parse_iso_z(exp)
+                    tokens.add(tok)
+                except Exception:
+                    # ignore malformed expiry entry
+                    continue
+            else:
+                tok = part.strip()
+                if tok:
+                    tokens.add(tok)
+                    expiry[tok] = None
+
+    legacy = (os.getenv("ANCHOR_ADMIN_TOKEN") or "").strip()
+    if legacy and legacy not in tokens:
+        tokens.add(legacy)
+        expiry[legacy] = None
+
+    return tokens, expiry
+
+
+_ANCHOR_TOKENS, _ANCHOR_EXPIRY = _load_anchor_admin_tokens()
+
+
+def _auth_via_x_anchor(token: Optional[str]) -> Optional[AdminAuthResult]:
+    if not token:
+        return None
+    # constant-time compare against set
+    match = None
+    for t in _ANCHOR_TOKENS:
+        if hmac.compare_digest(token, t):
+            match = t
+            break
+    if not match:
+        return None
+
+    exp = _ANCHOR_EXPIRY.get(match)
+    if exp is not None and _utc_now() >= exp:
+        return None
+
+    return AdminAuthResult(method="x-header", token_fp=_token_fingerprint(match))
+
+
+def _auth_via_bearer(authorization: str) -> Optional[AdminAuthResult]:
     token = (os.getenv("ADMIN_BEARER_TOKEN") or "").strip()
     if not token:
-        raise HTTPException(status_code=500, detail="ADMIN_BEARER_TOKEN is not set")
+        return None
     if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing Bearer token")
+        return None
     provided = authorization.split(" ", 1)[1].strip()
     if not hmac.compare_digest(provided, token):
-        raise HTTPException(status_code=403, detail="Forbidden")
+        return None
+    return AdminAuthResult(method="bearer", token_fp=_token_fingerprint(token))
 
 
-# ---------------------------
+def require_admin(
+    request: Request,
+    x_anchor_admin_token: Optional[str] = Header(default=None, alias="X-ANCHOR-ADMIN-TOKEN"),
+    authorization: str = Header(default=""),
+) -> AdminAuthResult:
+    """
+    Accept either:
+      - X-ANCHOR-ADMIN-TOKEN (preferred)
+      - Authorization: Bearer <ADMIN_BEARER_TOKEN> (back-compat)
+
+    Returns metadata only (method + token fingerprint).
+    """
+    # Prefer X header if present
+    res = _auth_via_x_anchor(x_anchor_admin_token)
+    if res:
+        return res
+
+    # Fall back to bearer if configured
+    res = _auth_via_bearer(authorization)
+    if res:
+        return res
+
+    # Provide a crisp error
+    raise HTTPException(status_code=403, detail="Forbidden")
+
+
+# ============================================================
 # Helpers
-# ---------------------------
-
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+# ============================================================
 
 def _slugify(s: str) -> str:
     s = (s or "").strip().lower()
@@ -54,19 +164,21 @@ def _slugify(s: str) -> str:
         slug = f"clinic-{uuid.uuid4().hex[:8]}"
     return slug[:64]
 
+
 def _hash_token(token_plain: str) -> str:
     # Store only hashes; never store plaintext invite tokens.
     salt = (os.getenv("INVITE_TOKEN_SALT") or "anchor-invite-salt").encode("utf-8")
     return hashlib.sha256(salt + token_plain.encode("utf-8")).hexdigest()
+
 
 def json_dump(obj: Any) -> str:
     import json
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
-# ---------------------------
+# ============================================================
 # Request/Response models
-# ---------------------------
+# ============================================================
 
 class BootstrapClinicRequest(BaseModel):
     clinic_name: str = Field(..., min_length=2, max_length=200)
@@ -81,6 +193,7 @@ class BootstrapClinicRequest(BaseModel):
     invite_valid_days: int = Field(default=7, ge=1, le=30)
     subscription_tier: str = Field(default="starter")
 
+
 class BootstrapClinicResponse(BaseModel):
     clinic_id: str
     clinic_slug: str
@@ -89,16 +202,16 @@ class BootstrapClinicResponse(BaseModel):
     expires_at: str
 
 
-# ---------------------------
+# ============================================================
 # Admin bootstrap endpoint
-# ---------------------------
+# ============================================================
 
 @router.post("/v1/admin/bootstrap/clinic", response_model=BootstrapClinicResponse)
 def bootstrap_clinic(
     req: BootstrapClinicRequest,
     request: Request,
-    db: Session = Depends(get_db),
-    _: None = Depends(require_admin),
+    db: Session = Depends(db_session),
+    admin: AdminAuthResult = Depends(require_admin),
 ):
     """
     Creates:
@@ -113,14 +226,13 @@ def bootstrap_clinic(
     """
     clinic_id = uuid.uuid4()
 
-    # Deterministic system actor UUID (same value every time, OK because clinic_id scopes row visibility)
-    # Unique per clinic to avoid PK collisions across clinics
+    # Deterministic-ish system actor UUID per clinic (stable within this request)
     system_user_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"anchor-system-bootstrap:{clinic_id}")
 
     slug = _slugify(req.clinic_slug or req.clinic_name)
     invite_token = secrets.token_urlsafe(24)
     token_hash = _hash_token(invite_token)
-    expires_at = _now_utc() + timedelta(days=int(req.invite_valid_days))
+    expires_at = _utc_now() + timedelta(days=int(req.invite_valid_days))
 
     # Minimal default policy JSON (replace later with your real schema)
     policy_json: Dict[str, Any] = {
@@ -200,7 +312,7 @@ def bootstrap_clinic(
             {"cid": str(clinic_id), "updated_by": str(system_user_id)},
         )
 
-        # 6) admin invite (created_by is NULL until real admin exists)
+        # 6) admin invite
         db.execute(
             text("""
                 INSERT INTO clinic_user_invites
