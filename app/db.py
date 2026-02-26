@@ -9,8 +9,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 # ============================================================
 # Database URL (Render-friendly) + engine/session
-# - Normalizes postgres:// -> postgresql://
-# - Prefers psycopg v3 driver if installed
 # ============================================================
 
 def _normalize_database_url(url: str) -> str:
@@ -22,13 +20,14 @@ def _normalize_database_url(url: str) -> str:
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
 
-    # Prefer psycopg v3 if available
+    # Prefer psycopg v3 if installed
     try:
         import psycopg  # noqa: F401
+
         if url.startswith("postgresql://") and not url.startswith("postgresql+psycopg://"):
             url = url.replace("postgresql://", "postgresql+psycopg://", 1)
     except Exception:
-        # psycopg v3 not installed — leave scheme unchanged
+        # psycopg v3 not installed — leave scheme as-is
         pass
 
     return url
@@ -57,7 +56,7 @@ def db_ping() -> bool:
 
 
 # ============================================================
-# RLS Context Helpers (FORCE RLS / multi-tenant)
+# RLS Context Helpers
 # ============================================================
 
 def set_rls_context(db: Session, *, clinic_id: str, user_id: str) -> None:
@@ -65,28 +64,26 @@ def set_rls_context(db: Session, *, clinic_id: str, user_id: str) -> None:
     Sets tenant context for FORCE RLS using:
       current_setting('app.clinic_id', true)
       current_setting('app.user_id', true)
-
-    IMPORTANT: these are session-level settings; always clear them.
     """
     db.execute(text("SELECT set_config('app.clinic_id', :cid, true)"), {"cid": str(clinic_id)})
     db.execute(text("SELECT set_config('app.user_id', :uid, true)"), {"uid": str(user_id)})
 
 
 def clear_rls_context(db: Session) -> None:
-    """
-    Clears tenant context for the current DB session.
-    Safe to call even if nothing was set.
-    """
+    # Clear to empty string, scoped to current transaction
     db.execute(text("SELECT set_config('app.clinic_id', '', true)"))
     db.execute(text("SELECT set_config('app.user_id', '', true)"))
 
 
 def _apply_rls_from_request(db: Session, request: Request) -> None:
     """
-    Applies RLS context using request.state values set by your auth dependency.
+    Applies RLS context using request.state values.
+
     Expects:
       request.state.clinic_id
       request.state.clinic_user_id
+
+    These MUST be set by your auth dependency/middleware before get_db runs.
     """
     clinic_id = getattr(request.state, "clinic_id", None)
     user_id = getattr(request.state, "clinic_user_id", None)
@@ -103,10 +100,9 @@ def _apply_rls_from_request(db: Session, request: Request) -> None:
 
 def get_db(request: Request) -> Generator[Session, None, None]:
     """
-    FastAPI dependency.
+    Request-scoped DB session WITH automatic RLS context.
 
-    Expects request.state.clinic_id and request.state.clinic_user_id
-    to be set by auth dependency (e.g., require_clinic_user).
+    Use this for clinic-user endpoints where tenant context must be enforced.
     """
     db = SessionLocal()
     try:
@@ -133,12 +129,15 @@ def get_db(request: Request) -> Generator[Session, None, None]:
 
 def db_session() -> Generator[Session, None, None]:
     """
-    Use this for bootstrap, admin endpoints, and background jobs.
+    DB session WITHOUT automatic RLS context.
 
-    RLS must be managed manually:
-      - call set_rls_context(...)
-      - do work
-      - call clear_rls_context(...)
+    Use this for:
+      - admin endpoints
+      - bootstrap flows
+      - background/cron jobs
+
+    If FORCE RLS is enabled and you need to write tenant rows,
+    call set_rls_context(db, clinic_id=..., user_id=...) manually.
     """
     db = SessionLocal()
     try:
