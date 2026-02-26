@@ -38,6 +38,14 @@ function Has-Prop($obj, [string]$propName) {
   return ($obj.PSObject.Properties.Match($propName).Count -gt 0)
 }
 
+function Get-Prop($obj, [string]$propName) {
+  # StrictMode-safe: never throws if property is missing
+  if ($null -eq $obj) { return $null }
+  $p = $obj.PSObject.Properties[$propName]
+  if ($null -eq $p) { return $null }
+  return $p.Value
+}
+
 function Invoke-Json([string]$method, [string]$url, [hashtable]$headers, $bodyObj = $null) {
   $params = @{
     Method  = $method
@@ -90,11 +98,11 @@ function Bootstrap-Clinic([string]$base, [string]$adminToken, [string]$name, [st
     clinic_slug               = $slug
     admin_email               = $email
     data_region               = "UK"
-    retention_days_governance = 1     # ✅ minimize accumulation
-    retention_days_ops        = 1     # ✅ minimize accumulation
+    retention_days_governance = 1        # minimize accumulation
+    retention_days_ops        = 1        # minimize accumulation
     export_enabled            = $false
-    invite_valid_days         = 1     # ✅ short-lived invites
-    subscription_tier         = "smoke" # ✅ tag for future cleanup tooling
+    invite_valid_days         = 1        # short-lived invites
+    subscription_tier         = "smoke"  # tag for future cleanup tooling
   }
 
   $headers = @{
@@ -104,9 +112,9 @@ function Bootstrap-Clinic([string]$base, [string]$adminToken, [string]$name, [st
 
   $boot = Invoke-Json "POST" "$base/v1/admin/bootstrap/clinic" $headers $body
 
-  if (-not (Has-Prop $boot "clinic_slug") -or [string]::IsNullOrWhiteSpace($boot.clinic_slug) -or
-      -not (Has-Prop $boot "invite_token") -or [string]::IsNullOrWhiteSpace($boot.invite_token) -or
-      -not (Has-Prop $boot "clinic_id") -or [string]::IsNullOrWhiteSpace($boot.clinic_id)) {
+  if (-not (Has-Prop $boot "clinic_slug") -or [string]::IsNullOrWhiteSpace([string]$boot.clinic_slug) -or
+      -not (Has-Prop $boot "invite_token") -or [string]::IsNullOrWhiteSpace([string]$boot.invite_token) -or
+      -not (Has-Prop $boot "clinic_id") -or [string]::IsNullOrWhiteSpace([string]$boot.clinic_id)) {
     Fail "Bootstrap response missing expected fields. Response: $($boot | ConvertTo-Json -Depth 10)"
   }
 
@@ -124,9 +132,9 @@ function Accept-Invite([string]$base, [string]$clinicSlug, [string]$email, [stri
 
   $acc = Invoke-Json "POST" "$base/v1/clinic/auth/invite/accept" $headers $body
 
-  if (-not (Has-Prop $acc "access_token") -or [string]::IsNullOrWhiteSpace($acc.access_token) -or
-      -not (Has-Prop $acc "clinic_id") -or [string]::IsNullOrWhiteSpace($acc.clinic_id) -or
-      -not (Has-Prop $acc "clinic_user_id") -or [string]::IsNullOrWhiteSpace($acc.clinic_user_id)) {
+  if (-not (Has-Prop $acc "access_token") -or [string]::IsNullOrWhiteSpace([string]$acc.access_token) -or
+      -not (Has-Prop $acc "clinic_id") -or [string]::IsNullOrWhiteSpace([string]$acc.clinic_id) -or
+      -not (Has-Prop $acc "clinic_user_id") -or [string]::IsNullOrWhiteSpace([string]$acc.clinic_user_id)) {
     Fail "Invite accept response missing expected fields. Response: $($acc | ConvertTo-Json -Depth 10)"
   }
 
@@ -163,26 +171,36 @@ function Portal-ExportCsv([string]$base, [string]$jwt, [string]$fromIso, [string
 }
 
 function Extract-RequestId($submitResp) {
-  # Try multiple known shapes without throwing
-  if (Has-Prop $submitResp "request_id" -and -not [string]::IsNullOrWhiteSpace($submitResp.request_id)) {
-    return [string]$submitResp.request_id
+  # StrictMode-safe extraction: never dereference missing properties directly.
+  # Shape A: { request_id: "..." }
+  $rid = Get-Prop $submitResp "request_id"
+  if (-not [string]::IsNullOrWhiteSpace([string]$rid)) {
+    return [string]$rid
   }
 
-  if (Has-Prop $submitResp "receipt" -and $submitResp.receipt) {
-    if (Has-Prop $submitResp.receipt "request_id" -and -not [string]::IsNullOrWhiteSpace($submitResp.receipt.request_id)) {
-      return [string]$submitResp.receipt.request_id
+  # Shape B: { receipt: { request_id: "..." } } or { receipt: { id: "..." } }
+  $receipt = Get-Prop $submitResp "receipt"
+  if ($receipt) {
+    $rid2 = Get-Prop $receipt "request_id"
+    if (-not [string]::IsNullOrWhiteSpace([string]$rid2)) {
+      return [string]$rid2
     }
-    if (Has-Prop $submitResp.receipt "id" -and -not [string]::IsNullOrWhiteSpace($submitResp.receipt.id)) {
-      return [string]$submitResp.receipt.id
+    $id2 = Get-Prop $receipt "id"
+    if (-not [string]::IsNullOrWhiteSpace([string]$id2)) {
+      return [string]$id2
     }
   }
 
-  if (Has-Prop $submitResp "governance_receipt" -and $submitResp.governance_receipt) {
-    if (Has-Prop $submitResp.governance_receipt "request_id" -and -not [string]::IsNullOrWhiteSpace($submitResp.governance_receipt.request_id)) {
-      return [string]$submitResp.governance_receipt.request_id
+  # Shape C: { governance_receipt: { request_id: "..." } } or { governance_receipt: { id: "..." } }
+  $g = Get-Prop $submitResp "governance_receipt"
+  if ($g) {
+    $rid3 = Get-Prop $g "request_id"
+    if (-not [string]::IsNullOrWhiteSpace([string]$rid3)) {
+      return [string]$rid3
     }
-    if (Has-Prop $submitResp.governance_receipt "id" -and -not [string]::IsNullOrWhiteSpace($submitResp.governance_receipt.id)) {
-      return [string]$submitResp.governance_receipt.id
+    $id3 = Get-Prop $g "id"
+    if (-not [string]::IsNullOrWhiteSpace([string]$id3)) {
+      return [string]$id3
     }
   }
 
