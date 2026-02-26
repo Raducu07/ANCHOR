@@ -402,7 +402,7 @@ def override_submission(
     _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
 
     try:
-        # 1) Load the target row (we need original submitter for audit meta)
+        # 1) Load the target row (need original submitter for audit meta)
         original = (
             db.execute(
                 text(
@@ -411,8 +411,8 @@ def override_submission(
                       user_id::text AS original_user_id,
                       COALESCE(override_flag, false) AS override_flag
                     FROM clinic_governance_events
-                    WHERE clinic_id = :clinic_id
-                      AND request_id = :request_id
+                    WHERE clinic_id = CAST(:clinic_id AS uuid)
+                      AND request_id = CAST(:request_id AS uuid)
                     LIMIT 1
                     """
                 ),
@@ -427,8 +427,9 @@ def override_submission(
         original_user_id = original.get("original_user_id")
         already_overridden = bool(original.get("override_flag") or False)
 
-        # 2) Only mutate if NOT already overridden (true idempotency)
         updated = None
+
+        # 2) Only mutate if NOT already overridden (true idempotency)
         if not already_overridden:
             updated = (
                 db.execute(
@@ -439,8 +440,8 @@ def override_submission(
                           override_flag = true,
                           override_reason = :reason,
                           override_at = now()
-                        WHERE clinic_id = :clinic_id
-                          AND request_id = :request_id
+                        WHERE clinic_id = CAST(:clinic_id AS uuid)
+                          AND request_id = CAST(:request_id AS uuid)
                           AND COALESCE(override_flag, false) IS DISTINCT FROM true
                         RETURNING *
                         """
@@ -455,9 +456,8 @@ def override_submission(
                 .first()
             )
 
-            # If update matched nothing (race), treat as already overridden and just read row
+            # If update succeeded, append-only audit event
             if updated:
-                # 3) Append-only audit event (casts remove type ambiguity)
                 db.execute(
                     text(
                         """
@@ -465,11 +465,11 @@ def override_submission(
                           clinic_id, admin_user_id, action, target_id, meta
                         )
                         VALUES (
-                          :clinic_id::uuid,
-                          :admin_user_id::uuid,
+                          CAST(:clinic_id AS uuid),
+                          CAST(:admin_user_id AS uuid),
                           :action,
-                          :target_id::uuid,
-                          :meta::jsonb
+                          CAST(:target_id AS uuid),
+                          CAST(:meta AS jsonb)
                         )
                         """
                     ),
@@ -487,7 +487,7 @@ def override_submission(
                     },
                 )
 
-        # 4) If we didn’t update (already overridden), fetch current row and return it
+        # 3) If we didn’t update (already overridden or race), fetch current row
         row = updated
         if not row:
             row = (
@@ -496,8 +496,8 @@ def override_submission(
                         """
                         SELECT *
                         FROM clinic_governance_events
-                        WHERE clinic_id = :clinic_id
-                          AND request_id = :request_id
+                        WHERE clinic_id = CAST(:clinic_id AS uuid)
+                          AND request_id = CAST(:request_id AS uuid)
                         LIMIT 1
                         """
                     ),
@@ -598,22 +598,21 @@ def list_submissions(
     if filters:
         where_extra = " AND " + " AND ".join(filters)
 
-    # Latest override audit event per request_id (if any), clinic-scoped
     rows = (
         db.execute(
             text(
                 f"""
                 SELECT
                   cge.*,
-                  ae.admin_user_id::text AS override_by_user_id,
-                  ae.admin_email AS override_by_email,
-                  ae.created_at AS override_logged_at
+                  ae.override_by_user_id,
+                  ae.override_by_email,
+                  ae.override_logged_at
                 FROM clinic_governance_events cge
                 LEFT JOIN LATERAL (
                   SELECT
-                    a.admin_user_id,
-                    cu.email AS admin_email,
-                    a.created_at
+                    a.admin_user_id::text AS override_by_user_id,
+                    cu.email AS override_by_email,
+                    a.created_at AS override_logged_at
                   FROM admin_audit_events a
                   JOIN clinic_users cu
                     ON cu.user_id = a.admin_user_id
@@ -653,7 +652,7 @@ def list_submissions(
                 policy_version=int(row["policy_version"]),
                 neutrality_version=row["neutrality_version"],
 
-                # normalize nulls for legacy rows
+                # normalize legacy nulls
                 ai_assisted=bool(row.get("ai_assisted") or False),
                 user_confirmed_review=bool(
                     True if row.get("user_confirmed_review") is None else row.get("user_confirmed_review")
