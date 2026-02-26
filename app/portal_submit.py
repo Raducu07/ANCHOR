@@ -3,7 +3,8 @@ import json
 import logging
 import re
 import uuid
-from typing import List, Optional
+import hashlib
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -52,6 +53,15 @@ def detect_pii_types(text_value: str) -> List[str]:
     return out
 
 
+def _sha256_hex(s: str) -> str:
+    return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
+
+
+def _canonical_json(obj: Any) -> str:
+    # Stable JSON for hashing (no whitespace, sorted keys)
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 def _set_rls_context(db: Session, *, clinic_id: uuid.UUID, clinic_user_id: uuid.UUID) -> None:
     """
     Critical: set LOCAL RLS context in the same transaction/connection.
@@ -79,6 +89,29 @@ def _get_active_policy_version(db: Session) -> int:
         return int(row[0])
     except Exception:
         return 1
+
+
+def _get_policy_json(db: Session, *, policy_version: int) -> Optional[Dict[str, Any]]:
+    row = db.execute(
+        text(
+            """
+            SELECT policy_json
+            FROM clinic_policies
+            WHERE clinic_id = app_current_clinic_id()
+              AND policy_version = :pv
+            LIMIT 1
+            """
+        ),
+        {"pv": int(policy_version)},
+    ).mappings().first()
+
+    if not row:
+        return None
+
+    try:
+        return dict(row["policy_json"])
+    except Exception:
+        return row["policy_json"]
 
 
 # ---------------------------------------------------------------------
@@ -114,11 +147,15 @@ class GovernanceReceipt(BaseModel):
     neutrality_version: str
     governance_score: Optional[float] = None
 
+    # M2.7 explainability (metadata-only)
+    policy_sha256: Optional[str] = None
+    rules_fired: Optional[dict] = None
+
     # R1 fields
     ai_assisted: bool = False
     user_confirmed_review: bool = True
 
-    # R3 override fields (from clinic_governance_events)
+    # R3 override fields (effective override computed from audit, with legacy fallback)
     override_flag: bool = False
     override_reason: Optional[str] = None
     override_at_utc: Optional[str] = None
@@ -144,7 +181,7 @@ class SubmissionItem(BaseModel):
     ai_assisted: Optional[bool] = None
     user_confirmed_review: Optional[bool] = None
 
-    # R3: visible override info in list view
+    # R3: visible override info in list view (effective override computed from audit)
     override_flag: Optional[bool] = None
     override_reason: Optional[str] = None
     override_at_utc: Optional[str] = None
@@ -187,6 +224,9 @@ def _row_to_receipt(row) -> GovernanceReceipt:
         policy_version=int(row["policy_version"]),
         neutrality_version=row["neutrality_version"],
         governance_score=(float(row["governance_score"]) if row.get("governance_score") is not None else None),
+
+        policy_sha256=row.get("policy_sha256"),
+        rules_fired=row.get("rules_fired"),
 
         ai_assisted=bool(row.get("ai_assisted") or False),
         user_confirmed_review=bool(True if row.get("user_confirmed_review") is None else row.get("user_confirmed_review")),
@@ -236,6 +276,14 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
 
     policy_version = _get_active_policy_version(db)
 
+    # M2.7: policy fingerprint (metadata-only)
+    policy_obj = _get_policy_json(db, policy_version=policy_version)
+    policy_sha256 = _sha256_hex(_canonical_json(policy_obj)) if policy_obj is not None else None
+
+    # M2.7: explainability placeholders (wire real rule hits later)
+    rules_fired = None
+    event_sha256 = None
+
     clinic_id_s = str(clinic_id)
     clinic_user_id_s = str(clinic_user_id)
     req_id_s = str(req_id)
@@ -250,7 +298,7 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
                   decision, risk_grade, reason_code,
                   governance_score, policy_version, neutrality_version,
                   ai_assisted, user_confirmed_review,
-                  override_flag, override_reason, override_at
+                  policy_sha256, rules_fired, event_sha256
                 )
                 VALUES (
                   :clinic_id, :request_id, :user_id, :mode,
@@ -263,9 +311,9 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
                   'v1.1',
                   :ai_assisted,
                   :user_confirmed_review,
-                  false,
-                  NULL,
-                  NULL
+                  :policy_sha256,
+                  CAST(:rules_fired AS jsonb),
+                  :event_sha256
                 )
                 ON CONFLICT (clinic_id, request_id) DO NOTHING
                 RETURNING *
@@ -282,6 +330,9 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
                 "policy_version": policy_version,
                 "ai_assisted": bool(payload.ai_assisted),
                 "user_confirmed_review": bool(payload.user_confirmed_review),
+                "policy_sha256": policy_sha256,
+                "rules_fired": json.dumps(rules_fired) if rules_fired is not None else None,
+                "event_sha256": event_sha256,
             },
         )
         .mappings()
@@ -340,6 +391,8 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
 
 # ---------------------------------------------------------------------
 # GET /receipts/{request_id}
+# - Effective override is computed from latest admin_audit_events row (append-only truth)
+# - Legacy override_* fields remain as fallback only
 # ---------------------------------------------------------------------
 
 @router.get("/receipts/{request_id}", response_model=PortalSubmitResponse)
@@ -355,10 +408,26 @@ def get_receipt(request_id: uuid.UUID, request: Request, db: Session = Depends(g
         db.execute(
             text(
                 """
-                SELECT *
-                FROM clinic_governance_events
-                WHERE clinic_id = :clinic_id
-                  AND request_id = :request_id
+                SELECT
+                  g.*,
+                  -- override from audit log (latest wins); fallback to legacy columns if present
+                  (ae.override_logged_at IS NOT NULL OR COALESCE(g.override_flag, false)) AS override_flag,
+                  COALESCE(ae.override_reason, g.override_reason) AS override_reason,
+                  COALESCE(ae.override_logged_at, g.override_at) AS override_at
+                FROM clinic_governance_events g
+                LEFT JOIN LATERAL (
+                  SELECT
+                    a.created_at AS override_logged_at,
+                    a.meta->>'override_reason' AS override_reason
+                  FROM admin_audit_events a
+                  WHERE a.clinic_id = g.clinic_id
+                    AND a.action = 'override_submission'
+                    AND a.target_id = g.request_id
+                  ORDER BY a.created_at DESC, a.event_id DESC
+                  LIMIT 1
+                ) ae ON TRUE
+                WHERE g.clinic_id = CAST(:clinic_id AS uuid)
+                  AND g.request_id = CAST(:request_id AS uuid)
                 LIMIT 1
                 """
             ),
@@ -374,10 +443,38 @@ def get_receipt(request_id: uuid.UUID, request: Request, db: Session = Depends(g
 
 
 # ---------------------------------------------------------------------
-# POST /override/{request_id}   (R3)
+# POST /override/{request_id}   (R3 -> hardened)
 # - Admin can override ANY submission in the clinic
-# - Idempotent: only first override mutates + writes audit event
+# - Idempotent via DB unique index on (clinic_id, action, idempotency_key)
+# - Append-only: does NOT mutate clinic_governance_events
 # ---------------------------------------------------------------------
+
+SQL_INSERT_OVERRIDE_AUDIT = text(
+    """
+    INSERT INTO admin_audit_events (
+      clinic_id,
+      admin_user_id,
+      action,
+      target_id,
+      ip_hash,
+      meta,
+      idempotency_key
+    )
+    VALUES (
+      CAST(:clinic_id AS uuid),
+      CAST(:admin_user_id AS uuid),
+      :action,
+      CAST(:target_id AS uuid),
+      :ip_hash,
+      CAST(:meta AS jsonb),
+      :idempotency_key
+    )
+    ON CONFLICT (clinic_id, action, idempotency_key)
+    DO NOTHING
+    RETURNING event_id;
+    """
+)
+
 
 @router.post("/override/{request_id}", response_model=PortalSubmitResponse)
 def override_submission(
@@ -402,14 +499,12 @@ def override_submission(
     _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
 
     try:
-        # 1) Load the target row (need original submitter for audit meta)
+        # Ensure target exists (RLS-safe)
         original = (
             db.execute(
                 text(
                     """
-                    SELECT
-                      user_id::text AS original_user_id,
-                      COALESCE(override_flag, false) AS override_flag
+                    SELECT user_id::text AS original_user_id
                     FROM clinic_governance_events
                     WHERE clinic_id = CAST(:clinic_id AS uuid)
                       AND request_id = CAST(:request_id AS uuid)
@@ -425,93 +520,39 @@ def override_submission(
             raise HTTPException(status_code=404, detail="receipt not found")
 
         original_user_id = original.get("original_user_id")
-        already_overridden = bool(original.get("override_flag") or False)
 
-        updated = None
+        # DB-enforced idempotency key (stable)
+        # NOTE: includes reason; same request_id + same reason => idempotent no-op
+        idem_raw = f"override_submission:{clinic_id}:{request_id}:{reason}"
+        idempotency_key = _sha256_hex(idem_raw)
 
-        # 2) Only mutate if NOT already overridden (true idempotency)
-        if not already_overridden:
-            updated = (
-                db.execute(
-                    text(
-                        """
-                        UPDATE clinic_governance_events
-                        SET
-                          override_flag = true,
-                          override_reason = :reason,
-                          override_at = now()
-                        WHERE clinic_id = CAST(:clinic_id AS uuid)
-                          AND request_id = CAST(:request_id AS uuid)
-                          AND COALESCE(override_flag, false) IS DISTINCT FROM true
-                        RETURNING *
-                        """
-                    ),
-                    {
-                        "clinic_id": str(clinic_id),
-                        "request_id": str(request_id),
-                        "reason": reason,
-                    },
-                )
-                .mappings()
-                .first()
-            )
+        # Metadata-only (no content)
+        meta_payload = {
+            "request_id": str(request_id),
+            "original_user_id": str(original_user_id) if original_user_id else None,
+            "override_reason": reason,
+            "override_reason_len": len(reason),
+        }
 
-            # If update succeeded, append-only audit event
-            if updated:
-                db.execute(
-                    text(
-                        """
-                        INSERT INTO admin_audit_events (
-                          clinic_id, admin_user_id, action, target_id, meta
-                        )
-                        VALUES (
-                          CAST(:clinic_id AS uuid),
-                          CAST(:admin_user_id AS uuid),
-                          :action,
-                          CAST(:target_id AS uuid),
-                          CAST(:meta AS jsonb)
-                        )
-                        """
-                    ),
-                    {
-                        "clinic_id": str(clinic_id),
-                        "admin_user_id": str(clinic_user_id),
-                        "action": "override_submission",
-                        "target_id": str(request_id),
-                        "meta": json.dumps(
-                            {
-                                "original_user_id": str(original_user_id),
-                                "override_reason_len": len(reason),
-                            }
-                        ),
-                    },
-                )
+        ip_hash = getattr(request.state, "ip_hash", None)
 
-        # 3) If we didn’t update (already overridden or race), fetch current row
-        row = updated
-        if not row:
-            row = (
-                db.execute(
-                    text(
-                        """
-                        SELECT *
-                        FROM clinic_governance_events
-                        WHERE clinic_id = CAST(:clinic_id AS uuid)
-                          AND request_id = CAST(:request_id AS uuid)
-                        LIMIT 1
-                        """
-                    ),
-                    {"clinic_id": str(clinic_id), "request_id": str(request_id)},
-                )
-                .mappings()
-                .first()
-            )
-
-        if not row:
-            raise HTTPException(status_code=404, detail="receipt not found")
+        db.execute(
+            SQL_INSERT_OVERRIDE_AUDIT,
+            {
+                "clinic_id": str(clinic_id),
+                "admin_user_id": str(clinic_user_id),
+                "action": "override_submission",
+                "target_id": str(request_id),
+                "ip_hash": ip_hash,
+                "meta": json.dumps(meta_payload),
+                "idempotency_key": idempotency_key,
+            },
+        ).fetchone()
 
         db.commit()
-        return PortalSubmitResponse(receipt=_row_to_receipt(row))
+
+        # Return effective receipt (computed override via audit LATERAL join)
+        return get_receipt(request_id=request_id, request=request, db=db)
 
     except HTTPException:
         try:
@@ -541,8 +582,8 @@ def override_submission(
 
 # ---------------------------------------------------------------------
 # GET /submissions  (with filtering + cursor pagination)
-# - Includes override "who + when" from admin_audit_events (latest per request)
-# - Also returns override_by_email (joined via clinic_users) for UI/audit readability
+# - Effective override from admin_audit_events (latest per request)
+# - Also returns override_by_email (joined via clinic_users)
 # ---------------------------------------------------------------------
 
 @router.get("/submissions", response_model=SubmissionsListResponse)
@@ -604,6 +645,12 @@ def list_submissions(
                 f"""
                 SELECT
                   cge.*,
+
+                  -- effective override fields (audit truth + legacy fallback)
+                  (ae.override_logged_at IS NOT NULL OR COALESCE(cge.override_flag, false)) AS override_flag,
+                  COALESCE(ae.override_reason, cge.override_reason) AS override_reason,
+                  COALESCE(ae.override_logged_at, cge.override_at) AS override_at,
+
                   ae.override_by_user_id,
                   ae.override_by_email,
                   ae.override_logged_at
@@ -612,7 +659,8 @@ def list_submissions(
                   SELECT
                     a.admin_user_id::text AS override_by_user_id,
                     cu.email AS override_by_email,
-                    a.created_at AS override_logged_at
+                    a.created_at AS override_logged_at,
+                    a.meta->>'override_reason' AS override_reason
                   FROM admin_audit_events a
                   JOIN clinic_users cu
                     ON cu.user_id = a.admin_user_id
@@ -620,10 +668,10 @@ def list_submissions(
                   WHERE a.clinic_id = cge.clinic_id
                     AND a.action = 'override_submission'
                     AND a.target_id = cge.request_id
-                  ORDER BY a.created_at DESC
+                  ORDER BY a.created_at DESC, a.event_id DESC
                   LIMIT 1
                 ) ae ON true
-                WHERE cge.clinic_id = :clinic_id
+                WHERE cge.clinic_id = CAST(:clinic_id AS uuid)
                 {where_extra}
                 {cursor_clause}
                 ORDER BY cge.created_at DESC, cge.request_id DESC
@@ -657,8 +705,8 @@ def list_submissions(
                 user_confirmed_review=bool(
                     True if row.get("user_confirmed_review") is None else row.get("user_confirmed_review")
                 ),
-                override_flag=bool(row.get("override_flag") or False),
 
+                override_flag=bool(row.get("override_flag") or False),
                 override_reason=row.get("override_reason"),
                 override_at_utc=(row["override_at"].isoformat() if row.get("override_at") else None),
 
