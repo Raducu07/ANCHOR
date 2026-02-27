@@ -498,3 +498,51 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_events_clinic_action_created
 CREATE OR REPLACE VIEW clinics_public AS
 SELECT clinic_slug, active_status
 FROM clinics;
+
+-- ============================================================
+-- M3: Admin tokens (hashed-at-rest) + admin audit events
+-- ============================================================
+
+-- Ensure pgcrypto for gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS admin_tokens (
+  token_id       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  token_hash     text NOT NULL UNIQUE, -- sha256 hex string
+  label          text NOT NULL DEFAULT '',
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  expires_at     timestamptz NULL,
+  disabled_at    timestamptz NULL,
+  last_used_at   timestamptz NULL,
+  last_used_ip_hash text NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_tokens_active
+  ON admin_tokens (disabled_at, expires_at);
+
+CREATE TABLE IF NOT EXISTS admin_audit_events (
+  event_id       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at     timestamptz NOT NULL DEFAULT now(),
+
+  admin_token_id uuid NULL REFERENCES admin_tokens(token_id) ON DELETE SET NULL,
+
+  action         text NOT NULL,        -- e.g. "admin.auth", "admin.tokens.create"
+  method         text NOT NULL,
+  route          text NOT NULL,
+  status_code    int  NOT NULL,
+
+  request_id     text NULL,
+  ip_hash        text NULL,
+  ua_hash        text NULL,
+
+  meta           jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at
+  ON admin_audit_events (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_action
+  ON admin_audit_events (action, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_token
+  ON admin_audit_events (admin_token_id, created_at DESC);
