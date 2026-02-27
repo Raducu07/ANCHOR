@@ -1,7 +1,6 @@
 # app/admin_audit.py
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends
@@ -45,7 +44,7 @@ def admin_list_audit_events(
                 SELECT
                   event_id, created_at, admin_token_id, action,
                   method, route, status_code, request_id, ip_hash, ua_hash, meta
-                FROM admin_audit_events
+                FROM platform_admin_audit_events
                 {where_sql}
                 ORDER BY created_at DESC
                 LIMIT :limit
