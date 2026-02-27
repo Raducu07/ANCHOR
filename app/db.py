@@ -27,7 +27,6 @@ def _normalize_database_url(url: str) -> str:
         if url.startswith("postgresql://") and not url.startswith("postgresql+psycopg://"):
             url = url.replace("postgresql://", "postgresql+psycopg://", 1)
     except Exception:
-        # psycopg v3 not installed — leave scheme as-is
         pass
 
     return url
@@ -56,23 +55,59 @@ def db_ping() -> bool:
 
 
 # ============================================================
-# RLS Context Helpers
+# RLS Context Helpers (pool-safe)
 # ============================================================
 
-def set_rls_context(db: Session, *, clinic_id: str, user_id: str) -> None:
+def reset_session_state(db: Session) -> None:
     """
-    Sets tenant context for FORCE RLS using:
+    Defensive reset of any session-level state on pooled connections.
+    Must run inside an open transaction to be effective in a controlled way.
+    """
+    db.execute(text("RESET ALL"))
+
+
+def set_rls_context(
+    db: Session,
+    *,
+    clinic_id: str,
+    clinic_user_id: str,
+    role: Optional[str] = None,
+) -> None:
+    """
+    Sets tenant context for FORCE RLS using transaction-scoped SET LOCAL.
+
+    RLS policies should use:
       current_setting('app.clinic_id', true)
-      current_setting('app.user_id', true)
+      current_setting('app.clinic_user_id', true)
+      current_setting('app.role', true)
+
+    For backward-compat, we also set app.user_id = clinic_user_id.
     """
-    db.execute(text("SELECT set_config('app.clinic_id', :cid, true)"), {"cid": str(clinic_id)})
-    db.execute(text("SELECT set_config('app.user_id', :uid, true)"), {"uid": str(user_id)})
+    reset_session_state(db)
+
+    # SET LOCAL ensures the setting cannot leak beyond the transaction.
+    db.execute(text("SET LOCAL app.clinic_id = :cid"), {"cid": str(clinic_id)})
+    db.execute(text("SET LOCAL app.clinic_user_id = :cuid"), {"cuid": str(clinic_user_id)})
+
+    # Back-compat for older policies/codepaths that used app.user_id
+    db.execute(text("SET LOCAL app.user_id = :uid"), {"uid": str(clinic_user_id)})
+
+    # Optional role dimension
+    if role:
+        db.execute(text("SET LOCAL app.role = :r"), {"r": str(role)})
+    else:
+        db.execute(text("SET LOCAL app.role = ''"))
 
 
 def clear_rls_context(db: Session) -> None:
-    # Clear to empty string, scoped to current transaction
-    db.execute(text("SELECT set_config('app.clinic_id', '', true)"))
-    db.execute(text("SELECT set_config('app.user_id', '', true)"))
+    """
+    Not strictly necessary if you always use SET LOCAL,
+    but kept as a safety net for any non-transactional misuse.
+    """
+    try:
+        db.execute(text("RESET ALL"))
+    except Exception:
+        pass
 
 
 def _apply_rls_from_request(db: Session, request: Request) -> None:
@@ -82,16 +117,23 @@ def _apply_rls_from_request(db: Session, request: Request) -> None:
     Expects:
       request.state.clinic_id
       request.state.clinic_user_id
+      request.state.role (optional)
 
-    These MUST be set by your auth dependency/middleware before get_db runs.
+    These MUST be set by clinic auth dependency/middleware.
     """
     clinic_id = getattr(request.state, "clinic_id", None)
-    user_id = getattr(request.state, "clinic_user_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    role = getattr(request.state, "role", None)
 
-    if not clinic_id or not user_id:
-        raise HTTPException(status_code=401, detail="missing clinic context")
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing_clinic_context")
 
-    set_rls_context(db, clinic_id=str(clinic_id), user_id=str(user_id))
+    set_rls_context(
+        db,
+        clinic_id=str(clinic_id),
+        clinic_user_id=str(clinic_user_id),
+        role=(str(role) if role else None),
+    )
 
 
 # ============================================================
@@ -102,11 +144,17 @@ def get_db(request: Request) -> Generator[Session, None, None]:
     """
     Request-scoped DB session WITH automatic RLS context.
 
-    Use this for clinic-user endpoints where tenant context must be enforced.
+    Critical properties:
+      - opens a transaction before setting context
+      - RESET ALL + SET LOCAL to prevent pooled-connection leakage
+      - commit/rollback ends the SET LOCAL scope automatically
     """
     db = SessionLocal()
     try:
+        # Ensure we are in a transaction before SET LOCAL
+        db.begin()
         _apply_rls_from_request(db, request)
+
         yield db
         db.commit()
     except HTTPException:
@@ -132,12 +180,13 @@ def db_session() -> Generator[Session, None, None]:
     DB session WITHOUT automatic RLS context.
 
     Use this for:
-      - admin endpoints
+      - platform admin endpoints
       - bootstrap flows
-      - background/cron jobs
+      - background jobs
 
-    If FORCE RLS is enabled and you need to write tenant rows,
-    call set_rls_context(db, clinic_id=..., user_id=...) manually.
+    If FORCE RLS is enabled and you need to operate under a tenant:
+      - start transaction (db.begin())
+      - call set_rls_context(...)
     """
     db = SessionLocal()
     try:
