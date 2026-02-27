@@ -116,7 +116,7 @@ def write_admin_audit_event(
             db.execute(
                 text(
                     """
-                    INSERT INTO admin_audit_events
+                    INSERT INTO platform_admin_audit_events
                       (action, method, route, status_code, admin_token_id, request_id, ip_hash, ua_hash, meta)
                     VALUES
                       (:action, :method, :route, :status_code, :admin_token_id, :request_id, :ip_hash, :ua_hash, :meta::jsonb)
@@ -167,7 +167,7 @@ def _validate_db_token(token_plaintext: str, ip_hash: Optional[str]) -> Optional
             text(
                 """
                 SELECT token_id, disabled_at, expires_at
-                FROM admin_tokens
+                FROM platform_admin_tokens
                 WHERE token_hash = :h
                 LIMIT 1
                 """
@@ -189,7 +189,7 @@ def _validate_db_token(token_plaintext: str, ip_hash: Optional[str]) -> Optional
             db.execute(
                 text(
                     """
-                    UPDATE admin_tokens
+                    UPDATE platform_admin_tokens
                     SET last_used_at = now(),
                         last_used_ip_hash = :ip_hash
                     WHERE token_id = :tid
