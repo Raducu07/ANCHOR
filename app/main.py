@@ -39,6 +39,9 @@ from app.portal_ops_health import router as portal_ops_health_router
 from app.portal_dashboard import router as portal_dashboard_router
 from app.portal_me import router as portal_me_router
 
+from app.admin_tokens import router as admin_tokens_router
+from app.admin_audit import router as admin_audit_router
+
 from app.governance_config import (
     get_current_policy,
     list_policy_history,
@@ -1464,7 +1467,9 @@ app.include_router(portal_trust_state_router)
 app.include_router(portal_error_budget_router)
 app.include_router(portal_ops_health_router)
 app.include_router(portal_dashboard_router)
-app.include_router(portal_me_router)       
+app.include_router(portal_me_router)
+app.include_router(admin_tokens_router)
+app.include_router(admin_audit_router)       
 
 # ============================================================
 # Exception handlers
