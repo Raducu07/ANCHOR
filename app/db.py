@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 # Database URL (Render-friendly) + engine/session
 # ============================================================
 
+
 def _normalize_database_url(url: str) -> str:
     url = (url or "").strip()
     if not url:
@@ -47,6 +48,7 @@ SessionLocal = sessionmaker(bind=ENGINE, autocommit=False, autoflush=False)
 # Health check
 # ============================================================
 
+
 def db_ping() -> bool:
     with ENGINE.connect() as conn:
         conn.execute(text("SELECT 1"))
@@ -57,6 +59,7 @@ def db_ping() -> bool:
 # RLS Context Helpers (pool-safe)
 # ============================================================
 
+
 def reset_session_state(db: Session) -> None:
     """
     Defensive reset of any session-level state on pooled connections.
@@ -65,27 +68,17 @@ def reset_session_state(db: Session) -> None:
     db.execute(text("RESET ALL"))
 
 
-def _uuid_literal(value: str) -> str:
+def _uuid_str(value: str) -> str:
     """
-    Validate UUID and return canonical string suitable for safe literal injection.
-    This is required because Postgres does NOT allow bind params in SET/SET LOCAL.
+    Validate UUID and return canonical string.
     """
     return str(uuid.UUID(str(value)))
 
 
-def _set_local_uuid(db: Session, setting_name: str, value: str) -> None:
-    """
-    Postgres rejects parameter placeholders in SET LOCAL (e.g., $1).
-    We must inject a validated UUID literal.
-    """
-    v = _uuid_literal(value)
-    db.execute(text(f"SET LOCAL {setting_name} = '{v}'::uuid"))
-
-
 def _set_local_text(db: Session, setting_name: str, value: str) -> None:
     """
-    For simple text values (e.g., role). We still avoid bind params in SET LOCAL.
-    We escape single quotes defensively.
+    Postgres rejects bind params in SET LOCAL (e.g., $1 / :cid).
+    We inject a safely-escaped literal.
     """
     v = (value or "").replace("'", "''")
     db.execute(text(f"SET LOCAL {setting_name} = '{v}'"))
@@ -95,33 +88,40 @@ def set_rls_context(
     db: Session,
     *,
     clinic_id: str,
-    clinic_user_id: str,
+    clinic_user_id: Optional[str] = None,
+    user_id: Optional[str] = None,  # ✅ alias for old call sites
     role: Optional[str] = None,
 ) -> None:
     """
     Sets tenant context for FORCE RLS using transaction-scoped SET LOCAL.
 
-    RLS policies should use:
-      current_setting('app.clinic_id', true)
-      current_setting('app.clinic_user_id', true)
-      current_setting('app.role', true)
+    IMPORTANT:
+      - GUC settings (SET LOCAL app.*) store TEXT values.
+      - Do NOT append ::uuid here (can fail on some Postgres parsers for SET).
+      - Cast in RLS policies where needed, e.g.:
+          (current_setting('app.clinic_id', true))::uuid
 
     For backward-compat, we also set app.user_id = clinic_user_id.
     """
+    if not clinic_user_id and user_id:
+        clinic_user_id = user_id
+    if not clinic_user_id:
+        raise ValueError("clinic_user_id is required")
+
     reset_session_state(db)
 
-    # ✅ Postgres does NOT allow bind params in SET LOCAL; inject validated literals.
-    _set_local_uuid(db, "app.clinic_id", str(clinic_id))
-    _set_local_uuid(db, "app.clinic_user_id", str(clinic_user_id))
+    cid = _uuid_str(clinic_id)
+    cuid = _uuid_str(clinic_user_id)
+
+    # ✅ store as plain text
+    _set_local_text(db, "app.clinic_id", cid)
+    _set_local_text(db, "app.clinic_user_id", cuid)
 
     # Back-compat for older policies/codepaths that used app.user_id
-    _set_local_uuid(db, "app.user_id", str(clinic_user_id))
+    _set_local_text(db, "app.user_id", cuid)
 
     # Optional role dimension
-    if role:
-        _set_local_text(db, "app.role", str(role))
-    else:
-        _set_local_text(db, "app.role", "")
+    _set_local_text(db, "app.role", str(role or ""))
 
 
 def clear_rls_context(db: Session) -> None:
@@ -165,6 +165,7 @@ def _apply_rls_from_request(db: Session, request: Request) -> None:
 # Primary FastAPI dependency (request-scoped session + RLS)
 # ============================================================
 
+
 def get_db(request: Request) -> Generator[Session, None, None]:
     """
     Request-scoped DB session WITH automatic RLS context.
@@ -199,6 +200,7 @@ def get_db(request: Request) -> Generator[Session, None, None]:
 # ============================================================
 # Non-request session helper (cron/admin/bootstrap)
 # ============================================================
+
 
 def db_session() -> Generator[Session, None, None]:
     """
