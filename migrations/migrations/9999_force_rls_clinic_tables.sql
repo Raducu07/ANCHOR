@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE public.clinics      FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.clinic_users FORCE ROW LEVEL SECURITY;
+
+COMMIT;;
