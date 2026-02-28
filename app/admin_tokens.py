@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -21,8 +21,10 @@ router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
 
 class CreateAdminTokenRequest(BaseModel):
-    label: str = Field(default="",
-                       description="Human label for this token (e.g. 'prod-deploy', 'ci-smoke').")
+    label: str = Field(
+        default="",
+        description="Human label for this token (e.g. 'prod-deploy', 'ci-smoke').",
+    )
     expires_in_days: Optional[int] = Field(
         default=None,
         ge=1,
@@ -38,6 +40,10 @@ class CreateAdminTokenResponse(BaseModel):
     created_at: str
     expires_at: Optional[str] = None
     note: str = "Token is shown once. Store it securely; it cannot be recovered later."
+
+
+def _iso(dt: Optional[datetime]) -> Optional[str]:
+    return dt.isoformat() if dt is not None else None
 
 
 @router.post("/tokens", response_model=CreateAdminTokenResponse)
@@ -57,12 +63,16 @@ def admin_create_token(
         row = db.execute(
             text(
                 """
-                INSERT INTO admin_tokens (token_hash, label, expires_at)
+                INSERT INTO platform_admin_tokens (token_hash, label, expires_at)
                 VALUES (:h, :label, :expires_at)
                 RETURNING token_id, created_at, expires_at
                 """
             ),
-            {"h": token_hash, "label": (body.label or "").strip(), "expires_at": expires_at},
+            {
+                "h": token_hash,
+                "label": (body.label or "").strip(),
+                "expires_at": expires_at,
+            },
         ).mappings().first()
         db.commit()
 
@@ -78,14 +88,18 @@ def admin_create_token(
         request_id=ctx.request_id,
         ip_hash=ctx.ip_hash,
         ua_hash=ctx.ua_hash,
-        meta={"created_token_id": str(row["token_id"]), "expires_at": (row["expires_at"].isoformat() if row["expires_at"] else None)},
+        meta={
+            "created_token_id": str(row["token_id"]),
+            "expires_at": _iso(row["expires_at"]),
+            "label": (body.label or "").strip(),
+        },
     )
 
     return CreateAdminTokenResponse(
         token_id=str(row["token_id"]),
         token=token_plain,
         created_at=row["created_at"].isoformat(),
-        expires_at=(row["expires_at"].isoformat() if row["expires_at"] else None),
+        expires_at=_iso(row["expires_at"]),
     )
 
 
@@ -100,14 +114,29 @@ def admin_list_tokens(
         rows = db.execute(
             text(
                 """
-                SELECT token_id, label, created_at, expires_at, disabled_at, last_used_at, last_used_ip_hash
-                FROM admin_tokens
+                SELECT
+                  token_id, label, created_at, expires_at, disabled_at, last_used_at, last_used_ip_hash
+                FROM platform_admin_tokens
                 ORDER BY created_at DESC
                 LIMIT :limit
                 """
             ),
             {"limit": limit},
         ).mappings().all()
+
+    tokens: List[Dict[str, Any]] = []
+    for r in rows:
+        tokens.append(
+            {
+                "token_id": str(r["token_id"]),
+                "label": str(r["label"] or ""),
+                "created_at": _iso(r["created_at"]),
+                "expires_at": _iso(r["expires_at"]),
+                "disabled_at": _iso(r["disabled_at"]),
+                "last_used_at": _iso(r["last_used_at"]),
+                "last_used_ip_hash": r["last_used_ip_hash"],
+            }
+        )
 
     write_admin_audit_event(
         action="admin.tokens.list",
@@ -121,7 +150,7 @@ def admin_list_tokens(
         meta={"limit": limit},
     )
 
-    return {"status": "ok", "count": len(rows), "tokens": [dict(r) for r in rows]}
+    return {"status": "ok", "count": len(tokens), "tokens": tokens}
 
 
 @router.post("/tokens/{token_id}/disable")
@@ -133,7 +162,7 @@ def admin_disable_token(
         res = db.execute(
             text(
                 """
-                UPDATE admin_tokens
+                UPDATE platform_admin_tokens
                 SET disabled_at = now()
                 WHERE token_id = :tid AND disabled_at IS NULL
                 """
@@ -141,6 +170,8 @@ def admin_disable_token(
             {"tid": token_id},
         )
         db.commit()
+
+    rows_affected = int(res.rowcount or 0)
 
     write_admin_audit_event(
         action="admin.tokens.disable",
@@ -151,7 +182,7 @@ def admin_disable_token(
         request_id=ctx.request_id,
         ip_hash=ctx.ip_hash,
         ua_hash=ctx.ua_hash,
-        meta={"disabled_token_id": token_id, "rows_affected": int(res.rowcount or 0)},
+        meta={"disabled_token_id": token_id, "rows_affected": rows_affected},
     )
 
-    return {"status": "ok", "token_id": token_id, "disabled": True, "rows_affected": int(res.rowcount or 0)}
+    return {"status": "ok", "token_id": token_id, "disabled": True, "rows_affected": rows_affected}
