@@ -440,13 +440,18 @@ def require_clinic_user(
     request.state.clinic_user_id = clinic_user_id
     request.state.role = role
 
-    # Optional (recommended) DB membership check to prevent “orphan tokens”
+        # Optional (recommended) DB membership check to prevent “orphan tokens”
     if AUTH_STRICT_DB_CHECK:
-                with SessionLocal() as db:
+        with SessionLocal() as db:
             try:
                 db.begin()
 
-                set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id, role=(role or None))
+                set_rls_context(
+                    db,
+                    clinic_id=clinic_id,
+                    clinic_user_id=clinic_user_id,
+                    role=(role or None),
+                )
 
                 row = db.execute(
                     text(
@@ -469,25 +474,32 @@ def require_clinic_user(
                     request.state.role = db_role
 
                 db.commit()
+
             except HTTPException:
                 try:
                     db.rollback()
                 except Exception:
                     pass
                 raise
+
             except Exception:
                 try:
                     db.rollback()
                 except Exception:
                     pass
                 raise
+
             finally:
                 try:
                     clear_rls_context(db)
                 except Exception:
                     pass
 
-    return {"clinic_id": clinic_id, "clinic_user_id": clinic_user_id, "role": request.state.role}
+    return {
+        "clinic_id": clinic_id,
+        "clinic_user_id": clinic_user_id,
+        "role": request.state.role,
+    }
 
 
 @router.get("/v1/clinic/me", response_model=MeResponse)
