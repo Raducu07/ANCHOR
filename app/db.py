@@ -79,6 +79,10 @@ def _set_local_text(db: Session, setting_name: str, value: str) -> None:
     """
     Postgres rejects bind params in SET LOCAL (e.g., $1 / :cid).
     We inject a safely-escaped literal.
+
+    IMPORTANT:
+      SET LOCAL values are treated as configuration strings (text).
+      Do NOT use ::uuid here; cast in SQL functions/policies instead.
     """
     v = (value or "").replace("'", "''")
     db.execute(text(f"SET LOCAL {setting_name} = '{v}'"))
@@ -89,17 +93,14 @@ def set_rls_context(
     *,
     clinic_id: str,
     clinic_user_id: Optional[str] = None,
-    user_id: Optional[str] = None,  # ✅ alias for old call sites
+    user_id: Optional[str] = None,  # ✅ alias for older call sites
     role: Optional[str] = None,
 ) -> None:
     """
     Sets tenant context for FORCE RLS using transaction-scoped SET LOCAL.
 
-    IMPORTANT:
-      - GUC settings (SET LOCAL app.*) store TEXT values.
-      - Do NOT append ::uuid here (can fail on some Postgres parsers for SET).
-      - Cast in RLS policies where needed, e.g.:
-          (current_setting('app.clinic_id', true))::uuid
+    RLS policies / helper functions should cast where needed, e.g.:
+      (current_setting('app.clinic_id', true))::uuid
 
     For backward-compat, we also set app.user_id = clinic_user_id.
     """
@@ -113,7 +114,7 @@ def set_rls_context(
     cid = _uuid_str(clinic_id)
     cuid = _uuid_str(clinic_user_id)
 
-    # ✅ store as plain text
+    # ✅ store as plain string
     _set_local_text(db, "app.clinic_id", cid)
     _set_local_text(db, "app.clinic_user_id", cuid)
 
@@ -177,7 +178,6 @@ def get_db(request: Request) -> Generator[Session, None, None]:
     """
     db = SessionLocal()
     try:
-        # Ensure we are in a transaction before SET LOCAL
         db.begin()
         _apply_rls_from_request(db, request)
 
