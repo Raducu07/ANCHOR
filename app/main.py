@@ -22,6 +22,8 @@ from sqlalchemy import text
 
 from app.db import db_ping, SessionLocal
 from app.migrate import run_migrations
+from fastapi import HTTPException, Request, Response
+from app.rate_limit import enforce_rate_limit
 
 # Routers
 from app.auth_and_rls import router as clinic_auth_router
@@ -305,9 +307,65 @@ async def request_logging_middleware(request: Request, call_next):
     except Exception:
         ua = None
 
+    # Hash once, store on request.state for consistent reuse
+    ip_hash = _hash_with_salt(ip)
+    ua_hash = _hash_with_salt(ua)
+    request.state.ip_hash = ip_hash
+    request.state.ua_hash = ua_hash
+
     start = time.time()
     path = request.url.path
 
+    # ---------------------------
+    # M3: rate limiting (metadata-only)
+    # Must run BEFORE call_next()
+    # ---------------------------
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+
+    rl_meta = enforce_rate_limit(
+        path=path,
+        method=request.method,
+        clinic_user_id=clinic_user_id,
+        ip_hash=ip_hash,
+        ip=None,  # avoid raw IP
+    )
+
+    if rl_meta.get("rate_limited"):
+        # Log metadata only (no content)
+        log_event(
+            logging.WARNING,
+            "http.request.rate_limited",
+            request_id=req_id,
+            method=request.method,
+            path=path,
+            host=_host(request),
+            client_ip_hash=ip_hash,
+            user_agent_hash=ua_hash,
+            clinic_id=getattr(request.state, "clinic_id", None),
+            clinic_user_id=clinic_user_id,
+            rule=rl_meta.get("rule"),
+            limit=rl_meta.get("limit"),
+            window_sec=rl_meta.get("window_sec"),
+            retry_after_sec=rl_meta.get("retry_after_sec"),
+        )
+
+        retry_after = int(rl_meta.get("retry_after_sec") or 60)
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": {
+                    "error": "rate_limited",
+                    "rule": rl_meta.get("rule"),
+                    "retry_after_sec": retry_after,
+                    "request_id": req_id,
+                }
+            },
+            headers={"X-Request-ID": req_id, "Retry-After": str(retry_after)},
+        )
+
+    # ---------------------------
+    # Normal request logging
+    # ---------------------------
     if path not in _SKIP_LOG_PATHS:
         log_event(
             logging.INFO,
@@ -316,8 +374,8 @@ async def request_logging_middleware(request: Request, call_next):
             method=request.method,
             path=path,
             host=_host(request),
-            client_ip_hash=_hash_with_salt(ip),
-            user_agent_hash=_hash_with_salt(ua),
+            client_ip_hash=ip_hash,
+            user_agent_hash=ua_hash,
         )
 
     try:
@@ -347,8 +405,8 @@ async def request_logging_middleware(request: Request, call_next):
             method=request.method,
             path=path,
             host=_host(request),
-            client_ip_hash=_hash_with_salt(ip),
-            user_agent_hash=_hash_with_salt(ua),
+            client_ip_hash=ip_hash,
+            user_agent_hash=ua_hash,
             status_code=500,
             duration_ms=dur_ms,
             error_type=type(e).__name__,
