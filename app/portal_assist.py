@@ -7,13 +7,12 @@
 # - Does NOT store prompt or output content
 # - Stores metadata-only in clinic_governance_events + ops_metrics_events
 #
-# This is the missing "Output Gate" that makes neutrality_v11 + governance.py real.
+# This is the "Output Gate" that makes neutrality_v11 + governance.py real.
 
-import json
 import logging
+import re
 import time
 import uuid
-import hashlib
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -44,7 +43,6 @@ router = APIRouter(
 
 _ALLOWED_MODES = {"clinical_note", "client_comm", "internal_summary"}
 
-
 # ----------------------------
 # Models
 # ----------------------------
@@ -54,7 +52,7 @@ class PortalAssistRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=20000)
     request_id: Optional[uuid.UUID] = Field(default=None)
 
-    # Optional: lightweight instruction for drafting style (NOT stored)
+    # Optional: lightweight instruction for drafting style (NOT stored, NOT echoed)
     instruction: Optional[str] = Field(default=None, max_length=1000)
 
     # R1
@@ -92,7 +90,25 @@ class PortalAssistResponse(BaseModel):
 # Helpers
 # ----------------------------
 
-def _compute_event_sha256(*, clinic_id: uuid.UUID, request_id: uuid.UUID, policy_sha256: Optional[str], meta: Dict[str, Any]) -> str:
+_SOAP_S_RE = re.compile(r"(?im)^\s*S:\s*")
+_SOAP_O_RE = re.compile(r"(?im)^\s*O:\s*")
+_SOAP_A_RE = re.compile(r"(?im)^\s*A:\s*")
+_SOAP_P_RE = re.compile(r"(?im)^\s*P:\s*")
+
+def _looks_like_soap(text_value: str) -> bool:
+    """
+    Heuristic: if the note already contains S:, O:, A:, P: headings on separate lines.
+    """
+    t = (text_value or "")
+    return bool(_SOAP_S_RE.search(t) and _SOAP_O_RE.search(t) and _SOAP_A_RE.search(t) and _SOAP_P_RE.search(t))
+
+def _compute_event_sha256(
+    *,
+    clinic_id: uuid.UUID,
+    request_id: uuid.UUID,
+    policy_sha256: Optional[str],
+    meta: Dict[str, Any],
+) -> str:
     base = {
         "clinic_id": str(clinic_id),
         "request_id": str(request_id),
@@ -103,45 +119,102 @@ def _compute_event_sha256(*, clinic_id: uuid.UUID, request_id: uuid.UUID, policy
 
 
 def _now_iso_utc() -> str:
-    # avoid importing datetime; keep simple + consistent with other modules
+    # avoid importing datetime at module load; keep simple + consistent with other modules
     import datetime
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _sanitize_instruction(instr: Optional[str]) -> str:
+    """
+    Control-plane only: used to guide generation, never included verbatim in output.
+    Keep it low-risk, short, and non-directive.
+    """
+    s = (instr or "").strip()
+    if not s:
+        return ""
+    # collapse whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    # hard cap (already capped by pydantic, but keep defensive)
+    return s[:1000]
 
 
 def _stub_llm_generate(*, mode: str, user_text: str, instruction: Optional[str]) -> str:
     """
     Replace this with a real model call later.
-    For now: deterministic draft scaffolding so the route works end-to-end.
+    For now: deterministic drafting behavior that DOES NOT echo instruction
+    and DOES NOT double-wrap SOAP.
     """
     t = (user_text or "").strip()
-    instr = (instruction or "").strip()
+    instr = _sanitize_instruction(instruction)
+
+    # NOTE: instruction is used only to pick style, never included in the output.
+    # This is critical: we do not want "Tighten wording..." to appear in final_text.
 
     if mode == "clinical_note":
-        style = instr or "Write a concise SOAP-style clinical note."
+        # If already SOAP, preserve structure and do a minimal "tightening" pass.
+        if _looks_like_soap(t):
+            # minimal deterministic cleanup:
+            # - strip trailing spaces
+            # - normalize blank lines
+            # - ensure headings are clean "S:", "O:", "A:", "P:" with one space removed
+            lines = [ln.rstrip() for ln in t.splitlines()]
+            # normalize headings like "S:   ..." -> "S: ..."
+            out_lines: List[str] = []
+            for ln in lines:
+                m = re.match(r"^\s*([SOAPsoap])\s*:\s*(.*)$", ln)
+                if m:
+                    head = m.group(1).upper()
+                    rest = m.group(2).strip()
+                    out_lines.append(f"{head}: {rest}".rstrip())
+                else:
+                    out_lines.append(ln)
+            cleaned = "\n".join(out_lines)
+            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+            return cleaned + ("\n" if not cleaned.endswith("\n") else "")
+
+        # If not SOAP, we can scaffold SOAP, but WITHOUT echoing instruction
+        # and WITHOUT duplicating the original "S:" etc.
+        # Use instruction to choose concision level only.
+        concise = True
+        if instr:
+            # tiny heuristic: if instruction mentions "detailed" or "expand", allow slightly longer
+            if re.search(r"\b(detailed|expand|elaborate|full)\b", instr, flags=re.I):
+                concise = False
+
+        bullet = "- " if concise else "- "
         return (
-            f"{style}\n\n"
             "S:\n"
-            f"- {t}\n\n"
+            f"{bullet}{t}\n\n"
             "O:\n"
-            "- \n\n"
+            f"{bullet}\n\n"
             "A:\n"
-            "- \n\n"
+            f"{bullet}\n\n"
             "P:\n"
-            "- \n"
+            f"{bullet}\n"
         )
 
     if mode == "client_comm":
-        style = instr or "Write a friendly, professional client update."
+        # Use instruction to pick tone, but never echo it.
+        tone = "friendly, professional"
+        if instr:
+            if re.search(r"\b(formal|very formal)\b", instr, flags=re.I):
+                tone = "formal, professional"
+            elif re.search(r"\b(warm|empathetic|kind)\b", instr, flags=re.I):
+                tone = "warm, professional"
+
+        # Deterministic structure:
+        # No instruction line in body.
         return (
-            f"{style}\n\n"
             "Hello,\n\n"
             f"{t}\n\n"
-            "Kind regards,\n"
+            f"Kind regards,\n"
         )
 
     # internal_summary
-    style = instr or "Summarise clearly for internal handover."
-    return f"{style}\n\n- {t}\n"
+    # Use instruction to decide if we should be one-liner vs bullet.
+    if instr and re.search(r"\b(one line|one-liner|single line)\b", instr, flags=re.I):
+        return t + ("\n" if not t.endswith("\n") else "")
+    return f"- {t}\n"
 
 
 # ----------------------------
