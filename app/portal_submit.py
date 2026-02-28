@@ -4,6 +4,7 @@ import logging
 import re
 import uuid
 import hashlib
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.auth_and_rls import require_clinic_user
 from app.db import get_db
+from app.portal_governance_engine import evaluate_input_governance, extract_neutrality_version
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,20 @@ def _get_policy_json(db: Session, *, policy_version: int) -> Optional[Dict[str, 
         return dict(row["policy_json"])
     except Exception:
         return row["policy_json"]
+
+
+def _compute_event_sha256(*, clinic_id: uuid.UUID, request_id: uuid.UUID, policy_sha256: Optional[str], meta: Dict[str, Any]) -> str:
+    """
+    Metadata-only event fingerprint.
+    Does NOT include raw submitted text.
+    """
+    base = {
+        "clinic_id": str(clinic_id),
+        "request_id": str(request_id),
+        "policy_sha256": policy_sha256,
+        "meta": meta,
+    }
+    return _sha256_hex(_canonical_json(base))
 
 
 # ---------------------------------------------------------------------
@@ -257,6 +273,8 @@ def _parse_cursor(cursor: str) -> Optional[dict]:
 
 @router.post("/submit", response_model=PortalSubmitResponse)
 def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = Depends(get_db)):
+    t0 = time.monotonic()
+
     mode = (payload.mode or "").strip()
     if mode not in _ALLOWED_MODES:
         raise HTTPException(status_code=400, detail="invalid mode")
@@ -270,123 +288,185 @@ def portal_submit(payload: PortalSubmitRequest, request: Request, db: Session = 
 
     req_id = payload.request_id or uuid.uuid4()
 
-    pii_types = detect_pii_types(payload.text)
-    pii_detected = bool(pii_types)
-    pii_action = "warn" if pii_detected else "allow"
-
+    # Policy
     policy_version = _get_active_policy_version(db)
+    policy_obj = _get_policy_json(db, policy_version=policy_version)
 
     # M2.7: policy fingerprint (metadata-only)
-    policy_obj = _get_policy_json(db, policy_version=policy_version)
     policy_sha256 = _sha256_hex(_canonical_json(policy_obj)) if policy_obj is not None else None
 
-    # M2.7: explainability placeholders (wire real rule hits later)
-    rules_fired = None
-    event_sha256 = None
+    neutrality_version = extract_neutrality_version(policy_obj)
+
+    # Input PII detection (still in-memory)
+    pii_types = detect_pii_types(payload.text)
+    # Evaluate governance using policy (metadata only)
+    ig = evaluate_input_governance(
+        text_value=payload.text,
+        pii_types=pii_types,
+        mode=mode,
+        policy=policy_obj,
+    )
+
+    # M2.7 explainability (now real metadata)
+    rules_fired = ig.rules_fired
+
+    # Metadata-only event fingerprint
+    event_sha256 = _compute_event_sha256(
+        clinic_id=clinic_id,
+        request_id=req_id,
+        policy_sha256=policy_sha256,
+        meta={
+            "mode": mode,
+            "decision": ig.decision,
+            "risk_grade": ig.risk_grade,
+            "reason_code": ig.reason_code,
+            "pii_detected": ig.pii_detected,
+            "pii_action": ig.pii_action,
+            "pii_types": pii_types,
+            "policy_version": policy_version,
+            "neutrality_version": neutrality_version,
+            "ai_assisted": bool(payload.ai_assisted),
+            "user_confirmed_review": bool(payload.user_confirmed_review),
+        },
+    )
 
     clinic_id_s = str(clinic_id)
     clinic_user_id_s = str(clinic_user_id)
     req_id_s = str(req_id)
 
-    gov_row = (
+    try:
+        gov_row = (
+            db.execute(
+                text(
+                    """
+                    INSERT INTO clinic_governance_events (
+                      clinic_id, request_id, user_id, mode,
+                      pii_detected, pii_action, pii_types,
+                      decision, risk_grade, reason_code,
+                      governance_score, policy_version, neutrality_version,
+                      ai_assisted, user_confirmed_review,
+                      policy_sha256, rules_fired, event_sha256
+                    )
+                    VALUES (
+                      :clinic_id, :request_id, :user_id, :mode,
+                      :pii_detected, :pii_action, :pii_types,
+                      :decision,
+                      :risk_grade,
+                      :reason_code,
+                      NULL,
+                      :policy_version,
+                      :neutrality_version,
+                      :ai_assisted,
+                      :user_confirmed_review,
+                      :policy_sha256,
+                      CAST(:rules_fired AS jsonb),
+                      :event_sha256
+                    )
+                    ON CONFLICT (clinic_id, request_id) DO NOTHING
+                    RETURNING *
+                    """
+                ),
+                {
+                    "clinic_id": clinic_id_s,
+                    "request_id": req_id_s,
+                    "user_id": clinic_user_id_s,
+                    "mode": mode,
+                    "pii_detected": bool(ig.pii_detected),
+                    "pii_action": ig.pii_action,
+                    "pii_types": pii_types,
+                    "decision": ig.decision,
+                    "risk_grade": ig.risk_grade,
+                    "reason_code": ig.reason_code,
+                    "policy_version": int(policy_version),
+                    "neutrality_version": neutrality_version,
+                    "ai_assisted": bool(payload.ai_assisted),
+                    "user_confirmed_review": bool(payload.user_confirmed_review),
+                    "policy_sha256": policy_sha256,
+                    "rules_fired": _canonical_json(rules_fired) if rules_fired is not None else None,
+                    "event_sha256": event_sha256,
+                },
+            )
+            .mappings()
+            .first()
+        )
+
+        latency_ms = int(max(0.0, (time.monotonic() - t0) * 1000.0))
+
+        # ops: governance_replaced is for OUTPUT gate; portal_submit is INPUT gate => always false
         db.execute(
             text(
                 """
-                INSERT INTO clinic_governance_events (
-                  clinic_id, request_id, user_id, mode,
-                  pii_detected, pii_action, pii_types,
-                  decision, risk_grade, reason_code,
-                  governance_score, policy_version, neutrality_version,
-                  ai_assisted, user_confirmed_review,
-                  policy_sha256, rules_fired, event_sha256
+                INSERT INTO ops_metrics_events (
+                  clinic_id, request_id, route, status_code, latency_ms,
+                  mode, governance_replaced, pii_warned
                 )
                 VALUES (
-                  :clinic_id, :request_id, :user_id, :mode,
-                  :pii_detected, :pii_action, :pii_types,
-                  'allowed',
-                  CASE WHEN :pii_detected THEN 'med' ELSE 'low' END,
-                  CASE WHEN :pii_detected THEN 'pii_detected' ELSE 'ok' END,
-                  NULL,
-                  :policy_version,
-                  'v1.1',
-                  :ai_assisted,
-                  :user_confirmed_review,
-                  :policy_sha256,
-                  CAST(:rules_fired AS jsonb),
-                  :event_sha256
+                  :clinic_id, :request_id, :route, 200, :latency_ms,
+                  :mode, false, :pii_warned
                 )
                 ON CONFLICT (clinic_id, request_id) DO NOTHING
-                RETURNING *
                 """
             ),
             {
                 "clinic_id": clinic_id_s,
                 "request_id": req_id_s,
-                "user_id": clinic_user_id_s,
+                "route": request.url.path,
+                "latency_ms": latency_ms,
                 "mode": mode,
-                "pii_detected": pii_detected,
-                "pii_action": pii_action,
-                "pii_types": pii_types,
-                "policy_version": policy_version,
-                "ai_assisted": bool(payload.ai_assisted),
-                "user_confirmed_review": bool(payload.user_confirmed_review),
-                "policy_sha256": policy_sha256,
-                "rules_fired": json.dumps(rules_fired) if rules_fired is not None else None,
-                "event_sha256": event_sha256,
+                "pii_warned": bool(ig.pii_detected and ig.pii_action == "warn"),
             },
         )
-        .mappings()
-        .first()
-    )
 
-    db.execute(
-        text(
-            """
-            INSERT INTO ops_metrics_events (
-              clinic_id, request_id, route, status_code, latency_ms,
-              mode, governance_replaced, pii_warned
+        db.commit()
+
+        if gov_row:
+            return PortalSubmitResponse(receipt=_row_to_receipt(gov_row))
+
+        # idempotency: fetch existing
+        existing = (
+            db.execute(
+                text(
+                    """
+                    SELECT *
+                    FROM clinic_governance_events
+                    WHERE clinic_id = :clinic_id
+                      AND request_id = :request_id
+                    LIMIT 1
+                    """
+                ),
+                {"clinic_id": clinic_id_s, "request_id": req_id_s},
             )
-            VALUES (
-              :clinic_id, :request_id, :route, 200, 0,
-              :mode, false, :pii_warned
-            )
-            ON CONFLICT (clinic_id, request_id) DO NOTHING
-            """
-        ),
-        {
-            "clinic_id": clinic_id_s,
-            "request_id": req_id_s,
-            "route": request.url.path,
-            "mode": mode,
-            "pii_warned": pii_detected,
-        },
-    )
-
-    db.commit()
-
-    if gov_row:
-        return PortalSubmitResponse(receipt=_row_to_receipt(gov_row))
-
-    existing = (
-        db.execute(
-            text(
-                """
-                SELECT *
-                FROM clinic_governance_events
-                WHERE clinic_id = :clinic_id
-                  AND request_id = :request_id
-                LIMIT 1
-                """
-            ),
-            {"clinic_id": clinic_id_s, "request_id": req_id_s},
+            .mappings()
+            .first()
         )
-        .mappings()
-        .first()
-    )
-    if not existing:
-        raise HTTPException(status_code=500, detail="idempotency failure")
+        if not existing:
+            raise HTTPException(status_code=500, detail="idempotency failure")
 
-    return PortalSubmitResponse(receipt=_row_to_receipt(existing))
+        return PortalSubmitResponse(receipt=_row_to_receipt(existing))
+
+    except HTTPException:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
+
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.exception(
+            "portal_submit_failed",
+            extra={
+                "route": getattr(request.url, "path", None),
+                "request_id": str(req_id),
+                "clinic_id": str(clinic_id),
+                "clinic_user_id": str(clinic_user_id),
+                "mode": mode,
+            },
+        )
+        raise HTTPException(status_code=500, detail="internal_server_error")
 
 
 # ---------------------------------------------------------------------
