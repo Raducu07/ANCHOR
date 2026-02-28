@@ -245,12 +245,14 @@ def clinic_login(req: ClinicLoginRequest) -> ClinicLoginResponse:
 
     with SessionLocal() as db:
         try:
+            # Ensure SET LOCAL scope behaves correctly
+            db.begin()
+
             clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug)
 
-            # TEMP context so FORCE RLS won't break reads.
-            # Use correct kwarg name: clinic_user_id (not user_id).
-            temp_clinic_user_id = str(uuid.uuid4())
-            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=temp_clinic_user_id)
+            # set temporary context so FORCE RLS won't break reads
+            temp_user = str(uuid.uuid4())
+            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=temp_user)
 
             user = db.execute(
                 text(
@@ -275,10 +277,17 @@ def clinic_login(req: ClinicLoginRequest) -> ClinicLoginResponse:
             role = str(user["role"] or "").strip()
 
             # reset context to real user
-            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
+            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id, role=role)
             db.commit()
 
             return _issue_login_token(clinic_id, clinic_user_id, role)
+
+        except HTTPException:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise
         finally:
             try:
                 clear_rls_context(db)
@@ -293,6 +302,8 @@ def accept_invite(req: InviteAcceptRequest) -> ClinicLoginResponse:
 
     with SessionLocal() as db:
         try:
+            db.begin()
+
             clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug)
 
             new_user_id = str(uuid.uuid4())
@@ -370,8 +381,8 @@ def accept_invite(req: InviteAcceptRequest) -> ClinicLoginResponse:
                 {"iid": str(invite["invite_id"])},
             )
 
-            # hygiene: set context to actual new user id
-            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=new_user_id)
+            # hygiene: set context to actual new user id (and role)
+            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=new_user_id, role=role)
 
             db.commit()
 
@@ -433,7 +444,9 @@ def require_clinic_user(
     if AUTH_STRICT_DB_CHECK:
         with SessionLocal() as db:
             try:
-                set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
+                db.begin()
+
+                set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id, role=(role or None))
 
                 row = db.execute(
                     text(
@@ -452,8 +465,6 @@ def require_clinic_user(
                     raise HTTPException(status_code=401, detail="invalid token")
 
                 db_role = str(row["role"] or "").strip()
-                # Keep token role for convenience, but never allow a mismatch silently.
-                # If token role mismatches DB, prefer DB.
                 if db_role and db_role != role:
                     request.state.role = db_role
 
