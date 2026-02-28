@@ -442,7 +442,7 @@ def require_clinic_user(
 
     # Optional (recommended) DB membership check to prevent “orphan tokens”
     if AUTH_STRICT_DB_CHECK:
-        with SessionLocal() as db:
+                with SessionLocal() as db:
             try:
                 db.begin()
 
@@ -469,6 +469,18 @@ def require_clinic_user(
                     request.state.role = db_role
 
                 db.commit()
+            except HTTPException:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                raise
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                raise
             finally:
                 try:
                     clear_rls_context(db)
