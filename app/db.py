@@ -1,11 +1,11 @@
 # app/db.py
 import os
+import uuid
 from typing import Generator, Optional
 
 from fastapi import HTTPException, Request
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
-
 
 # ============================================================
 # Database URL (Render-friendly) + engine/session
@@ -43,7 +43,6 @@ ENGINE = create_engine(
 
 SessionLocal = sessionmaker(bind=ENGINE, autocommit=False, autoflush=False)
 
-
 # ============================================================
 # Health check
 # ============================================================
@@ -61,9 +60,35 @@ def db_ping() -> bool:
 def reset_session_state(db: Session) -> None:
     """
     Defensive reset of any session-level state on pooled connections.
-    Must run inside an open transaction to be effective in a controlled way.
+    Prefer running inside an open transaction (your get_db begins one).
     """
     db.execute(text("RESET ALL"))
+
+
+def _uuid_literal(value: str) -> str:
+    """
+    Validate UUID and return canonical string suitable for safe literal injection.
+    This is required because Postgres does NOT allow bind params in SET/SET LOCAL.
+    """
+    return str(uuid.UUID(str(value)))
+
+
+def _set_local_uuid(db: Session, setting_name: str, value: str) -> None:
+    """
+    Postgres rejects parameter placeholders in SET LOCAL (e.g., $1).
+    We must inject a validated UUID literal.
+    """
+    v = _uuid_literal(value)
+    db.execute(text(f"SET LOCAL {setting_name} = '{v}'::uuid"))
+
+
+def _set_local_text(db: Session, setting_name: str, value: str) -> None:
+    """
+    For simple text values (e.g., role). We still avoid bind params in SET LOCAL.
+    We escape single quotes defensively.
+    """
+    v = (value or "").replace("'", "''")
+    db.execute(text(f"SET LOCAL {setting_name} = '{v}'"))
 
 
 def set_rls_context(
@@ -85,18 +110,18 @@ def set_rls_context(
     """
     reset_session_state(db)
 
-    # SET LOCAL ensures the setting cannot leak beyond the transaction.
-    db.execute(text("SET LOCAL app.clinic_id = :cid"), {"cid": str(clinic_id)})
-    db.execute(text("SET LOCAL app.clinic_user_id = :cuid"), {"cuid": str(clinic_user_id)})
+    # ✅ Postgres does NOT allow bind params in SET LOCAL; inject validated literals.
+    _set_local_uuid(db, "app.clinic_id", str(clinic_id))
+    _set_local_uuid(db, "app.clinic_user_id", str(clinic_user_id))
 
     # Back-compat for older policies/codepaths that used app.user_id
-    db.execute(text("SET LOCAL app.user_id = :uid"), {"uid": str(clinic_user_id)})
+    _set_local_uuid(db, "app.user_id", str(clinic_user_id))
 
     # Optional role dimension
     if role:
-        db.execute(text("SET LOCAL app.role = :r"), {"r": str(role)})
+        _set_local_text(db, "app.role", str(role))
     else:
-        db.execute(text("SET LOCAL app.role = ''"))
+        _set_local_text(db, "app.role", "")
 
 
 def clear_rls_context(db: Session) -> None:
