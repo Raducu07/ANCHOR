@@ -330,6 +330,22 @@ async def request_logging_middleware(request: Request, call_next):
         ip=None,  # avoid raw IP
     )
 
+    # TEMP DEBUG (remove after test)
+    if path == "/v1/portal/assist":
+        log_event(
+            logging.INFO,
+            "http.rate_limit.debug",
+            request_id=req_id,
+            path=path,
+            method=request.method,
+            client_ip_hash=ip_hash,
+            rule=rl_meta.get("rule"),
+            rate_limit_applied=rl_meta.get("rate_limit_applied"),
+            rate_limited=rl_meta.get("rate_limited"),
+            limit=rl_meta.get("limit"),
+            window_sec=rl_meta.get("window_sec"),
+        )
+    
     if rl_meta.get("rate_limited"):
         # Log metadata only (no content)
         log_event(
