@@ -41,11 +41,6 @@ def require_admin(authorization: str = Header(default="")) -> None:
 # Debug helpers (metadata-only)
 # ---------------------------
 def _rls_flags(db: Session, table: str) -> Dict[str, Optional[bool]]:
-    """
-    Returns Postgres table RLS flags:
-      - relrowsecurity: RLS enabled
-      - relforcerowsecurity: FORCE RLS enabled
-    """
     row = db.execute(
         text(
             """
@@ -63,9 +58,6 @@ def _rls_flags(db: Session, table: str) -> Dict[str, Optional[bool]]:
 
 
 def _policies(db: Session, table: str) -> List[Dict[str, Any]]:
-    """
-    Returns pg_policies rows for the table (metadata).
-    """
     rows = db.execute(
         text(
             """
@@ -93,23 +85,32 @@ def _policies(db: Session, table: str) -> List[Dict[str, Any]]:
     return out
 
 
-def _role_bypass_rls(db: Session) -> Optional[bool]:
-    try:
-        v = db.execute(
-            text("SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user")
-        ).scalar()
-        if v is None:
-            return None
-        return bool(v)
-    except Exception:
-        return None
-
-
 def _current_setting(db: Session, key: str) -> Optional[str]:
     try:
         return db.execute(text("SELECT current_setting(:k, true)"), {"k": key}).scalar()
     except Exception:
         return None
+
+
+def _role_props(db: Session) -> Dict[str, Optional[bool]]:
+    """
+    Metadata: do we bypass RLS / are we superuser?
+    """
+    try:
+        row = db.execute(
+            text(
+                """
+                SELECT rolbypassrls, rolsuper
+                FROM pg_roles
+                WHERE rolname = current_user
+                """
+            )
+        ).fetchone()
+        if not row:
+            return {"rolbypassrls": None, "rolsuper": None}
+        return {"rolbypassrls": bool(row[0]), "rolsuper": bool(row[1])}
+    except Exception:
+        return {"rolbypassrls": None, "rolsuper": None}
 
 
 # ---------------------------
@@ -120,10 +121,12 @@ def rls_self_test(_: None = Depends(require_admin)) -> Dict[str, Any]:
     """
     Admin-only: verifies Postgres RLS tenant isolation using clinics + clinic_users.
 
-    IMPORTANT:
-    - Does NOT rely on clinic JWT/context.
-    - Explicitly sets app.clinic_id/app.user_id via set_rls_context before each operation.
-    - Returns debug metadata to diagnose RLS enforcement issues.
+    This endpoint returns debug metadata to diagnose:
+      - DB role bypassing RLS
+      - RLS enabled/forced flags per table
+      - active policies + their predicates
+      - whether your app.* GUCs are being set as expected
+      - session row_security
     """
 
     clinic_a = uuid.uuid4()
@@ -144,29 +147,49 @@ def rls_self_test(_: None = Depends(require_admin)) -> Dict[str, Any]:
         # Debug snapshot (metadata only)
         # ---------------------------
         debug: Dict[str, Any] = {}
-        try:
-            debug["db_user"] = db.execute(text("SELECT current_user")).scalar()
-        except Exception:
-            debug["db_user"] = None
 
-        debug["rolbypassrls"] = _role_bypass_rls(db)
+        # who am I?
+        try:
+            debug["current_user"] = db.execute(text("SELECT current_user")).scalar()
+            debug["session_user"] = db.execute(text("SELECT session_user")).scalar()
+            debug["current_role"] = db.execute(text("SELECT current_role")).scalar()
+        except Exception:
+            debug["current_user"] = None
+            debug["session_user"] = None
+            debug["current_role"] = None
+
+        # role properties
+        debug.update(_role_props(db))
+
+        # session settings of interest
+        debug["row_security"] = _current_setting(db, "row_security")
+        debug["transaction_isolation"] = _current_setting(db, "transaction_isolation")
+        debug["search_path"] = _current_setting(db, "search_path")
+
+        # RLS flags + policies
+        debug["rls_clinics"] = _rls_flags(db, "clinics")
+        debug["rls_clinic_users"] = _rls_flags(db, "clinic_users")
+        debug["policies_clinics"] = _policies(db, "clinics")
+        debug["policies_clinic_users"] = _policies(db, "clinic_users")
 
         # Confirm what set_rls_context actually sets (GUCs)
         try:
             clear_rls_context(db)
             set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
+
+            # primary expected keys
             debug["guc_app_clinic_id"] = _current_setting(db, "app.clinic_id")
             debug["guc_app_user_id"] = _current_setting(db, "app.user_id")
+
+            # common alternate keys (in case policies reference different names)
+            debug["guc_app_tenant_id"] = _current_setting(db, "app.tenant_id")
+            debug["guc_app_clinic_uuid"] = _current_setting(db, "app.clinic_uuid")
+            debug["guc_app_tenant_uuid"] = _current_setting(db, "app.tenant_uuid")
         finally:
             try:
                 clear_rls_context(db)
             except Exception:
                 pass
-
-        debug["rls_clinics"] = _rls_flags(db, "clinics")
-        debug["rls_clinic_users"] = _rls_flags(db, "clinic_users")
-        debug["policies_clinics"] = _policies(db, "clinics")
-        debug["policies_clinic_users"] = _policies(db, "clinic_users")
 
         try:
             # 1) Create clinic A under clinic A context
@@ -228,31 +251,19 @@ def rls_self_test(_: None = Depends(require_admin)) -> Dict[str, Any]:
             set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
 
             a_sees_a = (
-                db.execute(
-                    text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"),
-                    {"cid": str(clinic_a)},
-                ).scalar()
+                db.execute(text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_a)}).scalar()
                 or 0
             )
             a_sees_b = (
-                db.execute(
-                    text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"),
-                    {"cid": str(clinic_b)},
-                ).scalar()
+                db.execute(text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_b)}).scalar()
                 or 0
             )
             a_sees_user_a = (
-                db.execute(
-                    text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"),
-                    {"uid": str(user_a)},
-                ).scalar()
+                db.execute(text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_a)}).scalar()
                 or 0
             )
             a_sees_user_b = (
-                db.execute(
-                    text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"),
-                    {"uid": str(user_b)},
-                ).scalar()
+                db.execute(text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_b)}).scalar()
                 or 0
             )
 
@@ -266,31 +277,19 @@ def rls_self_test(_: None = Depends(require_admin)) -> Dict[str, Any]:
             set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
 
             b_sees_b = (
-                db.execute(
-                    text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"),
-                    {"cid": str(clinic_b)},
-                ).scalar()
+                db.execute(text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_b)}).scalar()
                 or 0
             )
             b_sees_a = (
-                db.execute(
-                    text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"),
-                    {"cid": str(clinic_a)},
-                ).scalar()
+                db.execute(text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_a)}).scalar()
                 or 0
             )
             b_sees_user_b = (
-                db.execute(
-                    text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"),
-                    {"uid": str(user_b)},
-                ).scalar()
+                db.execute(text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_b)}).scalar()
                 or 0
             )
             b_sees_user_a = (
-                db.execute(
-                    text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"),
-                    {"uid": str(user_a)},
-                ).scalar()
+                db.execute(text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_a)}).scalar()
                 or 0
             )
 
@@ -317,7 +316,7 @@ def rls_self_test(_: None = Depends(require_admin)) -> Dict[str, Any]:
                 "now_utc": now_utc,
                 "checks": checks,
                 "debug": debug,
-                "note": "Self-test sets app.clinic_id/app.user_id; debug shows RLS flags, policies, and DB role bypass status.",
+                "note": "Self-test sets app.* GUCs; debug shows RLS flags/policies and whether the DB role bypasses RLS.",
             }
 
         finally:
@@ -325,14 +324,8 @@ def rls_self_test(_: None = Depends(require_admin)) -> Dict[str, Any]:
             try:
                 clear_rls_context(db)
                 set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
-                db.execute(
-                    text("DELETE FROM clinic_users WHERE user_id = :uid"),
-                    {"uid": str(user_a)},
-                )
-                db.execute(
-                    text("DELETE FROM clinics WHERE clinic_id = :cid"),
-                    {"cid": str(clinic_a)},
-                )
+                db.execute(text("DELETE FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_a)})
+                db.execute(text("DELETE FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_a)})
                 db.commit()
             except Exception:
                 db.rollback()
@@ -340,14 +333,8 @@ def rls_self_test(_: None = Depends(require_admin)) -> Dict[str, Any]:
             try:
                 clear_rls_context(db)
                 set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
-                db.execute(
-                    text("DELETE FROM clinic_users WHERE user_id = :uid"),
-                    {"uid": str(user_b)},
-                )
-                db.execute(
-                    text("DELETE FROM clinics WHERE clinic_id = :cid"),
-                    {"cid": str(clinic_b)},
-                )
+                db.execute(text("DELETE FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_b)})
+                db.execute(text("DELETE FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_b)})
                 db.commit()
             except Exception:
                 db.rollback()
