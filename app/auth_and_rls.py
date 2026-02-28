@@ -247,9 +247,10 @@ def clinic_login(req: ClinicLoginRequest) -> ClinicLoginResponse:
         try:
             clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug)
 
-            # set temporary context so FORCE RLS won't break reads
-            temp_user = str(uuid.uuid4())
-            set_rls_context(db, clinic_id=clinic_id, user_id=temp_user)
+            # TEMP context so FORCE RLS won't break reads.
+            # Use correct kwarg name: clinic_user_id (not user_id).
+            temp_clinic_user_id = str(uuid.uuid4())
+            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=temp_clinic_user_id)
 
             user = db.execute(
                 text(
@@ -274,7 +275,7 @@ def clinic_login(req: ClinicLoginRequest) -> ClinicLoginResponse:
             role = str(user["role"] or "").strip()
 
             # reset context to real user
-            set_rls_context(db, clinic_id=clinic_id, user_id=clinic_user_id)
+            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
             db.commit()
 
             return _issue_login_token(clinic_id, clinic_user_id, role)
@@ -295,7 +296,7 @@ def accept_invite(req: InviteAcceptRequest) -> ClinicLoginResponse:
             clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug)
 
             new_user_id = str(uuid.uuid4())
-            set_rls_context(db, clinic_id=clinic_id, user_id=new_user_id)
+            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=new_user_id)
 
             th = _hash_invite_token(req.invite_token)
 
@@ -369,10 +370,9 @@ def accept_invite(req: InviteAcceptRequest) -> ClinicLoginResponse:
                 {"iid": str(invite["invite_id"])},
             )
 
-            db.commit()
-
             # hygiene: set context to actual new user id
-            set_rls_context(db, clinic_id=clinic_id, user_id=new_user_id)
+            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=new_user_id)
+
             db.commit()
 
             return _issue_login_token(clinic_id, new_user_id, role)
@@ -433,7 +433,7 @@ def require_clinic_user(
     if AUTH_STRICT_DB_CHECK:
         with SessionLocal() as db:
             try:
-                set_rls_context(db, clinic_id=clinic_id, user_id=clinic_user_id)
+                set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
 
                 row = db.execute(
                     text(
