@@ -1,30 +1,29 @@
 # app/main.py
-import os
-import hmac
-import uuid
+from __future__ import annotations
+
 import json
-import time
 import logging
+import os
+import time
+import uuid
 import hashlib
-import traceback
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from sqlalchemy import text
+from fastapi.responses import JSONResponse
 
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.db import SessionLocal, db_ping
+from sqlalchemy import text
+
+from app.db import db_ping, SessionLocal
 from app.migrate import run_migrations
 
-from app.http_metrics import HTTP_METRICS
-
-# ---- Portal routers (clinic-scoped) ----
+# Routers
 from app.auth_and_rls import router as clinic_auth_router
 from app.ops_rls_test import router as ops_rls_router
 from app.portal_bootstrap import router as portal_bootstrap_router
@@ -39,18 +38,16 @@ from app.portal_ops_health import router as portal_ops_health_router
 from app.portal_dashboard import router as portal_dashboard_router
 from app.portal_me import router as portal_me_router
 
-# ---- Admin routers (admin-scoped) ----
 from app.admin_tokens import router as admin_tokens_router
 from app.admin_audit import router as admin_audit_router
-from app.admin_ops import router as admin_ops_router
+
 
 # ============================================================
-# Logging — structured, safe-by-default
-# JSON-only lines, never log request bodies or secrets.
+# Structured JSON logging (metadata-only)
 # ============================================================
 
 logger = logging.getLogger("anchor")
-logger.propagate = False  # avoid double-logging via root
+logger.propagate = False
 
 
 def _coerce_log_level(value: str) -> int:
@@ -65,13 +62,12 @@ def _json_dumps(obj: Dict[str, Any]) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
+def _utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def get_app_env() -> str:
-    v = (os.getenv("APP_ENV") or os.getenv("ENV") or "dev").strip().lower()
-    return v or "dev"
-
-
-def is_prod() -> bool:
-    return get_app_env() in {"prod", "production"}
+    return (os.getenv("APP_ENV") or os.getenv("ENV") or "dev").strip().lower() or "dev"
 
 
 def _get_service_name() -> str:
@@ -83,58 +79,25 @@ def _get_app_version() -> Optional[str]:
     return v or None
 
 
-def _truncate(s: str, n: int = 240) -> str:
-    s = str(s or "")
-    return s if len(s) <= n else s[:n] + "…"
+def _get_hash_salt() -> str:
+    # Used for hashing IP/UA in logs. Not a secret, but should be stable.
+    return (os.getenv("ANCHOR_HASH_SALT") or os.getenv("ANCHOR_LOG_SALT") or "anchor-default-salt").strip()
 
 
-def _trace_enabled() -> bool:
-    v1 = (os.getenv("LOG_STACKTRACE") or "").strip().lower()
-    v2 = (os.getenv("LOG_STACKTRACES") or "").strip().lower()
-    truthy = {"1", "true", "yes", "y", "on"}
-    return (v1 in truthy) or (v2 in truthy)
+def _sha256_hex(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
-_HMAC_KEY_CACHE: Optional[bytes] = None
-_WARNED_HMAC_MISSING = False
-
-
-def _get_log_hmac_key() -> bytes:
-    """
-    Returns a key for HMAC hashing.
-    - In prod: set LOG_HMAC_KEY.
-    - If missing: non-breaking fallback, logs a warning once.
-    """
-    global _HMAC_KEY_CACHE, _WARNED_HMAC_MISSING
-    if _HMAC_KEY_CACHE is not None:
-        return _HMAC_KEY_CACHE
-
-    raw = (os.getenv("LOG_HMAC_KEY") or "").strip()
-    if not raw:
-        fallback = "dev-insecure-log-hmac-key" if not is_prod() else "missing-log-hmac-key"
-        _HMAC_KEY_CACHE = fallback.encode("utf-8")
-        if not _WARNED_HMAC_MISSING:
-            _WARNED_HMAC_MISSING = True
-            try:
-                log_event(logging.WARNING, "log_hmac_key_missing", env=get_app_env(), service=_get_service_name())
-            except Exception:
-                pass
-        return _HMAC_KEY_CACHE
-
-    _HMAC_KEY_CACHE = raw.encode("utf-8")
-    return _HMAC_KEY_CACHE
-
-
-def _hmac_sha256_hex(value: Optional[str]) -> Optional[str]:
+def _hash_with_salt(value: Optional[str]) -> Optional[str]:
     if not value:
         return None
-    key = _get_log_hmac_key()
-    return hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
+    salt = _get_hash_salt()
+    return _sha256_hex(f"{salt}:{value}")
 
 
 def log_event(level: int, event: str, **fields: Any) -> None:
     payload: Dict[str, Any] = {
-        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "ts_utc": _utc_iso(),
         "service": _get_service_name(),
         "env": get_app_env(),
         "version": _get_app_version(),
@@ -144,6 +107,7 @@ def log_event(level: int, event: str, **fields: Any) -> None:
     try:
         logger.log(level, _json_dumps(payload))
     except Exception:
+        # Never fail request flow due to logging
         pass
 
 
@@ -155,10 +119,10 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(level)
 
-# ============================================================
-# Edge middleware config
-# ============================================================
 
+# ============================================================
+# Env helpers / edge middleware
+# ============================================================
 
 def _parse_csv_env(name: str) -> List[str]:
     raw = (os.getenv(name, "") or "").strip()
@@ -183,11 +147,11 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
     else:
         log_event(logging.INFO, "trusted_host_disabled")
 
-    allow_origins = _parse_csv_env("CORS_ALLOW_ORIGINS") or []
+    allow_origins = _parse_csv_env("CORS_ALLOW_ORIGINS")
     if allow_origins:
         allow_credentials = _env_truthy("CORS_ALLOW_CREDENTIALS", default=False)
         if allow_credentials and any(o == "*" for o in allow_origins):
-            raise RuntimeError("CORS misconfig: cannot use '*' when CORS_ALLOW_CREDENTIALS=true")
+            raise RuntimeError("CORS misconfig: cannot use '*' in CORS_ALLOW_ORIGINS when CORS_ALLOW_CREDENTIALS=true")
 
         allow_methods = _parse_csv_env("CORS_ALLOW_METHODS") or ["GET", "POST", "OPTIONS"]
         allow_headers = _parse_csv_env("CORS_ALLOW_HEADERS") or ["Authorization", "Content-Type", "X-Request-ID"]
@@ -217,18 +181,18 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
     else:
         log_event(logging.INFO, "cors_disabled")
 
+
 # ============================================================
 # Lifespan — migrations
 # ============================================================
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        if not is_prod():
+        if get_app_env() != "prod":
+            # Optional dotenv for local runs
             try:
                 from dotenv import load_dotenv  # type: ignore
-
                 load_dotenv()
                 log_event(logging.INFO, "dotenv_loaded")
             except Exception:
@@ -237,11 +201,13 @@ async def lifespan(app: FastAPI):
         run_migrations()
         log_event(logging.INFO, "startup_migrations_ok")
     except Exception as e:
-        log_event(logging.ERROR, "startup_failed", error_type=type(e).__name__, error=_truncate(str(e)))
+        log_event(logging.ERROR, "startup_failed", error_type=type(e).__name__, error=str(e)[:240])
         raise
 
     yield
+
     log_event(logging.INFO, "shutdown")
+
 
 # ============================================================
 # App
@@ -250,7 +216,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ANCHOR API", lifespan=lifespan)
 _configure_edge_middlewares(app)
 
-# Routers (single source of truth)
+# Routers (clinic portal)
 app.include_router(clinic_auth_router)
 app.include_router(portal_bootstrap_router)
 app.include_router(ops_rls_router)
@@ -267,14 +233,14 @@ app.include_router(portal_ops_health_router)
 app.include_router(portal_dashboard_router)
 app.include_router(portal_me_router)
 
+# Routers (platform admin)
 app.include_router(admin_tokens_router)
 app.include_router(admin_audit_router)
-app.include_router(admin_ops_router)
+
 
 # ============================================================
-# Exception handlers
+# Exception handlers (include request_id)
 # ============================================================
-
 
 def _get_request_id(request: Request) -> str:
     rid = getattr(request.state, "request_id", None)
@@ -302,11 +268,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         headers={"X-Request-ID": req_id},
     )
 
+
 # ============================================================
-# Request logging middleware + metrics
+# Request middleware — request-id + safe logs
 # ============================================================
 
-_SKIP_LOG_PATHS = {"/health", "/openapi.json", "/docs"}
+_SKIP_LOG_PATHS = {"/health", "/openapi.json", "/docs", "/redoc"}
 
 
 def _host(request: Request) -> Optional[str]:
@@ -316,104 +283,82 @@ def _host(request: Request) -> Optional[str]:
         return None
 
 
-def _route_template_from_scope(request: Request) -> str:
-    try:
-        rt = request.scope.get("route")
-        if rt and getattr(rt, "path", None):
-            return str(rt.path)
-    except Exception:
-        pass
-    return request.url.path
-
-
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.request_id = req_id
 
+    ip = None
     try:
-        client_ip = request.client.host if request.client else None
+        ip = request.client.host if request.client else None
     except Exception:
-        client_ip = None
+        ip = None
 
+    ua = None
     try:
-        ua = request.headers.get("user-agent")
+        ua = (request.headers.get("user-agent") or "")[:512]
     except Exception:
         ua = None
 
-    start_ns = time.time_ns()
+    start = time.time()
+    path = request.url.path
 
-    if request.url.path not in _SKIP_LOG_PATHS:
+    if path not in _SKIP_LOG_PATHS:
         log_event(
             logging.INFO,
             "http.request.start",
             request_id=req_id,
             method=request.method,
-            route=request.url.path,
-            path=request.url.path,
+            path=path,
             host=_host(request),
-            client_ip_hash=_hmac_sha256_hex(client_ip),
-            user_agent_hash=_hmac_sha256_hex(ua),
+            client_ip_hash=_hash_with_salt(ip),
+            user_agent_hash=_hash_with_salt(ua),
         )
 
     try:
-        response: Response = await call_next(request)
-        dur_ms = int((time.time_ns() - start_ns) / 1_000_000)
-        response.headers["X-Request-ID"] = req_id
+        resp: Response = await call_next(request)
+        dur_ms = int((time.time() - start) * 1000)
+        resp.headers["X-Request-ID"] = req_id
 
-        route_tmpl = _route_template_from_scope(request)
-        HTTP_METRICS.add(start_ns, request.method, route_tmpl, response.status_code, dur_ms)
-
-        if request.url.path not in _SKIP_LOG_PATHS:
+        if path not in _SKIP_LOG_PATHS:
             log_event(
                 logging.INFO,
                 "http.request.end",
                 request_id=req_id,
                 method=request.method,
-                route=route_tmpl,
-                path=request.url.path,
+                path=path,
                 host=_host(request),
-                client_ip_hash=_hmac_sha256_hex(client_ip),
-                user_agent_hash=_hmac_sha256_hex(ua),
-                status_code=response.status_code,
+                status_code=resp.status_code,
                 duration_ms=dur_ms,
             )
-        return response
+        return resp
 
     except Exception as e:
-        dur_ms = int((time.time_ns() - start_ns) / 1_000_000)
-        route_tmpl = _route_template_from_scope(request)
-
-        HTTP_METRICS.add(start_ns, request.method, route_tmpl, 500, dur_ms)
-
-        err_fields: Dict[str, Any] = {
-            "request_id": req_id,
-            "method": request.method,
-            "route": route_tmpl,
-            "path": request.url.path,
-            "host": _host(request),
-            "client_ip_hash": _hmac_sha256_hex(client_ip),
-            "user_agent_hash": _hmac_sha256_hex(ua),
-            "status_code": 500,
-            "duration_ms": dur_ms,
-            "error_type": type(e).__name__,
-            "error": _truncate(str(e), 240),
-        }
-        if _trace_enabled():
-            err_fields["traceback"] = traceback.format_exc()
-
-        log_event(logging.ERROR, "error.unhandled", **err_fields)
-
+        dur_ms = int((time.time() - start) * 1000)
+        log_event(
+            logging.ERROR,
+            "http.request.unhandled_error",
+            request_id=req_id,
+            method=request.method,
+            path=path,
+            host=_host(request),
+            client_ip_hash=_hash_with_salt(ip),
+            user_agent_hash=_hash_with_salt(ua),
+            status_code=500,
+            duration_ms=dur_ms,
+            error_type=type(e).__name__,
+            error=str(e)[:240],
+        )
         return JSONResponse(
             status_code=500,
             content={"detail": "internal_server_error", "request_id": req_id},
             headers={"X-Request-ID": req_id},
         )
 
-# ============================================================
-# Root/Health/Version + basic DB checks
-# ============================================================
 
+# ============================================================
+# Root/Health/Version/DB checks
+# ============================================================
 
 @app.head("/")
 def root_head():
@@ -433,6 +378,7 @@ def db_check():
 
 @app.get("/db-memories-check")
 def db_memories_check():
+    # If you no longer have memories in the portal-era schema, feel free to remove this.
     with SessionLocal() as db:
         try:
             db.execute(text("SELECT 1 FROM memories LIMIT 1"))
@@ -448,7 +394,7 @@ def version():
         "env": get_app_env(),
         "git_sha": os.getenv("GIT_SHA", None),
         "build": os.getenv("BUILD_ID", None),
-        "now_utc": datetime.now(timezone.utc).isoformat(),
+        "now_utc": _utc_iso(),
     }
 
 
