@@ -1,9 +1,9 @@
 # app/migrate.py
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-import hashlib
 from pathlib import Path
 from typing import List
 
@@ -27,6 +27,7 @@ def _list_sql_files(mdir: Path) -> List[Path]:
 def _ensure_schema_migrations(db: Session) -> None:
     """
     Ensure a migrations table exists in new installs.
+
     NOTE: production may already have a richer schema (e.g., checksum NOT NULL).
     We won't try to alter an existing table here.
     """
@@ -43,9 +44,6 @@ def _ensure_schema_migrations(db: Session) -> None:
 
 
 def _has_checksum_column(db: Session) -> bool:
-    """
-    Detect whether schema_migrations has a 'checksum' column (some deployments do).
-    """
     row = db.execute(
         text(
             """
@@ -99,7 +97,7 @@ def _mark_applied(db: Session, filename: str, sql_text: str, checksum_col: bool)
 
 
 def _strip_sql_comments(sql: str) -> str:
-    out_lines = []
+    out_lines: List[str] = []
     for line in sql.splitlines():
         s = line.strip()
         if s.startswith("--"):
@@ -110,10 +108,20 @@ def _strip_sql_comments(sql: str) -> str:
 
 def _split_statements(sql: str) -> List[str]:
     """
-    Simple splitter: splits on semicolons.
-    Keep migrations to straightforward DDL/DML (no dollar-quoted functions with semicolons).
+    Splits on semicolons for simple SQL files.
+
+    Option A requirement:
+    - If the file contains a dollar-quoted block (e.g. DO $$ ... $$; or CREATE FUNCTION ... $$ ... $$;),
+      treat the whole file as a single statement so we do NOT split on internal semicolons.
     """
     sql = _strip_sql_comments(sql).strip()
+    if not sql:
+        return []
+
+    # Dollar-quoted blocks can contain semicolons; do not split them.
+    if "$$" in sql:
+        return [sql]
+
     parts = [p.strip() for p in sql.split(";")]
     return [p for p in parts if p]
 
@@ -131,7 +139,7 @@ def run_migrations(db: Session) -> dict:
 
     - Logs scan/apply/applied/failed.
     - Uses schema_migrations to avoid reapplying.
-    - Executes scripts statement-by-statement.
+    - Executes scripts statement-by-statement (except $$ blocks = single statement).
     - Compatible with existing schema_migrations tables that require checksum.
     - FAIL-FAST on any error.
     """
