@@ -1,11 +1,13 @@
 # app/auth_and_rls.py
+from __future__ import annotations
+
 import os
 import time
 import hmac
 import uuid
 import hashlib
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Set, Iterable
 
 import jwt
 from fastapi import APIRouter, HTTPException, Header, Request, Depends
@@ -31,7 +33,23 @@ JWT_LEEWAY_SEC = int(os.getenv("ANCHOR_JWT_LEEWAY_SEC", "30"))
 # Enforce DB membership check on every protected route (recommended)
 AUTH_STRICT_DB_CHECK = (os.getenv("ANCHOR_AUTH_STRICT_DB_CHECK", "1").strip() == "1")
 
-INVITE_TOKEN_SALT = (os.getenv("INVITE_TOKEN_SALT", "anchor-invite-salt") or "anchor-invite-salt").encode("utf-8")
+# Reject absurdly large bearer tokens
+JWT_MAX_TOKEN_LEN = int(os.getenv("ANCHOR_JWT_MAX_TOKEN_LEN", "8192"))
+
+# Strict role allowlist (editable via env)
+# Example: ANCHOR_ROLE_ALLOWLIST="admin,staff,reader"
+_ROLE_ENV = (os.getenv("ANCHOR_ROLE_ALLOWLIST", "") or "").strip()
+DEFAULT_ROLE_ALLOWLIST = {"admin", "staff", "reader", "readonly", "owner"}
+ROLE_ALLOWLIST: Set[str] = (
+    {x.strip() for x in _ROLE_ENV.split(",") if x.strip()}
+    if _ROLE_ENV
+    else DEFAULT_ROLE_ALLOWLIST
+)
+
+INVITE_TOKEN_SALT = (
+    (os.getenv("INVITE_TOKEN_SALT", "anchor-invite-salt") or "anchor-invite-salt")
+    .encode("utf-8")
+)
 
 
 # -----------------------------
@@ -101,15 +119,59 @@ def _coerce_uuid(value: Any, *, field: str) -> str:
     """
     s = str(value or "").strip()
     if not s:
-        raise HTTPException(status_code=401, detail=f"invalid token claims: missing {field}")
+        raise HTTPException(status_code=401, detail=f"invalid_token_claims_missing_{field}")
     try:
         return str(uuid.UUID(s))
     except Exception:
-        raise HTTPException(status_code=401, detail=f"invalid token claims: bad {field}")
+        raise HTTPException(status_code=401, detail=f"invalid_token_claims_bad_{field}")
 
 
 def _hash_invite_token(token_plain: str) -> str:
     return hashlib.sha256(INVITE_TOKEN_SALT + token_plain.encode("utf-8")).hexdigest()
+
+
+def _require_nonempty_str(value: Any, *, field: str, max_len: int = 64) -> str:
+    s = str(value or "").strip()
+    if not s:
+        raise HTTPException(status_code=401, detail=f"invalid_token_claims_missing_{field}")
+    if len(s) > max_len:
+        raise HTTPException(status_code=401, detail=f"invalid_token_claims_bad_{field}")
+    return s
+
+
+def _normalize_role(role: str) -> str:
+    r = (role or "").strip().lower()
+    if not r:
+        raise HTTPException(status_code=401, detail="invalid_token_claims_missing_role")
+    if r not in ROLE_ALLOWLIST:
+        raise HTTPException(status_code=403, detail="forbidden_role")
+    return r
+
+
+def _set_ctx_compat(db: Session, *, clinic_id: str, clinic_user_id: str, role: Optional[str] = None) -> None:
+    """
+    Compatibility shim: your app.db.set_rls_context has existed in a couple shapes.
+    We try the modern kwarg first, then fall back.
+    """
+    try:
+        # preferred: clinic_user_id kw
+        set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id, role=role)
+        return
+    except TypeError:
+        pass
+    try:
+        # legacy: user_id kw
+        set_rls_context(db, clinic_id=clinic_id, user_id=clinic_user_id, role=role)
+        return
+    except TypeError:
+        pass
+
+    # last resort: positional (clinic_id, user_id, role?)
+    try:
+        set_rls_context(db, clinic_id, clinic_user_id, role)  # type: ignore[misc]
+    except Exception:
+        # If we can't set context, FORCE RLS will break everything anyway.
+        raise HTTPException(status_code=500, detail="rls_context_set_failed")
 
 
 # -----------------------------
@@ -134,12 +196,15 @@ def _make_jwt(payload: Dict[str, Any]) -> str:
 def _decode_jwt(token: str) -> Dict[str, Any]:
     """
     Strict decode:
-      - HS256 only (prevents alg=none)
+      - HS256 only
       - requires issuer + audience
       - leeway for clock skew
     """
     if not JWT_SECRET:
         raise HTTPException(status_code=500, detail="ANCHOR_JWT_SECRET not set")
+
+    if not token or len(token) > JWT_MAX_TOKEN_LEN:
+        raise HTTPException(status_code=401, detail="invalid_token")
 
     try:
         claims = jwt.decode(
@@ -159,12 +224,46 @@ def _decode_jwt(token: str) -> Dict[str, Any]:
             },
         )
         if not isinstance(claims, dict):
-            raise HTTPException(status_code=401, detail="invalid token")
+            raise HTTPException(status_code=401, detail="invalid_token")
         return claims
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="token expired")
+        raise HTTPException(status_code=401, detail="token_expired")
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="invalid token")
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+
+def _validate_claims_strict(claims: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Enforce exact custom claims:
+      clinic_id (uuid)
+      clinic_user_id (uuid)
+      role (allowlisted)
+      sub must equal clinic_user_id
+    Also rejects unknown keys (tight whitelist).
+    """
+    # Allow standard + our explicit app claims (+ jti optional)
+    allowed_keys = {
+        "iss", "aud", "iat", "exp",
+        "clinic_id", "clinic_user_id", "role", "sub",
+        "jti",
+    }
+    unknown = [k for k in claims.keys() if k not in allowed_keys]
+    if unknown:
+        # Hard fail: keeps token surface tight and predictable
+        raise HTTPException(status_code=401, detail="invalid_token_unexpected_claims")
+
+    clinic_id = _coerce_uuid(claims.get("clinic_id"), field="clinic_id")
+    clinic_user_id = _coerce_uuid(claims.get("clinic_user_id"), field="clinic_user_id")
+
+    role_raw = _require_nonempty_str(claims.get("role"), field="role", max_len=64)
+    role = _normalize_role(role_raw)
+
+    sub = _require_nonempty_str(claims.get("sub"), field="sub", max_len=128)
+    # sub must match clinic_user_id (prevents confused-deputy tokens)
+    if sub != clinic_user_id:
+        raise HTTPException(status_code=401, detail="invalid_token_sub_mismatch")
+
+    return {"clinic_id": clinic_id, "clinic_user_id": clinic_user_id, "role": role}
 
 
 # -----------------------------
@@ -213,26 +312,28 @@ def _resolve_clinic_id_by_slug(db: Session, slug: str) -> str:
 
     cid = str(row["clinic_id"] or "") if row else ""
     if not cid:
-        raise HTTPException(status_code=401, detail="invalid credentials")
+        raise HTTPException(status_code=401, detail="invalid_credentials")
 
-    # canonicalize
     return _coerce_uuid(cid, field="clinic_id")
 
 
 def _issue_login_token(clinic_id: str, clinic_user_id: str, role: str) -> ClinicLoginResponse:
+    role_norm = _normalize_role(role)
     token = _make_jwt(
         {
             "clinic_id": clinic_id,
             "clinic_user_id": clinic_user_id,
-            "role": role,
+            "role": role_norm,
             "sub": clinic_user_id,
+            # Optional future-proofing: uncomment if you want token revocation later
+            # "jti": str(uuid.uuid4()),
         }
     )
     return ClinicLoginResponse(
         access_token=token,
         clinic_id=clinic_id,
         clinic_user_id=clinic_user_id,
-        role=role,
+        role=role_norm,
     )
 
 
@@ -245,14 +346,13 @@ def clinic_login(req: ClinicLoginRequest) -> ClinicLoginResponse:
 
     with SessionLocal() as db:
         try:
-            # Ensure SET LOCAL scope behaves correctly
             db.begin()
 
             clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug)
 
-            # set temporary context so FORCE RLS won't break reads
+            # temporary context so FORCE RLS won't break reads
             temp_user = str(uuid.uuid4())
-            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=temp_user)
+            _set_ctx_compat(db, clinic_id=clinic_id, clinic_user_id=temp_user, role=None)
 
             user = db.execute(
                 text(
@@ -267,17 +367,17 @@ def clinic_login(req: ClinicLoginRequest) -> ClinicLoginResponse:
             ).mappings().first()
 
             if not user or not bool(user["active_status"]):
-                raise HTTPException(status_code=401, detail="invalid credentials")
+                raise HTTPException(status_code=401, detail="invalid_credentials")
 
             stored = str(user["password_hash"] or "")
             if not _verify_password(req.password, stored):
-                raise HTTPException(status_code=401, detail="invalid credentials")
+                raise HTTPException(status_code=401, detail="invalid_credentials")
 
             clinic_user_id = _coerce_uuid(user["user_id"], field="clinic_user_id")
-            role = str(user["role"] or "").strip()
+            role = _normalize_role(str(user["role"] or ""))
 
             # reset context to real user
-            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id, role=role)
+            _set_ctx_compat(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id, role=role)
             db.commit()
 
             return _issue_login_token(clinic_id, clinic_user_id, role)
@@ -307,7 +407,7 @@ def accept_invite(req: InviteAcceptRequest) -> ClinicLoginResponse:
             clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug)
 
             new_user_id = str(uuid.uuid4())
-            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=new_user_id)
+            _set_ctx_compat(db, clinic_id=clinic_id, clinic_user_id=new_user_id, role=None)
 
             th = _hash_invite_token(req.invite_token)
 
@@ -325,23 +425,23 @@ def accept_invite(req: InviteAcceptRequest) -> ClinicLoginResponse:
             ).mappings().first()
 
             if not invite:
-                raise HTTPException(status_code=401, detail="invalid invite")
+                raise HTTPException(status_code=401, detail="invalid_invite")
             if invite["used_at"] is not None:
-                raise HTTPException(status_code=401, detail="invite already used")
+                raise HTTPException(status_code=401, detail="invite_already_used")
 
             exp = invite["expires_at"]
             if exp is None:
-                raise HTTPException(status_code=401, detail="invite expired")
+                raise HTTPException(status_code=401, detail="invite_expired")
             if getattr(exp, "tzinfo", None) is None:
                 exp = exp.replace(tzinfo=timezone.utc)
             if exp < now:
-                raise HTTPException(status_code=401, detail="invite expired")
+                raise HTTPException(status_code=401, detail="invite_expired")
 
             invited_email = str(invite["email"] or "").strip().lower()
             if invited_email != email_lc:
-                raise HTTPException(status_code=401, detail="invalid invite")
+                raise HTTPException(status_code=401, detail="invalid_invite")
 
-            role = str(invite["role"] or "").strip()
+            role = _normalize_role(str(invite["role"] or ""))
 
             exists = db.execute(
                 text(
@@ -356,7 +456,7 @@ def accept_invite(req: InviteAcceptRequest) -> ClinicLoginResponse:
             ).mappings().first()
 
             if exists:
-                raise HTTPException(status_code=409, detail="user already exists")
+                raise HTTPException(status_code=409, detail="user_already_exists")
 
             pw_hash = _hash_password(req.password)
 
@@ -381,19 +481,25 @@ def accept_invite(req: InviteAcceptRequest) -> ClinicLoginResponse:
                 {"iid": str(invite["invite_id"])},
             )
 
-            # hygiene: set context to actual new user id (and role)
-            set_rls_context(db, clinic_id=clinic_id, clinic_user_id=new_user_id, role=role)
+            # set context to actual new user id (and role)
+            _set_ctx_compat(db, clinic_id=clinic_id, clinic_user_id=new_user_id, role=role)
 
             db.commit()
 
             return _issue_login_token(clinic_id, new_user_id, role)
 
         except HTTPException:
-            db.rollback()
+            try:
+                db.rollback()
+            except Exception:
+                pass
             raise
         except Exception as e:
-            db.rollback()
-            raise HTTPException(status_code=500, detail=f"invite accept failed: {type(e).__name__}: {e}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise HTTPException(status_code=500, detail=f"invite_accept_failed_{type(e).__name__}")
         finally:
             try:
                 clear_rls_context(db)
@@ -410,47 +516,39 @@ def require_clinic_user(
     authorization: Optional[str] = Header(default=None),
 ) -> Dict[str, str]:
     if not authorization:
-        raise HTTPException(status_code=401, detail="missing bearer token")
+        raise HTTPException(status_code=401, detail="missing_bearer_token")
 
     parts = authorization.split(" ", 1)
     if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=401, detail="missing bearer token")
+        raise HTTPException(status_code=401, detail="missing_bearer_token")
 
     token = (parts[1] or "").strip()
     if not token:
-        raise HTTPException(status_code=401, detail="missing bearer token")
+        raise HTTPException(status_code=401, detail="missing_bearer_token")
 
     claims = _decode_jwt(token)
+    ctx = _validate_claims_strict(claims)
 
-    # canonical, strict UUIDs
-    clinic_id = _coerce_uuid(claims.get("clinic_id"), field="clinic_id")
-
-    clinic_user_id = _coerce_uuid(
-        claims.get("clinic_user_id")
-        or claims.get("user_id")
-        or claims.get("clinic_user")
-        or claims.get("sub"),
-        field="clinic_user_id",
-    )
-
-    role = str(claims.get("role") or "").strip()
+    clinic_id = ctx["clinic_id"]
+    clinic_user_id = ctx["clinic_user_id"]
+    role = ctx["role"]
 
     # Always set state (this is what get_db() consumes)
     request.state.clinic_id = clinic_id
     request.state.clinic_user_id = clinic_user_id
     request.state.role = role
 
-        # Optional (recommended) DB membership check to prevent “orphan tokens”
+    # Optional (recommended) DB membership check to prevent “orphan tokens”
     if AUTH_STRICT_DB_CHECK:
         with SessionLocal() as db:
             try:
                 db.begin()
 
-                set_rls_context(
+                _set_ctx_compat(
                     db,
                     clinic_id=clinic_id,
                     clinic_user_id=clinic_user_id,
-                    role=(role or None),
+                    role=role,
                 )
 
                 row = db.execute(
@@ -467,11 +565,14 @@ def require_clinic_user(
                 ).mappings().first()
 
                 if not row or not bool(row["active_status"]):
-                    raise HTTPException(status_code=401, detail="invalid token")
+                    raise HTTPException(status_code=401, detail="invalid_token")
 
-                db_role = str(row["role"] or "").strip()
-                if db_role and db_role != role:
-                    request.state.role = db_role
+                # If DB role differs, prefer DB (prevents stale role tokens)
+                db_role = str(row["role"] or "").strip().lower()
+                if db_role:
+                    db_role = _normalize_role(db_role)
+                    if db_role != request.state.role:
+                        request.state.role = db_role
 
                 db.commit()
 
@@ -481,14 +582,12 @@ def require_clinic_user(
                 except Exception:
                     pass
                 raise
-
             except Exception:
                 try:
                     db.rollback()
                 except Exception:
                     pass
-                raise
-
+                raise HTTPException(status_code=500, detail="auth_db_check_failed")
             finally:
                 try:
                     clear_rls_context(db)
@@ -498,7 +597,7 @@ def require_clinic_user(
     return {
         "clinic_id": clinic_id,
         "clinic_user_id": clinic_user_id,
-        "role": request.state.role,
+        "role": str(request.state.role),
     }
 
 
