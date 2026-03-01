@@ -301,28 +301,49 @@ class MeResponse(BaseModel):
 # -----------------------------
 def _resolve_clinic_id_by_slug(db: Session, slug: str) -> str:
     """
-    Slug lookup must work BEFORE tenant context exists.
-    With FORCE RLS on public.clinics, we cannot query clinics directly.
-    Use the unscoped lookup table public.clinic_slug_lookup.
+    Slug lookup happens before we can set RLS context.
+
+    Preferred path (new): public.clinic_slug_lookup (unscoped mapping)
+    Fallback path (legacy): SECURITY DEFINER function resolve_clinic_id_by_slug
     """
-    row = db.execute(
-        text(
-            """
-            SELECT clinic_id
-            FROM public.clinic_slug_lookup
-            WHERE clinic_slug = :slug
-              AND active_status = true
-            LIMIT 1
-            """
-        ),
+    slug = (slug or "").strip().lower()
+    if not slug:
+        raise HTTPException(status_code=401, detail="invalid credentials")
+
+    # 1) Prefer clinic_slug_lookup table if present
+    try:
+        row = db.execute(
+            text(
+                """
+                SELECT clinic_id
+                FROM public.clinic_slug_lookup
+                WHERE clinic_slug = :slug
+                  AND active_status = true
+                LIMIT 1
+                """
+            ),
+            {"slug": slug},
+        ).mappings().first()
+
+        cid = str(row["clinic_id"] or "") if row else ""
+        if cid:
+            return _coerce_uuid(cid, field="clinic_id")
+
+    except Exception:
+        # table might not exist yet on some envs; fall back below
+        pass
+
+    # 2) Legacy fallback: SECURITY DEFINER function
+    row2 = db.execute(
+        text("SELECT public.resolve_clinic_id_by_slug(:slug) AS clinic_id"),
         {"slug": slug},
     ).mappings().first()
 
-    cid = str(row["clinic_id"] or "") if row else ""
-    if not cid:
+    cid2 = str(row2["clinic_id"] or "") if row2 else ""
+    if not cid2:
         raise HTTPException(status_code=401, detail="invalid credentials")
 
-    return _coerce_uuid(cid, field="clinic_id")
+    return _coerce_uuid(cid2, field="clinic_id")
 
 
 def _issue_login_token(clinic_id: str, clinic_user_id: str, role: str) -> ClinicLoginResponse:
