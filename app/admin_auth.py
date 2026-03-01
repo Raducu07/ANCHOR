@@ -13,6 +13,7 @@ from fastapi import Header, HTTPException, Request
 from sqlalchemy import text
 
 from app.db import SessionLocal
+from app.rate_limit import enforce_admin_token
 
 
 # ----------------------------
@@ -261,6 +262,11 @@ def require_admin(
             meta={"reason": "missing_token"},
         )
         raise HTTPException(status_code=401, detail="Missing admin token")
+
+    # -------------------------
+    # Deterministic admin rate limiting (token fingerprinted; token never stored)
+    # -------------------------
+    enforce_admin_token(request, token)
 
     token_id: Optional[str] = None
     source: Optional[str] = None
