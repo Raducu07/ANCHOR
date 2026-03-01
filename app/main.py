@@ -22,7 +22,6 @@ from sqlalchemy import text
 
 from app.db import db_ping, SessionLocal
 from app.migrate import run_migrations
-from fastapi import HTTPException, Request, Response
 from app.rate_limit import enforce_rate_limit
 
 # Routers
@@ -198,15 +197,24 @@ async def lifespan(app: FastAPI):
             # Optional dotenv for local runs
             try:
                 from dotenv import load_dotenv  # type: ignore
+                
                 load_dotenv()
                 log_event(logging.INFO, "dotenv_loaded")
             except Exception:
                 log_event(logging.INFO, "dotenv_not_loaded")
 
-        run_migrations()
+        # --- Migrations (fail-fast) ---
+        with SessionLocal() as db:
+            run_migrations(db)
+
         log_event(logging.INFO, "startup_migrations_ok")
     except Exception as e:
-        log_event(logging.ERROR, "startup_failed", error_type=type(e).__name__, error=str(e)[:240])
+        log_event(
+            logging.ERROR,
+            "startup_failed",
+            error_type=type(e).__name__,
+            error=str(e)[:240],
+        )
         raise
 
     yield
