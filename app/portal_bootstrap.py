@@ -14,6 +14,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import db_session, set_rls_context, clear_rls_context
+from app.rate_limit import enforce_admin_token
+from app.rate_limit import enforce_admin_token_group
 
 router = APIRouter()
 
@@ -138,13 +140,16 @@ def require_admin(
     """
     Prefer X-ANCHOR-ADMIN-TOKEN (ANCHOR_ADMIN_TOKENS / ANCHOR_ADMIN_TOKEN).
     Fall back to Authorization: Bearer (ADMIN_BEARER_TOKEN) for back-compat.
+
+    M3 hardening:
+    - Deterministic rate limiting keyed by presented token (fingerprinted inside limiter).
+    - Stash presented token on request.state for route-specific throttles (not logged).
     """
 
     # Always load fresh env-backed tokens (avoid stale cache across deploy/env tweaks)
     tokens, expiry = _load_anchor_admin_tokens()
 
     def auth_via_x(token: str) -> Optional[AdminAuthResult]:
-        # constant-time compare against set
         match = None
         for t in tokens:
             if hmac.compare_digest(token, t):
@@ -159,20 +164,37 @@ def require_admin(
 
     # Prefer X header if present and non-empty
     if x_anchor_admin_token:
-        res = auth_via_x(x_anchor_admin_token.strip())
+        presented = x_anchor_admin_token.strip()
+
+        # Stash presented token for downstream route-specific throttles (bootstrap)
+        request.state.admin_token_presented = presented
+
+        # Deterministic admin rate limiting (token fingerprinted; token never stored)
+        enforce_admin_token(request, presented)
+
+        res = auth_via_x(presented)
         if res:
             return res
-        # X header present but invalid -> hard fail (don't fall back)
         raise HTTPException(status_code=403, detail="Forbidden")
 
     # Otherwise try Bearer back-compat
+    presented_bearer = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        presented_bearer = authorization.split(" ", 1)[1].strip()
+
+    if presented_bearer:
+        # Stash presented token for downstream route-specific throttles (bootstrap)
+        request.state.admin_token_presented = presented_bearer
+
+        # Deterministic admin rate limiting (token fingerprinted; token never stored)
+        enforce_admin_token(request, presented_bearer)
+
     res2 = _auth_via_bearer(authorization)
     if res2:
         return res2
 
-    # If nothing works, be intentionally vague
     raise HTTPException(status_code=403, detail="Unauthorized")
-
+    
 
 # ============================================================
 # Helpers
@@ -253,6 +275,12 @@ def bootstrap_clinic(
 
     Works with FORCE RLS by setting app.clinic_id/app.user_id to the NEW clinic during inserts.
     """
+    # Route-specific throttle: bootstrap is the highest-privilege action.
+    presented = getattr(request.state, "admin_token_presented", None)
+    if not presented:
+    raise HTTPException(status_code=500, detail="admin_token_context_missing")
+enforce_admin_token_group(...)
+    
     clinic_id = uuid.uuid4()
 
     # Deterministic-ish system actor UUID per clinic (stable within this request)
