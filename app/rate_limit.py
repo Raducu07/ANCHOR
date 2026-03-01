@@ -110,6 +110,10 @@ def rules_from_env() -> Dict[str, RateLimitRule]:
         "export":  RateLimitRule(window_s=_int("RL_EXPORT_WINDOW_S", 300),  limit=_int("RL_EXPORT_LIMIT", 5)),
         # Admin
         "admin":  RateLimitRule(window_s=_int("RL_ADMIN_WINDOW_S", 60),   limit=_int("RL_ADMIN_LIMIT", 60)),
+        "admin_bootstrap": RateLimitRule(
+            window_s=_int("RL_ADMIN_BOOTSTRAP_WINDOW_S", 3600),
+            limit=_int("RL_ADMIN_BOOTSTRAP_LIMIT", 10),
+        ),
     }
 
 
@@ -155,10 +159,14 @@ def enforce_ip(request: Request, group: str) -> None:
     enforce(request=request, group=group, key_material=LIMITER.hash_ip(_ip(request)))
 
 
-def enforce_admin_token(request: Request, token_plain: str) -> None:
+def enforce_admin_token_group(request: Request, token_plain: str, group: str) -> None:
+    """
+    Admin limiter keyed by token fingerprint, but allows custom groups
+    for route-specific tightening (e.g. admin_bootstrap).
+    """
     if LIMITER is None:
         return
-    enforce(request=request, group="admin", key_material=LIMITER.hash_admin_token(token_plain))
+    enforce(request=request, group=group, key_material=LIMITER.hash_admin_token(token_plain))
 
 
 def enforce_authed(request: Request, *, clinic_id: str, clinic_user_id: str, group: str) -> None:
