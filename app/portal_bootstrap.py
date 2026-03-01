@@ -291,6 +291,22 @@ def bootstrap_clinic(
             },
         )
 
+        # 1b) clinic_slug_lookup (unscoped slug -> clinic_id)
+        # Needed because FORCE RLS on clinics prevents slug resolution before tenant context exists.
+        db.execute(
+            text(
+                """
+                INSERT INTO public.clinic_slug_lookup (clinic_slug, clinic_id, active_status, updated_at)
+                VALUES (:slug, :cid, true, now())
+                ON CONFLICT (clinic_slug) DO UPDATE
+                SET clinic_id = EXCLUDED.clinic_id,
+                    active_status = EXCLUDED.active_status,
+                    updated_at = now()
+                """
+            ),
+            {"slug": slug, "cid": str(clinic_id)},
+        )
+
         # 2) system clinic user (required for FK created_by/updated_by)
         system_email = f"system+{slug}@anchor.local"
         db.execute(
