@@ -1,0 +1,19 @@
+﻿# Local generated artifacts (do not commit)
+openapi_*.json
+PortalAssist*.schema.json
+*.schema.json
+-Headers
+*.log
+
+# OS/editor
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node (if/when you add UI)
+node_modules/
+.next/
