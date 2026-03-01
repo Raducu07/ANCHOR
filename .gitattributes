@@ -1,0 +1,12 @@
+﻿# Normalize line endings automatically
+* text=auto
+
+# PowerShell scripts stay CRLF on Windows
+*.ps1  text eol=crlf
+
+# YAML files use LF (CI-safe)
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Python files use LF
+*.py   text eol=lf
