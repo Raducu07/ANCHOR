@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.auth_and_rls import require_clinic_user, JWT_ISSUER, JWT_AUDIENCE
+from app.rate_limit import enforce_authed
 
 router = APIRouter(
     prefix="/v1/portal",
@@ -360,6 +361,16 @@ def get_receipt(
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
 
+    # -------------------------
+    # Deterministic rate limiting (tenant-safe)
+    # -------------------------
+    enforce_authed(
+        request,
+        clinic_id=str(clinic_id),
+        clinic_user_id=str(clinic_user_id),
+        group="receipt",
+    )
+
     _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
 
     row = db.execute(text(_SQL_GET_RECEIPT), {"rid": str(request_id)}).mappings().first()
@@ -415,6 +426,7 @@ def get_receipt_signed(
     if not RECEIPT_SIGNING_SECRET:
         raise HTTPException(status_code=501, detail="receipt signing not configured")
 
+    # Optional: no extra rate limit needed here because get_receipt() enforces it.
     env = get_receipt(request_id=request_id, request=request, db=db)
     receipt = env.receipt
 
