@@ -14,14 +14,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import db_session, set_rls_context, clear_rls_context
-from app.rate_limit import enforce_admin_token
-from app.rate_limit import enforce_admin_token_group
+from app.rate_limit import enforce_admin_token, enforce_admin_token_group
 
 router = APIRouter()
 
 
 # ============================================================
-# Admin auth (unified)
+# Admin auth (bootstrap-local)
 # Supports:
 #   - X-ANCHOR-ADMIN-TOKEN (ANCHOR_ADMIN_TOKENS / ANCHOR_ADMIN_TOKEN)
 #       ANCHOR_ADMIN_TOKENS="tokA,tokB"
@@ -30,7 +29,7 @@ router = APIRouter()
 # Notes:
 #   - If X-ANCHOR-ADMIN-TOKEN is present, we authenticate via ANCHOR_* tokens.
 #   - Else, we fall back to Bearer if ADMIN_BEARER_TOKEN is set.
-#   - Returns AdminAuthResult (so endpoint can log method/fingerprint if desired).
+#   - Returns AdminAuthResult (method + fingerprint only).
 # ============================================================
 
 @dataclass(frozen=True)
@@ -96,28 +95,6 @@ def _load_anchor_admin_tokens() -> Tuple[Set[str], Dict[str, Optional[datetime]]
     return tokens, expiry
 
 
-_ANCHOR_TOKENS, _ANCHOR_EXPIRY = _load_anchor_admin_tokens()
-
-
-def _auth_via_x_anchor(token: Optional[str]) -> Optional[AdminAuthResult]:
-    if not token:
-        return None
-
-    match = None
-    for t in _ANCHOR_TOKENS:
-        if hmac.compare_digest(token, t):
-            match = t
-            break
-    if not match:
-        return None
-
-    exp = _ANCHOR_EXPIRY.get(match)
-    if exp is not None and _utc_now() >= exp:
-        return None
-
-    return AdminAuthResult(method="x-header", token_fp=_token_fingerprint(match))
-
-
 def _auth_via_bearer(authorization: str) -> Optional[AdminAuthResult]:
     token = (os.getenv("ADMIN_BEARER_TOKEN") or "").strip()
     if not token:
@@ -169,12 +146,13 @@ def require_admin(
         # Stash presented token for downstream route-specific throttles (bootstrap)
         request.state.admin_token_presented = presented
 
-        # Deterministic admin rate limiting (token fingerprinted; token never stored)
+        # Global admin throttling (token fingerprinted; token never stored)
         enforce_admin_token(request, presented)
 
         res = auth_via_x(presented)
         if res:
             return res
+        # X header present but invalid -> hard fail (don't fall back)
         raise HTTPException(status_code=403, detail="Forbidden")
 
     # Otherwise try Bearer back-compat
@@ -183,10 +161,7 @@ def require_admin(
         presented_bearer = authorization.split(" ", 1)[1].strip()
 
     if presented_bearer:
-        # Stash presented token for downstream route-specific throttles (bootstrap)
         request.state.admin_token_presented = presented_bearer
-
-        # Deterministic admin rate limiting (token fingerprinted; token never stored)
         enforce_admin_token(request, presented_bearer)
 
     res2 = _auth_via_bearer(authorization)
@@ -194,7 +169,7 @@ def require_admin(
         return res2
 
     raise HTTPException(status_code=403, detail="Unauthorized")
-    
+
 
 # ============================================================
 # Helpers
@@ -275,12 +250,14 @@ def bootstrap_clinic(
 
     Works with FORCE RLS by setting app.clinic_id/app.user_id to the NEW clinic during inserts.
     """
+
     # Route-specific throttle: bootstrap is the highest-privilege action.
     presented = getattr(request.state, "admin_token_presented", None)
     if not presented:
-    raise HTTPException(status_code=500, detail="admin_token_context_missing")
-enforce_admin_token_group(...)
-    
+        # Should never happen if require_admin ran, but fail closed.
+        raise HTTPException(status_code=500, detail="admin_token_context_missing")
+    enforce_admin_token_group(request, presented, group="admin_bootstrap")
+
     clinic_id = uuid.uuid4()
 
     # Deterministic-ish system actor UUID per clinic (stable within this request)
