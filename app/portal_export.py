@@ -5,13 +5,14 @@ import json
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Any, Dict, Iterator, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.auth_and_rls import require_clinic_user
+from app.rate_limit import enforce_authed, enforce_ip
 
 router = APIRouter(
     prefix="/v1/portal",
@@ -51,6 +52,7 @@ def _parse_iso8601(ts: str) -> datetime:
 
 @router.get("/export.csv")
 def export_governance_events_csv(
+    request: Request,
     db: Session = Depends(get_db),
     # Prefer these (nice UX): /export.csv?from=...&to=...
     from_utc: Optional[str] = Query(default=None, alias="from"),
@@ -71,6 +73,25 @@ def export_governance_events_csv(
       - max window: 31 days
       - max rows: 20k (adjust via _MAX_ROWS)
     """
+
+    # -------------------------
+    # Deterministic rate limiting
+    # -------------------------
+    # require_clinic_user should have validated JWT and (typically) set request.state.{clinic_id, clinic_user_id}
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+
+    if clinic_id and clinic_user_id:
+        enforce_authed(
+            request,
+            clinic_id=str(clinic_id),
+            clinic_user_id=str(clinic_user_id),
+            group="export",
+        )
+    else:
+        # Fallback: still protect even if state isn’t populated for some reason
+        enforce_ip(request, "export")
+
     # unify legacy params
     if from_utc is None and from_utc_legacy is not None:
         from_utc = from_utc_legacy
@@ -189,7 +210,6 @@ def export_governance_events_csv(
             if not chunk:
                 break
             for r in chunk:
-                # r is a Row; convert to mapping
                 m = dict(r._mapping)
 
                 created = m.get("created_at_utc")
