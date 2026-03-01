@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.auth_and_rls import require_clinic_user
-from app.rate_limit import enforce_authed, enforce_ip
+from app.rate_limit import enforce_authed
 
 router = APIRouter(
     prefix="/v1/portal",
@@ -75,22 +75,15 @@ def export_governance_events_csv(
     """
 
     # -------------------------
-    # Deterministic rate limiting
+    # Deterministic rate limiting (tenant-safe)
+    # require_clinic_user sets request.state.clinic_id and request.state.clinic_user_id
     # -------------------------
-    # require_clinic_user should have validated JWT and (typically) set request.state.{clinic_id, clinic_user_id}
-    clinic_id = getattr(request.state, "clinic_id", None)
-    clinic_user_id = getattr(request.state, "clinic_user_id", None)
-
-    if clinic_id and clinic_user_id:
-        enforce_authed(
-            request,
-            clinic_id=str(clinic_id),
-            clinic_user_id=str(clinic_user_id),
-            group="export",
-        )
-    else:
-        # Fallback: still protect even if state isn’t populated for some reason
-        enforce_ip(request, "export")
+    enforce_authed(
+        request,
+        clinic_id=str(request.state.clinic_id),
+        clinic_user_id=str(request.state.clinic_user_id),
+        group="export",
+    )
 
     # unify legacy params
     if from_utc is None and from_utc_legacy is not None:
@@ -210,6 +203,7 @@ def export_governance_events_csv(
             if not chunk:
                 break
             for r in chunk:
+                # r is a Row; convert to mapping
                 m = dict(r._mapping)
 
                 created = m.get("created_at_utc")
