@@ -1,12 +1,60 @@
-﻿# Normalize line endings automatically
+﻿# ==========================================================
+# ANCHOR - Line ending & diff policy
+# Governance-grade repo normalization
+# ==========================================================
+
+# Default: normalize automatically
 * text=auto
 
-# PowerShell scripts stay CRLF on Windows
-*.ps1  text eol=crlf
+# -------------------------
+# CI / Infra (must be LF)
+# -------------------------
+*.yml          text eol=lf
+*.yaml         text eol=lf
+Dockerfile     text eol=lf
+*.sql          text eol=lf
+*.env.example  text eol=lf
 
-# YAML files use LF (CI-safe)
-*.yml  text eol=lf
-*.yaml text eol=lf
+# -------------------------
+# Python backend (LF)
+# -------------------------
+*.py           text eol=lf
+requirements.txt text eol=lf
 
-# Python files use LF
-*.py   text eol=lf
+# -------------------------
+# JSON / OpenAPI / Schemas (LF)
+# -------------------------
+*.json         text eol=lf
+
+# -------------------------
+# PowerShell (CRLF on Windows)
+# -------------------------
+*.ps1          text eol=crlf
+
+# -------------------------
+# Node / Frontend (LF)
+# -------------------------
+*.ts           text eol=lf
+*.tsx          text eol=lf
+*.js           text eol=lf
+*.jsx          text eol=lf
+*.css          text eol=lf
+*.scss         text eol=lf
+*.html         text eol=lf
+
+# -------------------------
+# Shell scripts (LF)
+# -------------------------
+*.sh           text eol=lf
+
+# -------------------------
+# Binary files (never modify)
+# -------------------------
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.gif          binary
+*.ico          binary
+*.pdf          binary
+*.zip          binary
+*.exe          binary
