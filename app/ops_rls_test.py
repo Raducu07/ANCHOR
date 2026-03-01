@@ -7,11 +7,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, set_rls_context, clear_rls_context
+from app.rate_limit import enforce_admin_token
 
 router = APIRouter(prefix="/v1/admin/ops", tags=["admin"])
 
@@ -19,7 +20,10 @@ router = APIRouter(prefix="/v1/admin/ops", tags=["admin"])
 # ---------------------------
 # Admin auth (self-contained)
 # ---------------------------
-def require_admin(authorization: str = Header(default="")) -> None:
+def require_admin(
+    request: Request,
+    authorization: str = Header(default=""),
+) -> None:
     """
     Admin-only guard using a static bearer token.
     Expected:
@@ -33,6 +37,14 @@ def require_admin(authorization: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="missing_bearer_token")
 
     provided = authorization.split(" ", 1)[1].strip()
+    if not provided:
+        raise HTTPException(status_code=401, detail="missing_bearer_token")
+
+    # -------------------------
+    # Deterministic admin rate limiting (token fingerprinted; token never stored)
+    # -------------------------
+    enforce_admin_token(request, provided)
+
     if not hmac.compare_digest(provided, token):
         raise HTTPException(status_code=403, detail="forbidden")
 
