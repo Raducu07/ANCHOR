@@ -301,18 +301,26 @@ class MeResponse(BaseModel):
 # -----------------------------
 def _resolve_clinic_id_by_slug(db: Session, slug: str) -> str:
     """
-    Slug lookup happens before we can set RLS context.
-    Do NOT query clinics directly here.
-    Call SECURITY DEFINER function that returns clinic_id only when active.
+    Slug lookup must work BEFORE tenant context exists.
+    With FORCE RLS on public.clinics, we cannot query clinics directly.
+    Use the unscoped lookup table public.clinic_slug_lookup.
     """
     row = db.execute(
-        text("SELECT public.resolve_clinic_id_by_slug(:slug) AS clinic_id"),
+        text(
+            """
+            SELECT clinic_id
+            FROM public.clinic_slug_lookup
+            WHERE clinic_slug = :slug
+              AND active_status = true
+            LIMIT 1
+            """
+        ),
         {"slug": slug},
     ).mappings().first()
 
     cid = str(row["clinic_id"] or "") if row else ""
     if not cid:
-        raise HTTPException(status_code=401, detail="invalid_credentials")
+        raise HTTPException(status_code=401, detail="invalid credentials")
 
     return _coerce_uuid(cid, field="clinic_id")
 
