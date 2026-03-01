@@ -117,7 +117,7 @@ def write_admin_audit_event(
             db.execute(
                 text(
                     """
-                    INSERT INTO platform_admin_audit_events
+                    INSERT INTO admin_audit_events
                       (action, method, route, status_code, admin_token_id, request_id, ip_hash, ua_hash, meta)
                     VALUES
                       (:action, :method, :route, :status_code, :admin_token_id, :request_id, :ip_hash, :ua_hash, :meta::jsonb)
