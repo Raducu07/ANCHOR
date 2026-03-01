@@ -4,7 +4,7 @@
 #
 # Required env vars:
 #   ANCHOR_BASE         e.g. https://anchor-api-prod.onrender.com
-#   ANCHOR_ADMIN_TOKEN  admin token used with X-ANCHOR-ADMIN-TOKEN header
+#   ANCHOR_ADMIN_TOKEN  admin bearer token used with Authorization: Bearer <token>
 #
 # Optional env vars:
 #   ANCHOR_TEST_PASSWORD (defaults to TestPass!12345)
@@ -106,8 +106,8 @@ function Bootstrap-Clinic([string]$base, [string]$adminToken, [string]$name, [st
   }
 
   $headers = @{
-    "X-ANCHOR-ADMIN-TOKEN" = $adminToken
-    "Content-Type"         = "application/json"
+    "Authorization" = "Bearer $adminToken"
+    "Content-Type"  = "application/json"
   }
 
   $boot = Invoke-Json "POST" "$base/v1/admin/bootstrap/clinic" $headers $body
@@ -219,13 +219,15 @@ if ($null -eq $PASSWORD) { $PASSWORD = "TestPass!12345" }
 Write-Host "ANCHOR smoke test (tenant isolation)" -ForegroundColor Cyan
 Write-Host "BASE=$BASE"
 
-# 0) Admin auth-check
+# 0) Admin isolation gate: /v1/admin/ops/rls-self-test + FORCE RLS coverage
 try {
-  $auth = Invoke-Json "GET" "$BASE/v1/admin/auth-check" @{ "X-ANCHOR-ADMIN-TOKEN" = $ADMIN } $null
-  if (-not (Has-Prop $auth "status") -or $auth.status -ne "ok") {
-    Fail "admin/auth-check did not return status=ok. Response: $($auth | ConvertTo-Json -Depth 10)"
+  $verifyPath = Join-Path $PSScriptRoot "anchor-verify-force-rls.ps1"
+  if (-not (Test-Path $verifyPath)) {
+    Fail "Missing scripts/anchor-verify-force-rls.ps1 (create it first)"
   }
-  Ok "Admin auth-check ok"
+
+  & $verifyPath -Base $BASE -AdminToken $ADMIN
+  Ok "Admin RLS isolation gate passed"
 } catch {
   Fail "Admin auth-check failed: $($_.Exception.Message)"
 }
