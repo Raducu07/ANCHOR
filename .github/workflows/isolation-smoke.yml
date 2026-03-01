@@ -3,6 +3,12 @@ name: Tenant Isolation Smoke Test
 on:
   push:
     branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 concurrency:
   group: tenant-isolation-smoke
@@ -11,15 +17,16 @@ concurrency:
 jobs:
   smoke:
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run isolation smoke test
+      - name: Run tenant isolation smoke test
         shell: pwsh
         env:
           ANCHOR_BASE: ${{ secrets.ANCHOR_BASE }}
           ANCHOR_ADMIN_TOKEN: ${{ secrets.ANCHOR_ADMIN_TOKEN }}
           ANCHOR_TEST_PASSWORD: ${{ secrets.ANCHOR_TEST_PASSWORD }}
         run: |
-          pwsh -ExecutionPolicy Bypass -File .\scripts\anchor-smoke-isolation.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\anchor-smoke-isolation.ps1
