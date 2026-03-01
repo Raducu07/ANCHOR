@@ -1,264 +1,172 @@
 # app/rate_limit.py
-#
-# Production-ready (simple, in-memory) rate limiting for ANCHOR.
-# - Sliding window per key using deque of timestamps (monotonic seconds)
-# - Thread-safe via a global lock
-# - Route-aware limit rules (prefix match)
-# - Keyed by clinic_user_id when available; otherwise by ip_hash / ip
-#
-# IMPORTANT:
-# - In-memory limiters reset on process restart and are per-instance (Render scale-out => per-instance).
-# - That is acceptable for M3 "minimal but real" protection.
-#
-# Integration:
-# - Call enforce_rate_limit(...) from middleware in main.py
-# - On limited, raise HTTPException(429, detail=...)
-#
 from __future__ import annotations
 
-import time
+import hmac
+import os
 import threading
-from collections import deque
+import time
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple
+
+from fastapi import HTTPException, Request
+from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
 
-# -----------------------------
-# Config model
-# -----------------------------
+# -------------------------
+# Deterministic fixed-window limiter (CI-friendly)
+# -------------------------
+
+def _now_s() -> int:
+    return int(time.time())
+
+
+def _hmac_hex(secret: str, value: str) -> str:
+    return hmac.new(secret.encode("utf-8"), value.encode("utf-8"), "sha256").hexdigest()
+
+
 @dataclass(frozen=True)
 class RateLimitRule:
-    name: str
+    window_s: int
     limit: int
-    window_sec: int
-    # match by URL path prefix; the first match wins
-    path_prefixes: Tuple[str, ...]
 
 
-# -----------------------------
-# Default rules (tight & focused)
-# -----------------------------
-DEFAULT_RULES: Tuple[RateLimitRule, ...] = (
-    # Auth endpoints: brute-force protection
-    RateLimitRule(
-        name="auth",
-        limit=10,
-        window_sec=60,
-        path_prefixes=("/v1/auth", "/v1/clinic/auth", "/v1/portal/auth"),
-    ),
-    # Export endpoints: exfil + abuse protection
-    RateLimitRule(
-        name="export",
-        limit=10,
-        window_sec=60,
-        path_prefixes=("/v1/portal/export", "/v1/portal/export.csv"),
-    ),
-    # Admin endpoints: reduce blast radius
-    RateLimitRule(
-        name="admin",
-        limit=30,
-        window_sec=60,
-        path_prefixes=("/v1/admin",),
-    ),
-    # Assist endpoint: normal use
-    RateLimitRule(
-        name="assist",
-        limit=60,
-        window_sec=60,
-        path_prefixes=("/v1/portal/assist",),
-    ),
-    # Portal submit/read/receipts: general guardrail
-    RateLimitRule(
-        name="portal_general",
-        limit=120,
-        window_sec=60,
-        path_prefixes=("/v1/portal",),
-    ),
-)
-
-
-# -----------------------------
-# Internal state
-# -----------------------------
-_LOCK = threading.Lock()
-
-# key -> deque[timestamps]
-_BUCKETS: Dict[str, Deque[float]] = {}
-
-# Periodic cleanup (avoid unbounded memory)
-_LAST_CLEANUP_AT: float = 0.0
-_CLEANUP_INTERVAL_SEC: int = 30
-_MAX_KEYS_SOFT_CAP: int = 50_000  # guardrail
-
-
-def _pick_rule(path: str, rules: Tuple[RateLimitRule, ...]) -> Optional[RateLimitRule]:
-    for r in rules:
-        for pfx in r.path_prefixes:
-            if path.startswith(pfx):
-                return r
-    return None
-
-
-def _trim_old(q: Deque[float], now: float, window_sec: int) -> None:
-    cutoff = now - float(window_sec)
-    while q and q[0] <= cutoff:
-        q.popleft()
-
-
-def _cleanup_buckets(now: float) -> None:
-    global _LAST_CLEANUP_AT
-    if now - _LAST_CLEANUP_AT < float(_CLEANUP_INTERVAL_SEC):
-        return
-    _LAST_CLEANUP_AT = now
-
-    # Soft cap: if too many keys, aggressively remove empty/old queues
-    # We remove keys whose deque is empty after trimming with a generous window.
-    # This is intentionally conservative (no scanning per request).
-    remove_keys: List[str] = []
-    for k, q in _BUCKETS.items():
-        if not q:
-            remove_keys.append(k)
-
-    for k in remove_keys:
-        _BUCKETS.pop(k, None)
-
-    # If still huge, evict oldest keys (best-effort)
-    if len(_BUCKETS) > _MAX_KEYS_SOFT_CAP:
-        # Evict keys with the smallest most-recent timestamp (LRU-ish)
-        # This is O(n) but only happens under extreme load.
-        items: List[Tuple[str, float]] = []
-        for k, q in _BUCKETS.items():
-            last = q[-1] if q else 0.0
-            items.append((k, last))
-        items.sort(key=lambda x: x[1])  # oldest first
-        # Drop oldest 10%
-        drop = max(1, len(items) // 10)
-        for i in range(drop):
-            _BUCKETS.pop(items[i][0], None)
-
-
-def _build_key(
-    clinic_user_id: Optional[str],
-    ip_hash: Optional[str],
-    ip: Optional[str],
-    rule_name: str,
-) -> str:
-    # Prefer clinic_user_id (tenant-safe and stable)
-    if clinic_user_id:
-        return f"cu:{clinic_user_id}:{rule_name}"
-
-    # Else hash if provided (your middleware already HMAC-hashes IP)
-    if ip_hash:
-        return f"iphash:{ip_hash}:{rule_name}"
-
-    # Fallback: raw ip (avoid if you can)
-    if ip:
-        return f"ip:{ip}:{rule_name}"
-
-    # Last resort: anonymous
-    return f"anon:{rule_name}"
-
-
-def check_rate_limit(
-    *,
-    path: str,
-    method: str,
-    clinic_user_id: Optional[str] = None,
-    ip_hash: Optional[str] = None,
-    ip: Optional[str] = None,
-    rules: Tuple[RateLimitRule, ...] = DEFAULT_RULES,
-) -> Tuple[bool, Dict[str, Any]]:
+class FixedWindowRateLimiter:
     """
-    Returns (allowed, meta).
-    meta is safe to log (no content).
+    Deterministic fixed-window counter.
+    In-memory (process-local). Predictable 429 for CI.
     """
-    # Only rate limit "mutating or costly" methods by default
-    # (You can broaden later if needed.)
-    m = (method or "").upper()
-    if m not in ("POST", "PUT", "PATCH", "DELETE", "GET"):
-        return True, {"rate_limit_applied": False}
 
-    rule = _pick_rule(path or "", rules)
-    if rule is None:
-        return True, {"rate_limit_applied": False}
+    def __init__(self, *, secret: str):
+        self._secret = secret
+        self._lock = threading.Lock()
+        # (bucket_key, window_start) -> count
+        self._counts: Dict[Tuple[str, int], int] = {}
 
-    now = time.monotonic()
-    key = _build_key(clinic_user_id, ip_hash, ip, rule.name)
+    def _window_start(self, now_s: int, window_s: int) -> int:
+        return (now_s // window_s) * window_s
 
-    with _LOCK:
-        q = _BUCKETS.get(key)
-        if q is None:
-            q = deque()
-            _BUCKETS[key] = q
+    def check(self, *, bucket_key: str, rule: RateLimitRule) -> Tuple[bool, int]:
+        now = _now_s()
+        start = self._window_start(now, rule.window_s)
+        retry_after = (start + rule.window_s) - now
 
-        _trim_old(q, now, rule.window_sec)
+        with self._lock:
+            k = (bucket_key, start)
+            self._counts[k] = self._counts.get(k, 0) + 1
+            n = self._counts[k]
 
-        # If already at/over limit, deny
-        if len(q) >= rule.limit:
-            # Compute retry_after (seconds until oldest entry expires)
-            oldest = q[0] if q else now
-            retry_after = max(1, int((oldest + float(rule.window_sec)) - now))
+            # Opportunistic cleanup (bounded):
+            # drop windows older than 2 windows for this bucket_key
+            old_start = start - (2 * rule.window_s)
+            stale = [(bk, ws) for (bk, ws) in self._counts.keys() if bk == bucket_key and ws <= old_start]
+            for dk in stale[:50]:
+                self._counts.pop(dk, None)
 
-            meta = {
-                "rate_limit_applied": True,
-                "rate_limited": True,
-                "rule": rule.name,
-                "limit": rule.limit,
-                "window_sec": rule.window_sec,
-                "retry_after_sec": retry_after,
-                "path": path,
-                "method": m,
-                # key components are intentionally not returned (avoid leaking identifiers)
-            }
-            return False, meta
+        if n > rule.limit:
+            return False, max(1, retry_after)
+        return True, 0
 
-        # Allow and record
-        q.append(now)
+    def hash_ip(self, ip: str) -> str:
+        return _hmac_hex(self._secret, f"ip:{ip}")
 
-        # opportunistic cleanup
-        _cleanup_buckets(now)
+    def hash_admin_token(self, token_plain: str) -> str:
+        # fingerprint only, never store token
+        return _hmac_hex(self._secret, f"adm:{token_plain}")
 
-    meta = {
-        "rate_limit_applied": True,
-        "rate_limited": False,
-        "rule": rule.name,
-        "limit": rule.limit,
-        "window_sec": rule.window_sec,
-        "path": path,
-        "method": m,
+    def hash_key(self, label: str, value: str) -> str:
+        # general purpose internal key hashing (ids/usernames/etc)
+        return _hmac_hex(self._secret, f"{label}:{value}")
+
+
+def _enabled() -> bool:
+    return os.getenv("RATE_LIMIT_ENABLED", "1").strip().lower() in ("1", "true", "yes")
+
+
+def build_limiter() -> Optional[FixedWindowRateLimiter]:
+    if not _enabled():
+        return None
+
+    secret = (os.getenv("RATE_LIMIT_SECRET", "") or "").strip()
+    if not secret:
+        # Fail closed if enabled but misconfigured
+        raise RuntimeError("RATE_LIMIT_SECRET is required when RATE_LIMIT_ENABLED is on")
+
+    return FixedWindowRateLimiter(secret=secret)
+
+
+def rules_from_env() -> Dict[str, RateLimitRule]:
+    def _int(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)).strip())
+        except Exception:
+            return default
+
+    return {
+        # Pre-auth
+        "auth":   RateLimitRule(window_s=_int("RL_AUTH_WINDOW_S", 60),    limit=_int("RL_AUTH_LIMIT", 10)),
+        "invite": RateLimitRule(window_s=_int("RL_INVITE_WINDOW_S", 300), limit=_int("RL_INVITE_LIMIT", 10)),
+        # Authed clinic
+        "receipt": RateLimitRule(window_s=_int("RL_RECEIPT_WINDOW_S", 60),  limit=_int("RL_RECEIPT_LIMIT", 30)),
+        "export":  RateLimitRule(window_s=_int("RL_EXPORT_WINDOW_S", 300),  limit=_int("RL_EXPORT_LIMIT", 5)),
+        # Admin
+        "admin":  RateLimitRule(window_s=_int("RL_ADMIN_WINDOW_S", 60),   limit=_int("RL_ADMIN_LIMIT", 60)),
     }
-    return True, meta
 
 
-def enforce_rate_limit(
+# Module singletons (safe, deterministic, no background threads)
+LIMITER = build_limiter()
+RULES = rules_from_env()
+
+
+def _ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def enforce(
     *,
-    path: str,
-    method: str,
-    clinic_user_id: Optional[str] = None,
-    ip_hash: Optional[str] = None,
-    ip: Optional[str] = None,
-    rules: Tuple[RateLimitRule, ...] = DEFAULT_RULES,
-) -> Dict[str, Any]:
+    request: Request,
+    group: str,
+    key_material: str,
+) -> None:
     """
-    Convenience wrapper.
-    Returns meta on allow.
-    Raises no exceptions (caller decides).
+    Raise HTTP 429 with Retry-After if rate limited.
+    Deterministic fixed-window.
     """
-    allowed, meta = check_rate_limit(
-        path=path,
-        method=method,
-        clinic_user_id=clinic_user_id,
-        ip_hash=ip_hash,
-        ip=ip,
-        rules=rules,
-    )
-    meta["allowed"] = bool(allowed)
-    return meta
+    if LIMITER is None:
+        return
+
+    rule = RULES.get(group)
+    if not rule:
+        return
+
+    ok, retry_after = LIMITER.check(bucket_key=f"{group}:{key_material}", rule=rule)
+    if not ok:
+        raise HTTPException(
+            status_code=HTTP_429_TOO_MANY_REQUESTS,
+            detail="rate_limited",
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
-def reset_rate_limits() -> None:
-    """Test helper: clears all limiter state."""
-    global _LAST_CLEANUP_AT
-    with _LOCK:
-        _BUCKETS.clear()
-        _LAST_CLEANUP_AT = 0.0
+# Convenience helpers (metadata-only, no tokens logged)
+def enforce_ip(request: Request, group: str) -> None:
+    if LIMITER is None:
+        return
+    enforce(request=request, group=group, key_material=LIMITER.hash_ip(_ip(request)))
+
+
+def enforce_admin_token(request: Request, token_plain: str) -> None:
+    if LIMITER is None:
+        return
+    enforce(request=request, group="admin", key_material=LIMITER.hash_admin_token(token_plain))
+
+
+def enforce_authed(request: Request, *, clinic_id: str, clinic_user_id: str, group: str) -> None:
+    """
+    Keyed by tenant + user + group.
+    We hash the composite to avoid raw ids as limiter keys (internal discipline).
+    """
+    if LIMITER is None:
+        return
+    composite = f"c:{clinic_id}|u:{clinic_user_id}|g:{group}"
+    enforce(request=request, group=group, key_material=LIMITER.hash_key("authed", composite))
