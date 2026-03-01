@@ -167,6 +167,8 @@ def rls_self_test(_: None = Depends(require_admin)) -> Dict[str, Any]:
         debug["search_path"] = _current_setting(db, "search_path")
 
         # RLS flags + policies
+        debug["rls_clinics"] = _rls_flags(db, "clinics")
+        debug["rls_clinic_users"] = _rls_flags(db, "clinic_users")
         debug["rls_governance_events"] = _rls_flags(db, "governance_events")
         debug["rls_ops_metrics_events"] = _rls_flags(db, "ops_metrics_events")
         debug["rls_clinic_policies"] = _rls_flags(db, "clinic_policies")
