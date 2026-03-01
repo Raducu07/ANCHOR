@@ -1,60 +1,19 @@
-﻿# ==========================================================
-# ANCHOR - Line ending & diff policy
-# Governance-grade repo normalization
-# ==========================================================
-
-# Default: normalize automatically
+# Normalize line endings
 * text=auto
 
-# -------------------------
-# CI / Infra (must be LF)
-# -------------------------
-*.yml          text eol=lf
-*.yaml         text eol=lf
-Dockerfile     text eol=lf
-*.sql          text eol=lf
-*.env.example  text eol=lf
+# PowerShell scripts: keep LF (works fine in pwsh, avoids noisy diffs)
+*.ps1 text eol=lf
+*.psm1 text eol=lf
+*.psd1 text eol=lf
 
-# -------------------------
-# Python backend (LF)
-# -------------------------
-*.py           text eol=lf
-requirements.txt text eol=lf
+# SQL + Python: LF
+*.sql text eol=lf
+*.py  text eol=lf
 
-# -------------------------
-# JSON / OpenAPI / Schemas (LF)
-# -------------------------
-*.json         text eol=lf
+# YAML / JSON: LF
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
 
-# -------------------------
-# PowerShell (CRLF on Windows)
-# -------------------------
-*.ps1          text eol=crlf
-
-# -------------------------
-# Node / Frontend (LF)
-# -------------------------
-*.ts           text eol=lf
-*.tsx          text eol=lf
-*.js           text eol=lf
-*.jsx          text eol=lf
-*.css          text eol=lf
-*.scss         text eol=lf
-*.html         text eol=lf
-
-# -------------------------
-# Shell scripts (LF)
-# -------------------------
-*.sh           text eol=lf
-
-# -------------------------
-# Binary files (never modify)
-# -------------------------
-*.png          binary
-*.jpg          binary
-*.jpeg         binary
-*.gif          binary
-*.ico          binary
-*.pdf          binary
-*.zip          binary
-*.exe          binary
+# Markdown
+*.md text eol=lf
