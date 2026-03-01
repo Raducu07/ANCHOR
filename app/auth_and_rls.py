@@ -11,6 +11,8 @@ from typing import Optional, Dict, Any, Set, Iterable
 
 import jwt
 from fastapi import APIRouter, HTTPException, Header, Request, Depends
+from fastapi import Request
+from app.rate_limit import enforce_ip
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -370,8 +372,8 @@ def _issue_login_token(clinic_id: str, clinic_user_id: str, role: str) -> Clinic
 # Routes (canonical)
 # -----------------------------
 @router.post("/v1/clinic/auth/login", response_model=ClinicLoginResponse)
-def clinic_login(req: ClinicLoginRequest) -> ClinicLoginResponse:
-    email_lc = (req.email or "").strip().lower()
+def clinic_login(req: ClinicLoginRequest, request: Request) -> ClinicLoginResponse:
+    enforce_ip(request, "auth")
 
     with SessionLocal() as db:
         try:
@@ -425,9 +427,8 @@ def clinic_login(req: ClinicLoginRequest) -> ClinicLoginResponse:
 
 
 @router.post("/v1/clinic/auth/invite/accept", response_model=ClinicLoginResponse)
-def accept_invite(req: InviteAcceptRequest) -> ClinicLoginResponse:
-    email_lc = (req.email or "").strip().lower()
-    now = datetime.now(timezone.utc)
+def accept_invite(req: InviteAcceptRequest, request: Request) -> ClinicLoginResponse:
+    enforce_ip(request, "invite")
 
     with SessionLocal() as db:
         try:
@@ -643,5 +644,7 @@ def clinic_me(ctx: Dict[str, str] = Depends(require_clinic_user)) -> MeResponse:
 # Backwards compatibility route
 # -----------------------------
 @router.post("/v1/clinic-auth/login", response_model=ClinicLoginResponse)
-def clinic_login_legacy(req: ClinicLoginRequest) -> ClinicLoginResponse:
-    return clinic_login(req)
+def clinic_login_legacy(req: ClinicLoginRequest, request: Request) -> ClinicLoginResponse:
+    # legacy endpoint should be equally protected
+    enforce_ip(request, "auth")
+    return clinic_login(req, request)
