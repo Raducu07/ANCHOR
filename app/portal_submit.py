@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.auth_and_rls import require_clinic_user
 from app.db import get_db
 from app.portal_governance_engine import evaluate_input_governance, extract_neutrality_version
+from app.rate_limit import enforce_authed
 
 logger = logging.getLogger(__name__)
 
@@ -481,6 +482,16 @@ def get_receipt(request_id: uuid.UUID, request: Request, db: Session = Depends(g
     clinic_user_id = getattr(request.state, "clinic_user_id", None)
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
+
+    # -------------------------
+    # Deterministic rate limiting (tenant-safe)
+    # -------------------------
+    enforce_authed(
+        request,
+        clinic_id=str(clinic_id),
+        clinic_user_id=str(clinic_user_id),
+        group="receipt",
+    )
 
     _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
 
