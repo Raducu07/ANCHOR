@@ -1,24 +1,25 @@
 -- ============================================================
--- FORCE RLS on all clinic-scoped tables
--- Governance-grade tenant isolation hardening
+-- FORCE RLS on all clinic-scoped tables (safe / idempotent)
+-- - Applies FORCE RLS only if the table exists
+-- - Avoids deploy failures in mixed-schema environments
 -- ============================================================
 
--- Core identity
-ALTER TABLE public.clinics                 FORCE ROW LEVEL SECURITY;
-ALTER TABLE public.clinic_users            FORCE ROW LEVEL SECURITY;
-
--- Governance
-ALTER TABLE public.governance_events       FORCE ROW LEVEL SECURITY;
-
--- Ops / telemetry (if tenant-scoped)
-ALTER TABLE public.ops_metrics_events      FORCE ROW LEVEL SECURITY;
-
--- Policy system
-ALTER TABLE public.clinic_policies         FORCE ROW LEVEL SECURITY;
-ALTER TABLE public.clinic_policy_state     FORCE ROW LEVEL SECURITY;
-
--- Privacy profile
-ALTER TABLE public.clinic_privacy_profile  FORCE ROW LEVEL SECURITY;
-
--- Any additional tenant tables below:
--- ALTER TABLE public.<table_name> FORCE ROW LEVEL SECURITY;
+DO $$
+DECLARE
+  t text;
+  tables text[] := ARRAY[
+    'public.clinics',
+    'public.clinic_users',
+    'public.governance_events',
+    'public.ops_metrics_events',
+    'public.clinic_policies',
+    'public.clinic_policy_state',
+    'public.clinic_privacy_profile'
+  ];
+BEGIN
+  FOREACH t IN ARRAY tables LOOP
+    IF to_regclass(t) IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE %s FORCE ROW LEVEL SECURITY', t);
+    END IF;
+  END LOOP;
+END $$;
