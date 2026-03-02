@@ -379,8 +379,8 @@ def clinic_login(req: ClinicLoginRequest, request: Request) -> ClinicLoginRespon
         try:
             db.begin()
 
-            clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug)
-
+            clinic_id = _resolve_clinic_id_by_slug(db, req.clinic_slug.strip().lower())
+            
             # temporary context so FORCE RLS won't break reads
             temp_user = str(uuid.uuid4())
             _set_ctx_compat(db, clinic_id=clinic_id, clinic_user_id=temp_user, role=None)
@@ -466,7 +466,7 @@ def accept_invite(req: InviteAcceptRequest, request: Request) -> ClinicLoginResp
                 raise HTTPException(status_code=401, detail="invite_expired")
             if getattr(exp, "tzinfo", None) is None:
                 exp = exp.replace(tzinfo=timezone.utc)
-            if exp < now:
+            if exp <= now:
                 raise HTTPException(status_code=401, detail="invite_expired")
 
             invited_email = str(invite["email"] or "").strip().lower()
