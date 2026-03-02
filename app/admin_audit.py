@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
 
 from app.admin_auth import AdminContext, require_admin, write_admin_audit_event
@@ -14,18 +14,22 @@ router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
 @router.get("/audit-events")
 def admin_list_audit_events(
+    request: Request,
     limit: int = 200,
-    since: Optional[str] = None,   # ISO8601 timestamp string
+    since: Optional[str] = None,  # ISO8601 timestamp string
     action: Optional[str] = None,
     ctx: AdminContext = Depends(require_admin),
 ) -> Dict[str, Any]:
+    """
+    Admin-only list of platform_admin_audit_events (metadata-only).
+    Rate limiting + auth auditing are enforced in require_admin.
+    """
     limit = max(1, min(1000, int(limit)))
 
     params: Dict[str, Any] = {"limit": limit}
     where = []
 
     if since:
-        # Parse in DB; if invalid it will error (acceptable for admin)
         where.append("created_at >= :since::timestamptz")
         params["since"] = since
 
@@ -53,10 +57,12 @@ def admin_list_audit_events(
             params,
         ).mappings().all()
 
+    # Optional: audit the fact we listed audit events (metadata-only)
+    # (Auth success/fail auditing already occurs inside require_admin.)
     write_admin_audit_event(
         action="admin.audit.list",
-        method="GET",
-        route="/v1/admin/audit-events",
+        method=request.method.upper(),
+        route=request.url.path,
         status_code=200,
         admin_token_id=ctx.token_id,
         request_id=ctx.request_id,
