@@ -1,52 +1,18 @@
 # app/ops_rls_test.py
 from __future__ import annotations
 
-import os
-import hmac
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.admin_auth import AdminContext, require_admin, write_admin_audit_event
 from app.db import SessionLocal, set_rls_context, clear_rls_context
-from app.rate_limit import enforce_admin_token
 
 router = APIRouter(prefix="/v1/admin/ops", tags=["admin"])
-
-
-# ---------------------------
-# Admin auth (self-contained)
-# ---------------------------
-def require_admin(
-    request: Request,
-    authorization: str = Header(default=""),
-) -> None:
-    """
-    Admin-only guard using a static bearer token.
-    Expected:
-      Authorization: Bearer <ADMIN_BEARER_TOKEN>
-    """
-    token = (os.getenv("ADMIN_BEARER_TOKEN") or "").strip()
-    if not token:
-        raise HTTPException(status_code=500, detail="ADMIN_BEARER_TOKEN is not set")
-
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="missing_bearer_token")
-
-    provided = authorization.split(" ", 1)[1].strip()
-    if not provided:
-        raise HTTPException(status_code=401, detail="missing_bearer_token")
-
-    # -------------------------
-    # Deterministic admin rate limiting (token fingerprinted; token never stored)
-    # -------------------------
-    enforce_admin_token(request, provided)
-
-    if not hmac.compare_digest(provided, token):
-        raise HTTPException(status_code=403, detail="forbidden")
 
 
 # ---------------------------
@@ -129,18 +95,16 @@ def _role_props(db: Session) -> Dict[str, Optional[bool]]:
 # RLS self-test endpoint
 # ---------------------------
 @router.get("/rls-self-test")
-def rls_self_test(_: None = Depends(require_admin)) -> Dict[str, Any]:
+def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
     """
     Admin-only: verifies Postgres RLS tenant isolation using clinics + clinic_users.
 
-    This endpoint returns debug metadata to diagnose:
-      - DB role bypassing RLS
-      - RLS enabled/forced flags per table
-      - active policies + their predicates
-      - whether your app.* GUCs are being set as expected
-      - session row_security
+    M3 posture:
+      - Admin auth is unified via app.admin_auth.require_admin
+      - Deterministic rate limiting is enforced inside require_admin (token keyed)
+      - Returns metadata only (no content, no tokens)
+      - Writes best-effort admin audit event for this call
     """
-
     clinic_a = uuid.uuid4()
     clinic_b = uuid.uuid4()
     user_a = uuid.uuid4()
@@ -154,210 +118,228 @@ def rls_self_test(_: None = Depends(require_admin)) -> Dict[str, Any]:
     now_utc = datetime.now(timezone.utc).isoformat()
     checks: Dict[str, Any] = {}
 
-    with SessionLocal() as db:
-        # ---------------------------
-        # Debug snapshot (metadata only)
-        # ---------------------------
-        debug: Dict[str, Any] = {}
+    # Track status for audit (best-effort)
+    status_code_for_audit = 200
 
-        # who am I?
-        try:
-            debug["current_user"] = db.execute(text("SELECT current_user")).scalar()
-            debug["session_user"] = db.execute(text("SELECT session_user")).scalar()
-            debug["current_role"] = db.execute(text("SELECT current_role")).scalar()
-        except Exception:
-            debug["current_user"] = None
-            debug["session_user"] = None
-            debug["current_role"] = None
+    try:
+        with SessionLocal() as db:
+            debug: Dict[str, Any] = {}
 
-        # role properties
-        debug.update(_role_props(db))
-
-        # session settings of interest
-        debug["row_security"] = _current_setting(db, "row_security")
-        debug["transaction_isolation"] = _current_setting(db, "transaction_isolation")
-        debug["search_path"] = _current_setting(db, "search_path")
-
-        # RLS flags + policies
-        debug["rls_clinics"] = _rls_flags(db, "clinics")
-        debug["rls_clinic_users"] = _rls_flags(db, "clinic_users")
-        debug["rls_governance_events"] = _rls_flags(db, "governance_events")
-        debug["rls_ops_metrics_events"] = _rls_flags(db, "ops_metrics_events")
-        debug["rls_clinic_policies"] = _rls_flags(db, "clinic_policies")
-        debug["rls_clinic_policy_state"] = _rls_flags(db, "clinic_policy_state")
-        debug["rls_clinic_privacy_profile"] = _rls_flags(db, "clinic_privacy_profile")
-        debug["rls_admin_audit_events"] = _rls_flags(db, "admin_audit_events")
-        debug["policies_clinics"] = _policies(db, "clinics")
-        debug["policies_clinic_users"] = _policies(db, "clinic_users")
-
-        # Confirm what set_rls_context actually sets (GUCs)
-        try:
-            clear_rls_context(db)
-            set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
-
-            # primary expected keys
-            debug["guc_app_clinic_id"] = _current_setting(db, "app.clinic_id")
-            debug["guc_app_user_id"] = _current_setting(db, "app.user_id")
-
-            # common alternate keys (in case policies reference different names)
-            debug["guc_app_tenant_id"] = _current_setting(db, "app.tenant_id")
-            debug["guc_app_clinic_uuid"] = _current_setting(db, "app.clinic_uuid")
-            debug["guc_app_tenant_uuid"] = _current_setting(db, "app.tenant_uuid")
-        finally:
+            # who am I?
             try:
-                clear_rls_context(db)
+                debug["current_user"] = db.execute(text("SELECT current_user")).scalar()
+                debug["session_user"] = db.execute(text("SELECT session_user")).scalar()
+                debug["current_role"] = db.execute(text("SELECT current_role")).scalar()
             except Exception:
-                pass
+                debug["current_user"] = None
+                debug["session_user"] = None
+                debug["current_role"] = None
 
-        try:
-            # 1) Create clinic A under clinic A context
-            clear_rls_context(db)
-            set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
-            db.execute(
-                text(
-                    """
-                    INSERT INTO clinics (clinic_id, clinic_name, clinic_slug, subscription_tier, active_status)
-                    VALUES (:cid, :name, :slug, 'starter', true)
-                    """
-                ),
-                {"cid": str(clinic_a), "name": "RLS Clinic A", "slug": slug_a},
-            )
+            debug.update(_role_props(db))
 
-            # 2) Create clinic B under clinic B context
-            clear_rls_context(db)
-            set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
-            db.execute(
-                text(
-                    """
-                    INSERT INTO clinics (clinic_id, clinic_name, clinic_slug, subscription_tier, active_status)
-                    VALUES (:cid, :name, :slug, 'starter', true)
-                    """
-                ),
-                {"cid": str(clinic_b), "name": "RLS Clinic B", "slug": slug_b},
-            )
+            debug["row_security"] = _current_setting(db, "row_security")
+            debug["transaction_isolation"] = _current_setting(db, "transaction_isolation")
+            debug["search_path"] = _current_setting(db, "search_path")
 
-            # 3) Create clinic user A (under clinic A)
-            clear_rls_context(db)
-            set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
-            db.execute(
-                text(
-                    """
-                    INSERT INTO clinic_users (user_id, clinic_id, role, email, password_hash, active_status)
-                    VALUES (:uid, :cid, 'admin', :email, 'x', true)
-                    """
-                ),
-                {"uid": str(user_a), "cid": str(clinic_a), "email": email_a},
-            )
+            # RLS flags + policies
+            debug["rls_clinics"] = _rls_flags(db, "clinics")
+            debug["rls_clinic_users"] = _rls_flags(db, "clinic_users")
+            debug["rls_governance_events"] = _rls_flags(db, "governance_events")
+            debug["rls_ops_metrics_events"] = _rls_flags(db, "ops_metrics_events")
+            debug["rls_clinic_policies"] = _rls_flags(db, "clinic_policies")
+            debug["rls_clinic_policy_state"] = _rls_flags(db, "clinic_policy_state")
+            debug["rls_clinic_privacy_profile"] = _rls_flags(db, "clinic_privacy_profile")
+            debug["rls_admin_audit_events"] = _rls_flags(db, "admin_audit_events")
+            debug["policies_clinics"] = _policies(db, "clinics")
+            debug["policies_clinic_users"] = _policies(db, "clinic_users")
 
-            # 4) Create clinic user B (under clinic B)
-            clear_rls_context(db)
-            set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
-            db.execute(
-                text(
-                    """
-                    INSERT INTO clinic_users (user_id, clinic_id, role, email, password_hash, active_status)
-                    VALUES (:uid, :cid, 'admin', :email, 'x', true)
-                    """
-                ),
-                {"uid": str(user_b), "cid": str(clinic_b), "email": email_b},
-            )
-
-            db.commit()
-
-            # 5) Verify visibility from clinic A context
-            clear_rls_context(db)
-            set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
-
-            a_sees_a = (
-                db.execute(text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_a)}).scalar()
-                or 0
-            )
-            a_sees_b = (
-                db.execute(text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_b)}).scalar()
-                or 0
-            )
-            a_sees_user_a = (
-                db.execute(text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_a)}).scalar()
-                or 0
-            )
-            a_sees_user_b = (
-                db.execute(text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_b)}).scalar()
-                or 0
-            )
-
-            checks["a_sees_a"] = int(a_sees_a)
-            checks["a_sees_b"] = int(a_sees_b)
-            checks["a_sees_user_a"] = int(a_sees_user_a)
-            checks["a_sees_user_b"] = int(a_sees_user_b)
-
-            # 6) Verify visibility from clinic B context
-            clear_rls_context(db)
-            set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
-
-            b_sees_b = (
-                db.execute(text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_b)}).scalar()
-                or 0
-            )
-            b_sees_a = (
-                db.execute(text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_a)}).scalar()
-                or 0
-            )
-            b_sees_user_b = (
-                db.execute(text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_b)}).scalar()
-                or 0
-            )
-            b_sees_user_a = (
-                db.execute(text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_a)}).scalar()
-                or 0
-            )
-
-            checks["b_sees_b"] = int(b_sees_b)
-            checks["b_sees_a"] = int(b_sees_a)
-            checks["b_sees_user_b"] = int(b_sees_user_b)
-            checks["b_sees_user_a"] = int(b_sees_user_a)
-
-            clear_rls_context(db)
-
-            ok = (
-                checks["a_sees_a"] >= 1
-                and checks["a_sees_b"] == 0
-                and checks["a_sees_user_a"] >= 1
-                and checks["a_sees_user_b"] == 0
-                and checks["b_sees_b"] >= 1
-                and checks["b_sees_a"] == 0
-                and checks["b_sees_user_b"] >= 1
-                and checks["b_sees_user_a"] == 0
-            )
-
-            return {
-                "status": "ok" if ok else "fail",
-                "now_utc": now_utc,
-                "checks": checks,
-                "debug": debug,
-                "note": "Self-test sets app.* GUCs; debug shows RLS flags/policies and whether the DB role bypasses RLS.",
-            }
-
-        finally:
-            # Best-effort cleanup (admin route; safe to attempt)
+            # Confirm what set_rls_context actually sets (GUCs)
             try:
                 clear_rls_context(db)
                 set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
-                db.execute(text("DELETE FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_a)})
-                db.execute(text("DELETE FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_a)})
-                db.commit()
-            except Exception:
-                db.rollback()
+
+                debug["guc_app_clinic_id"] = _current_setting(db, "app.clinic_id")
+                debug["guc_app_user_id"] = _current_setting(db, "app.user_id")
+
+                debug["guc_app_tenant_id"] = _current_setting(db, "app.tenant_id")
+                debug["guc_app_clinic_uuid"] = _current_setting(db, "app.clinic_uuid")
+                debug["guc_app_tenant_uuid"] = _current_setting(db, "app.tenant_uuid")
+            finally:
+                try:
+                    clear_rls_context(db)
+                except Exception:
+                    pass
 
             try:
+                # 1) Create clinic A under clinic A context
+                clear_rls_context(db)
+                set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO clinics (clinic_id, clinic_name, clinic_slug, subscription_tier, active_status)
+                        VALUES (:cid, :name, :slug, 'starter', true)
+                        """
+                    ),
+                    {"cid": str(clinic_a), "name": "RLS Clinic A", "slug": slug_a},
+                )
+
+                # 2) Create clinic B under clinic B context
                 clear_rls_context(db)
                 set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
-                db.execute(text("DELETE FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_b)})
-                db.execute(text("DELETE FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_b)})
-                db.commit()
-            except Exception:
-                db.rollback()
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO clinics (clinic_id, clinic_name, clinic_slug, subscription_tier, active_status)
+                        VALUES (:cid, :name, :slug, 'starter', true)
+                        """
+                    ),
+                    {"cid": str(clinic_b), "name": "RLS Clinic B", "slug": slug_b},
+                )
 
-            try:
+                # 3) Create clinic user A (under clinic A)
                 clear_rls_context(db)
-            except Exception:
-                pass
+                set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO clinic_users (user_id, clinic_id, role, email, password_hash, active_status)
+                        VALUES (:uid, :cid, 'admin', :email, 'x', true)
+                        """
+                    ),
+                    {"uid": str(user_a), "cid": str(clinic_a), "email": email_a},
+                )
+
+                # 4) Create clinic user B (under clinic B)
+                clear_rls_context(db)
+                set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO clinic_users (user_id, clinic_id, role, email, password_hash, active_status)
+                        VALUES (:uid, :cid, 'admin', :email, 'x', true)
+                        """
+                    ),
+                    {"uid": str(user_b), "cid": str(clinic_b), "email": email_b},
+                )
+
+                db.commit()
+
+                # 5) Verify visibility from clinic A context
+                clear_rls_context(db)
+                set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
+
+                a_sees_a = db.execute(
+                    text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"),
+                    {"cid": str(clinic_a)},
+                ).scalar() or 0
+                a_sees_b = db.execute(
+                    text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"),
+                    {"cid": str(clinic_b)},
+                ).scalar() or 0
+                a_sees_user_a = db.execute(
+                    text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"),
+                    {"uid": str(user_a)},
+                ).scalar() or 0
+                a_sees_user_b = db.execute(
+                    text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"),
+                    {"uid": str(user_b)},
+                ).scalar() or 0
+
+                checks["a_sees_a"] = int(a_sees_a)
+                checks["a_sees_b"] = int(a_sees_b)
+                checks["a_sees_user_a"] = int(a_sees_user_a)
+                checks["a_sees_user_b"] = int(a_sees_user_b)
+
+                # 6) Verify visibility from clinic B context
+                clear_rls_context(db)
+                set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
+
+                b_sees_b = db.execute(
+                    text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"),
+                    {"cid": str(clinic_b)},
+                ).scalar() or 0
+                b_sees_a = db.execute(
+                    text("SELECT COUNT(*) FROM clinics WHERE clinic_id = :cid"),
+                    {"cid": str(clinic_a)},
+                ).scalar() or 0
+                b_sees_user_b = db.execute(
+                    text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"),
+                    {"uid": str(user_b)},
+                ).scalar() or 0
+                b_sees_user_a = db.execute(
+                    text("SELECT COUNT(*) FROM clinic_users WHERE user_id = :uid"),
+                    {"uid": str(user_a)},
+                ).scalar() or 0
+
+                checks["b_sees_b"] = int(b_sees_b)
+                checks["b_sees_a"] = int(b_sees_a)
+                checks["b_sees_user_b"] = int(b_sees_user_b)
+                checks["b_sees_user_a"] = int(b_sees_user_a)
+
+                clear_rls_context(db)
+
+                ok = (
+                    checks["a_sees_a"] >= 1
+                    and checks["a_sees_b"] == 0
+                    and checks["a_sees_user_a"] >= 1
+                    and checks["a_sees_user_b"] == 0
+                    and checks["b_sees_b"] >= 1
+                    and checks["b_sees_a"] == 0
+                    and checks["b_sees_user_b"] >= 1
+                    and checks["b_sees_user_a"] == 0
+                )
+
+                return {
+                    "status": "ok" if ok else "fail",
+                    "now_utc": now_utc,
+                    "checks": checks,
+                    "debug": debug,
+                    "note": "Self-test sets app.* GUCs; debug shows RLS flags/policies and whether the DB role bypasses RLS.",
+                }
+
+            finally:
+                # Best-effort cleanup (admin route; safe to attempt)
+                try:
+                    clear_rls_context(db)
+                    set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
+                    db.execute(text("DELETE FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_a)})
+                    db.execute(text("DELETE FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_a)})
+                    db.commit()
+                except Exception:
+                    db.rollback()
+
+                try:
+                    clear_rls_context(db)
+                    set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
+                    db.execute(text("DELETE FROM clinic_users WHERE user_id = :uid"), {"uid": str(user_b)})
+                    db.execute(text("DELETE FROM clinics WHERE clinic_id = :cid"), {"cid": str(clinic_b)})
+                    db.commit()
+                except Exception:
+                    db.rollback()
+
+                try:
+                    clear_rls_context(db)
+                except Exception:
+                    pass
+
+    except Exception:
+        status_code_for_audit = 500
+        raise
+
+    finally:
+        # Best-effort audit for this admin action (metadata-only)
+        try:
+            write_admin_audit_event(
+                action="admin.ops.rls_self_test",
+                method="GET",
+                route="/v1/admin/ops/rls-self-test",
+                status_code=status_code_for_audit,
+                admin_token_id=ctx.token_id,
+                request_id=ctx.request_id,
+                ip_hash=ctx.ip_hash,
+                ua_hash=ctx.ua_hash,
+                meta={"result": "ok" if status_code_for_audit == 200 else "error"},
+            )
+        except Exception:
+            pass
