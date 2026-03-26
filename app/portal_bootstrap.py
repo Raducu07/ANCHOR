@@ -1,179 +1,29 @@
-# app/portal_bootstrap.py
-import os
-import hmac
-import uuid
 import hashlib
+import os
 import secrets
-from dataclasses import dataclass
+import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any, Set, Tuple
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.db import db_session, set_rls_context, clear_rls_context
-from app.rate_limit import enforce_admin_token, enforce_admin_token_group
+from app.admin_auth import AdminContext, require_admin, write_admin_audit_event
+from app.db import clear_rls_context, db_session, set_rls_context
+from app.rate_limit import enforce_admin_token_group
 
 router = APIRouter()
 
 
 # ============================================================
-# Admin auth (bootstrap-local)
-# Supports:
-#   - X-ANCHOR-ADMIN-TOKEN (ANCHOR_ADMIN_TOKENS / ANCHOR_ADMIN_TOKEN)
-#       ANCHOR_ADMIN_TOKENS="tokA,tokB"
-#       ANCHOR_ADMIN_TOKENS="tokA|2026-12-31T23:59:59Z,tokB"
-#   - Authorization: Bearer (ADMIN_BEARER_TOKEN)  [back-compat]
-# Notes:
-#   - If X-ANCHOR-ADMIN-TOKEN is present, we authenticate via ANCHOR_* tokens.
-#   - Else, we fall back to Bearer if ADMIN_BEARER_TOKEN is set.
-#   - Returns AdminAuthResult (method + fingerprint only).
+# Helpers
 # ============================================================
-
-@dataclass(frozen=True)
-class AdminAuthResult:
-    method: str  # "x-header" | "bearer"
-    token_fp: str
-
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
-
-def _parse_iso_z(dt_str: str) -> datetime:
-    # Expect e.g. "2026-12-31T23:59:59Z"
-    dt_str = (dt_str or "").strip()
-    if not dt_str.endswith("Z"):
-        raise ValueError("expiry must end with 'Z'")
-    return datetime.fromisoformat(dt_str.replace("Z", "+00:00")).astimezone(timezone.utc)
-
-
-def _token_fingerprint(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
-
-
-def _load_anchor_admin_tokens() -> Tuple[Set[str], Dict[str, Optional[datetime]]]:
-    """
-    Supports:
-      ANCHOR_ADMIN_TOKENS="tokenA,tokenB"
-      ANCHOR_ADMIN_TOKENS="tokenA|2026-12-31T23:59:59Z,tokenB"
-      ANCHOR_ADMIN_TOKEN="legacySingleToken" (back-compat)
-    Returns:
-      (tokens_set, expiry_map[token] -> expires_at_utc_or_None)
-    """
-    raw = (os.getenv("ANCHOR_ADMIN_TOKENS") or "").strip()
-    tokens: Set[str] = set()
-    expiry: Dict[str, Optional[datetime]] = {}
-
-    if raw:
-        for part in [p.strip() for p in raw.split(",") if p.strip()]:
-            if "|" in part:
-                tok, exp = part.split("|", 1)
-                tok = tok.strip()
-                exp = exp.strip()
-                if not tok:
-                    continue
-                try:
-                    expiry[tok] = _parse_iso_z(exp)
-                    tokens.add(tok)
-                except Exception:
-                    # ignore malformed expiry entry
-                    continue
-            else:
-                tok = part.strip()
-                if tok:
-                    tokens.add(tok)
-                    expiry[tok] = None
-
-    legacy = (os.getenv("ANCHOR_ADMIN_TOKEN") or "").strip()
-    if legacy and legacy not in tokens:
-        tokens.add(legacy)
-        expiry[legacy] = None
-
-    return tokens, expiry
-
-
-def _auth_via_bearer(authorization: str) -> Optional[AdminAuthResult]:
-    token = (os.getenv("ADMIN_BEARER_TOKEN") or "").strip()
-    if not token:
-        return None
-    if not authorization or not authorization.lower().startswith("bearer "):
-        return None
-
-    provided = authorization.split(" ", 1)[1].strip()
-    if not hmac.compare_digest(provided, token):
-        return None
-
-    return AdminAuthResult(method="bearer", token_fp=_token_fingerprint(token))
-
-
-def require_admin(
-    request: Request,
-    x_anchor_admin_token: Optional[str] = Header(default=None, alias="X-ANCHOR-ADMIN-TOKEN"),
-    authorization: str = Header(default=""),
-) -> AdminAuthResult:
-    """
-    Prefer X-ANCHOR-ADMIN-TOKEN (ANCHOR_ADMIN_TOKENS / ANCHOR_ADMIN_TOKEN).
-    Fall back to Authorization: Bearer (ADMIN_BEARER_TOKEN) for back-compat.
-
-    M3 hardening:
-    - Deterministic rate limiting keyed by presented token (fingerprinted inside limiter).
-    - Stash presented token on request.state for route-specific throttles (not logged).
-    """
-
-    # Always load fresh env-backed tokens (avoid stale cache across deploy/env tweaks)
-    tokens, expiry = _load_anchor_admin_tokens()
-
-    def auth_via_x(token: str) -> Optional[AdminAuthResult]:
-        match = None
-        for t in tokens:
-            if hmac.compare_digest(token, t):
-                match = t
-                break
-        if not match:
-            return None
-        exp = expiry.get(match)
-        if exp is not None and _utc_now() >= exp:
-            return None
-        return AdminAuthResult(method="x-header", token_fp=_token_fingerprint(match))
-
-    # Prefer X header if present and non-empty
-    if x_anchor_admin_token:
-        presented = x_anchor_admin_token.strip()
-
-        # Stash presented token for downstream route-specific throttles (bootstrap)
-        request.state.admin_token_presented = presented
-
-        # Global admin throttling (token fingerprinted; token never stored)
-        enforce_admin_token(request, presented)
-
-        res = auth_via_x(presented)
-        if res:
-            return res
-        # X header present but invalid -> hard fail (don't fall back)
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    # Otherwise try Bearer back-compat
-    presented_bearer = ""
-    if authorization and authorization.lower().startswith("bearer "):
-        presented_bearer = authorization.split(" ", 1)[1].strip()
-
-    if presented_bearer:
-        request.state.admin_token_presented = presented_bearer
-        enforce_admin_token(request, presented_bearer)
-
-    res2 = _auth_via_bearer(authorization)
-    if res2:
-        return res2
-
-    raise HTTPException(status_code=403, detail="Unauthorized")
-
-
-# ============================================================
-# Helpers
-# ============================================================
 
 def _slugify(s: str) -> str:
     s = (s or "").strip().lower()
@@ -211,7 +61,7 @@ class BootstrapClinicRequest(BaseModel):
     clinic_slug: Optional[str] = Field(default=None, max_length=64)
     admin_email: str = Field(..., min_length=5, max_length=254)
 
-    data_region: str = Field(default="UK")  # UK or EU
+    data_region: str = Field(default="UK")
     retention_days_governance: int = Field(default=90, ge=1, le=3650)
     retention_days_ops: int = Field(default=30, ge=1, le=3650)
     export_enabled: bool = False
@@ -237,7 +87,7 @@ def bootstrap_clinic(
     req: BootstrapClinicRequest,
     request: Request,
     db: Session = Depends(db_session),
-    admin: AdminAuthResult = Depends(require_admin),
+    admin: AdminContext = Depends(require_admin),
 ):
     """
     Creates:
@@ -252,23 +102,19 @@ def bootstrap_clinic(
     """
 
     # Route-specific throttle: bootstrap is the highest-privilege action.
-    presented = getattr(request.state, "admin_token_presented", None)
+    presented = getattr(request.state, "admin_token_presented", "")
     if not presented:
-        # Should never happen if require_admin ran, but fail closed.
         raise HTTPException(status_code=500, detail="admin_token_context_missing")
     enforce_admin_token_group(request, presented, group="admin_bootstrap")
 
     clinic_id = uuid.uuid4()
-
-    # Deterministic-ish system actor UUID per clinic (stable within this request)
     system_user_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"anchor-system-bootstrap:{clinic_id}")
-
     slug = _slugify(req.clinic_slug or req.clinic_name)
+
     invite_token = secrets.token_urlsafe(24)
     token_hash = _hash_token(invite_token)
     expires_at = _utc_now() + timedelta(days=int(req.invite_valid_days))
 
-    # Minimal default policy JSON (replace later with your real schema)
     policy_json: Dict[str, Any] = {
         "policy_version": 1,
         "mode_defaults": {
@@ -279,15 +125,15 @@ def bootstrap_clinic(
     }
 
     try:
-        # Set RLS context to the new clinic so WITH CHECK passes under FORCE RLS
         set_rls_context(db, clinic_id=str(clinic_id), user_id=str(system_user_id))
 
-        # 1) clinics
         db.execute(
-            text("""
+            text(
+                """
                 INSERT INTO clinics (clinic_id, clinic_name, clinic_slug, subscription_tier, active_status)
                 VALUES (:cid, :name, :slug, :tier, true)
-            """),
+                """
+            ),
             {
                 "cid": str(clinic_id),
                 "name": req.clinic_name.strip(),
@@ -296,8 +142,6 @@ def bootstrap_clinic(
             },
         )
 
-        # 1b) clinic_slug_lookup (unscoped slug -> clinic_id)
-        # Needed because FORCE RLS on clinics prevents slug resolution before tenant context exists.
         db.execute(
             text(
                 """
@@ -312,25 +156,27 @@ def bootstrap_clinic(
             {"slug": slug, "cid": str(clinic_id)},
         )
 
-        # 2) system clinic user (required for FK created_by/updated_by)
         system_email = f"system+{slug}@anchor.local"
         db.execute(
-            text("""
+            text(
+                """
                 INSERT INTO clinic_users (user_id, clinic_id, role, email, password_hash, active_status)
                 VALUES (:uid, :cid, 'admin', :email, '!', false)
-            """),
+                """
+            ),
             {"uid": str(system_user_id), "cid": str(clinic_id), "email": system_email},
         )
 
-        # 3) privacy profile
         db.execute(
-            text("""
+            text(
+                """
                 INSERT INTO clinic_privacy_profile
                   (clinic_id, data_region, retention_days_governance, retention_days_ops,
                    export_enabled, updated_at)
                 VALUES
                   (:cid, :region, :rg, :ro, :export_enabled, now())
-            """),
+                """
+            ),
             {
                 "cid": str(clinic_id),
                 "region": req.data_region,
@@ -340,12 +186,13 @@ def bootstrap_clinic(
             },
         )
 
-        # 4) initial policy v1
         db.execute(
-            text("""
+            text(
+                """
                 INSERT INTO clinic_policies (clinic_id, policy_version, policy_json, created_by)
                 VALUES (:cid, 1, CAST(:pjson AS jsonb), :created_by)
-            """),
+                """
+            ),
             {
                 "cid": str(clinic_id),
                 "pjson": json_dump(policy_json),
@@ -353,23 +200,25 @@ def bootstrap_clinic(
             },
         )
 
-        # 5) active policy pointer
         db.execute(
-            text("""
+            text(
+                """
                 INSERT INTO clinic_policy_state (clinic_id, active_policy_version, updated_by, updated_at)
                 VALUES (:cid, 1, :updated_by, now())
-            """),
+                """
+            ),
             {"cid": str(clinic_id), "updated_by": str(system_user_id)},
         )
 
-        # 6) admin invite
         db.execute(
-            text("""
+            text(
+                """
                 INSERT INTO clinic_user_invites
                   (invite_id, clinic_id, email, role, token_hash, expires_at, created_by, created_at)
                 VALUES
                   (:iid, :cid, :email, 'admin', :th, :exp, NULL, now())
-            """),
+                """
+            ),
             {
                 "iid": str(uuid.uuid4()),
                 "cid": str(clinic_id),
@@ -381,6 +230,27 @@ def bootstrap_clinic(
 
         db.commit()
 
+        try:
+            write_admin_audit_event(
+                action="admin.bootstrap.clinic",
+                method="POST",
+                route="/v1/admin/bootstrap/clinic",
+                status_code=200,
+                admin_token_id=admin.token_id,
+                request_id=admin.request_id,
+                ip_hash=admin.ip_hash,
+                ua_hash=admin.ua_hash,
+                meta={
+                    "clinic_id": str(clinic_id),
+                    "clinic_slug": slug,
+                    "policy_version": 1,
+                    "subscription_tier": req.subscription_tier,
+                    "data_region": req.data_region,
+                },
+            )
+        except Exception:
+            pass
+
         return BootstrapClinicResponse(
             clinic_id=str(clinic_id),
             clinic_slug=slug,
@@ -391,7 +261,27 @@ def bootstrap_clinic(
 
     except Exception as e:
         db.rollback()
+
+        try:
+            write_admin_audit_event(
+                action="admin.bootstrap.clinic",
+                method="POST",
+                route="/v1/admin/bootstrap/clinic",
+                status_code=500,
+                admin_token_id=admin.token_id,
+                request_id=admin.request_id,
+                ip_hash=admin.ip_hash,
+                ua_hash=admin.ua_hash,
+                meta={
+                    "error_type": type(e).__name__,
+                    "clinic_slug_attempt": slug,
+                },
+            )
+        except Exception:
+            pass
+
         raise HTTPException(status_code=500, detail=f"bootstrap failed: {type(e).__name__}: {e}")
+
     finally:
         try:
             clear_rls_context(db)
