@@ -1,4 +1,3 @@
-# app/rate_limit.py
 from __future__ import annotations
 
 import hmac
@@ -103,13 +102,13 @@ def rules_from_env() -> Dict[str, RateLimitRule]:
 
     return {
         # Pre-auth
-        "auth":   RateLimitRule(window_s=_int("RL_AUTH_WINDOW_S", 60),    limit=_int("RL_AUTH_LIMIT", 10)),
+        "auth": RateLimitRule(window_s=_int("RL_AUTH_WINDOW_S", 60), limit=_int("RL_AUTH_LIMIT", 10)),
         "invite": RateLimitRule(window_s=_int("RL_INVITE_WINDOW_S", 300), limit=_int("RL_INVITE_LIMIT", 10)),
         # Authed clinic
-        "receipt": RateLimitRule(window_s=_int("RL_RECEIPT_WINDOW_S", 60),  limit=_int("RL_RECEIPT_LIMIT", 30)),
-        "export":  RateLimitRule(window_s=_int("RL_EXPORT_WINDOW_S", 300),  limit=_int("RL_EXPORT_LIMIT", 5)),
+        "receipt": RateLimitRule(window_s=_int("RL_RECEIPT_WINDOW_S", 60), limit=_int("RL_RECEIPT_LIMIT", 30)),
+        "export": RateLimitRule(window_s=_int("RL_EXPORT_WINDOW_S", 300), limit=_int("RL_EXPORT_LIMIT", 5)),
         # Admin
-        "admin":  RateLimitRule(window_s=_int("RL_ADMIN_WINDOW_S", 60),   limit=_int("RL_ADMIN_LIMIT", 60)),
+        "admin": RateLimitRule(window_s=_int("RL_ADMIN_WINDOW_S", 60), limit=_int("RL_ADMIN_LIMIT", 60)),
         "admin_bootstrap": RateLimitRule(
             window_s=_int("RL_ADMIN_BOOTSTRAP_WINDOW_S", 3600),
             limit=_int("RL_ADMIN_BOOTSTRAP_LIMIT", 10),
@@ -152,11 +151,16 @@ def enforce(
         )
 
 
-# Convenience helpers (metadata-only, no tokens logged)
 def enforce_ip(request: Request, group: str) -> None:
     if LIMITER is None:
         return
     enforce(request=request, group=group, key_material=LIMITER.hash_ip(_ip(request)))
+
+
+def enforce_admin_token(request: Request, token_plain: str) -> None:
+    if LIMITER is None:
+        return
+    enforce(request=request, group="admin", key_material=LIMITER.hash_admin_token(token_plain))
 
 
 def enforce_admin_token_group(request: Request, token_plain: str, group: str) -> None:
@@ -178,3 +182,10 @@ def enforce_authed(request: Request, *, clinic_id: str, clinic_user_id: str, gro
         return
     composite = f"c:{clinic_id}|u:{clinic_user_id}|g:{group}"
     enforce(request=request, group=group, key_material=LIMITER.hash_key("authed", composite))
+
+
+def _reset_rate_limit_state_for_tests() -> None:
+    if LIMITER is None:
+        return
+    with LIMITER._lock:
+        LIMITER._counts.clear()
