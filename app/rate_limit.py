@@ -190,25 +190,54 @@ def enforce_authed(request: Request, *, clinic_id: str, clinic_user_id: str, gro
 # -------------------------
 # Backward-compat shim
 # -------------------------
-def enforce_rate_limit(request: Request, *args, **kwargs) -> None:
+def enforce_rate_limit(*args, **kwargs) -> Dict[str, object]:
     """
     Backward-compatible wrapper for older call sites in app.main or middleware.
 
     Supported legacy patterns:
       - enforce_rate_limit(request, group="auth")
+      - enforce_rate_limit(request=request, group="auth")
       - enforce_rate_limit(request, key="some-key", group="auth")
-      - enforce_rate_limit(request, window_s=60, limit=10, key="some-key")
-      - enforce_rate_limit(request)  -> defaults to IP-based 'auth' rule
+      - enforce_rate_limit(group="auth", key="some-key")   # no request available
+      - enforce_rate_limit(window_s=60, limit=10, key="some-key")
+      - enforce_rate_limit()  -> safe no-op metadata
+    Returns metadata for legacy log/middleware call sites.
+    Raises HTTPException(429) when a concrete limiter check is actually applied and exceeded.
     """
     if LIMITER is None:
-        return
+        return {
+            "applied": False,
+            "limited": False,
+            "reason": "limiter_disabled",
+        }
+
+    request = kwargs.get("request")
+    remaining_args = list(args)
+
+    if request is None and remaining_args:
+        first = remaining_args[0]
+        # Duck-typing Request enough for this compatibility layer
+        if hasattr(first, "client") and hasattr(first, "headers"):
+            request = first
+            remaining_args = remaining_args[1:]
 
     group = kwargs.get("group")
     key = kwargs.get("key") or kwargs.get("bucket_key") or kwargs.get("identifier")
     window_s = kwargs.get("window_s")
     limit = kwargs.get("limit")
 
-    # Legacy custom rule path
+    # If no request is available, do not crash generic middleware.
+    # Route-specific M3 limiters remain in force elsewhere.
+    if request is None:
+        return {
+            "applied": False,
+            "limited": False,
+            "reason": "no_request_supplied",
+            "group": group,
+            "key_present": key is not None,
+        }
+
+    # Legacy custom explicit rule path
     if window_s is not None and limit is not None:
         try:
             rule = RateLimitRule(window_s=int(window_s), limit=int(limit))
@@ -220,24 +249,65 @@ def enforce_rate_limit(request: Request, *args, **kwargs) -> None:
         ok, retry_after = LIMITER.check(bucket_key=f"legacy:{key_material}", rule=rule)
         if not ok:
             _raise_429(retry_after)
-        return
+
+        return {
+            "applied": True,
+            "limited": False,
+            "reason": "legacy_custom_rule",
+            "group": "legacy",
+            "retry_after": 0,
+        }
 
     # Legacy named-group path
     if isinstance(group, str) and group in RULES:
         if key is not None:
             key_material = LIMITER.hash_key("legacy", str(key))
-            enforce(request=request, group=group, key_material=key_material)
-        else:
-            enforce_ip(request, group)
-        return
+            rule = RULES[group]
+            ok, retry_after = LIMITER.check(bucket_key=f"{group}:{key_material}", rule=rule)
+            if not ok:
+                _raise_429(retry_after)
 
-    # Safe default for old generic callers
+            return {
+                "applied": True,
+                "limited": False,
+                "reason": "legacy_group_key",
+                "group": group,
+                "retry_after": 0,
+            }
+
+        enforce_ip(request, group)
+        return {
+            "applied": True,
+            "limited": False,
+            "reason": "legacy_group_ip",
+            "group": group,
+            "retry_after": 0,
+        }
+
+    # Safe default fallback for old generic callers
     if key is not None:
         key_material = LIMITER.hash_key("legacy", str(key))
-        enforce(request=request, group="auth", key_material=key_material)
-        return
+        rule = RULES.get("auth", RateLimitRule(window_s=60, limit=10))
+        ok, retry_after = LIMITER.check(bucket_key=f"auth:{key_material}", rule=rule)
+        if not ok:
+            _raise_429(retry_after)
+
+        return {
+            "applied": True,
+            "limited": False,
+            "reason": "legacy_default_key",
+            "group": "auth",
+            "retry_after": 0,
+        }
 
     enforce_ip(request, "auth")
+    return {
+        "applied": True,
+        "limited": False,
+        "reason": "legacy_default_ip",
+        "group": "auth",
+        "retry_after": 0,
+    }
 
 
 def _reset_rate_limit_state_for_tests() -> None:
