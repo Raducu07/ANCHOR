@@ -1,17 +1,17 @@
-# app/portal_export.py
 import csv
 import io
 import json
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Any, Dict, Iterator, List
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.db import get_db
 from app.auth_and_rls import require_clinic_user
+from app.db import get_db
 from app.rate_limit import enforce_authed
 
 router = APIRouter(
@@ -23,8 +23,8 @@ router = APIRouter(
 _ALLOWED_MODES = {"clinical_note", "client_comm", "internal_summary"}
 
 _DEFAULT_WINDOW_HOURS = 24
-_MAX_WINDOW_DAYS = 31
-_MAX_ROWS = 20000
+_MAX_WINDOW_DAYS = int(os.getenv("ANCHOR_EXPORT_MAX_WINDOW_DAYS", "31"))
+_MAX_ROWS = int(os.getenv("ANCHOR_EXPORT_MAX_ROWS", "20000"))
 
 
 def _parse_iso8601(ts: str) -> datetime:
@@ -54,10 +54,8 @@ def _parse_iso8601(ts: str) -> datetime:
 def export_governance_events_csv(
     request: Request,
     db: Session = Depends(get_db),
-    # Prefer these (nice UX): /export.csv?from=...&to=...
     from_utc: Optional[str] = Query(default=None, alias="from"),
     to_utc: Optional[str] = Query(default=None, alias="to"),
-    # Back-compat if you already used from_utc/to_utc names somewhere:
     from_utc_legacy: Optional[str] = Query(default=None, alias="from_utc"),
     to_utc_legacy: Optional[str] = Query(default=None, alias="to_utc"),
     mode: Optional[str] = None,
@@ -70,14 +68,10 @@ def export_governance_events_csv(
 
     Defaults to last 24h if no from/to provided.
     Safety rails:
-      - max window: 31 days
-      - max rows: 20k (adjust via _MAX_ROWS)
+      - max window: configurable via ANCHOR_EXPORT_MAX_WINDOW_DAYS (default 31)
+      - max rows: configurable via ANCHOR_EXPORT_MAX_ROWS (default 20000)
     """
 
-    # -------------------------
-    # Deterministic rate limiting (tenant-safe)
-    # require_clinic_user sets request.state.clinic_id and request.state.clinic_user_id
-    # -------------------------
     enforce_authed(
         request,
         clinic_id=str(request.state.clinic_id),
@@ -85,13 +79,11 @@ def export_governance_events_csv(
         group="export",
     )
 
-    # unify legacy params
     if from_utc is None and from_utc_legacy is not None:
         from_utc = from_utc_legacy
     if to_utc is None and to_utc_legacy is not None:
         to_utc = to_utc_legacy
 
-    # limit guardrails
     limit = int(limit)
     if limit < 1:
         limit = 1
@@ -99,10 +91,8 @@ def export_governance_events_csv(
         limit = _MAX_ROWS
 
     params: Dict[str, Any] = {"limit": limit}
-
     where: List[str] = ["clinic_id = app_current_clinic_id()"]
 
-    # filters
     if mode:
         m = mode.strip()
         if m != "__all__" and m not in _ALLOWED_MODES:
@@ -117,7 +107,6 @@ def export_governance_events_csv(
             where.append("decision = :decision")
             params["decision"] = d
 
-    # time window defaults / validation
     now = datetime.now(timezone.utc)
 
     if from_utc is None and to_utc is None:
@@ -139,7 +128,7 @@ def export_governance_events_csv(
             raise HTTPException(status_code=400, detail=f"window too large (max {_MAX_WINDOW_DAYS} days)")
 
     where.append("created_at >= :dt_from")
-    where.append("created_at <  :dt_to")  # exclusive end avoids boundary duplicates
+    where.append("created_at < :dt_to")
     params["dt_from"] = dt_from
     params["dt_to"] = dt_to
 
@@ -173,7 +162,6 @@ def export_governance_events_csv(
         buf = io.StringIO()
         writer = csv.writer(buf, lineterminator="\n")
 
-        # header
         writer.writerow(
             [
                 "request_id",
@@ -196,14 +184,12 @@ def export_governance_events_csv(
         buf.seek(0)
         buf.truncate(0)
 
-        # true streaming from DB cursor
         result = db.execute(sql.execution_options(stream_results=True), params)
         while True:
             chunk = result.fetchmany(1000)
             if not chunk:
                 break
             for r in chunk:
-                # r is a Row; convert to mapping
                 m = dict(r._mapping)
 
                 created = m.get("created_at_utc")
@@ -237,7 +223,7 @@ def export_governance_events_csv(
                 buf.seek(0)
                 buf.truncate(0)
 
-    filename = f"anchor_governance_export_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv"
+    filename = f"anchor_governance_export_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.csv"
     return StreamingResponse(
         _iter_csv(),
         media_type="text/csv; charset=utf-8",
