@@ -1,16 +1,15 @@
-# app/ops_rls_test.py
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.admin_auth import AdminContext, require_admin, write_admin_audit_event
-from app.db import SessionLocal, set_rls_context, clear_rls_context
+from app.db import SessionLocal, clear_rls_context, set_rls_context
 
 router = APIRouter(prefix="/v1/admin/ops", tags=["admin"])
 
@@ -118,14 +117,13 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
     now_utc = datetime.now(timezone.utc).isoformat()
     checks: Dict[str, Any] = {}
 
-    # Track status for audit (best-effort)
     status_code_for_audit = 200
+    result_for_audit = "error"
 
     try:
         with SessionLocal() as db:
             debug: Dict[str, Any] = {}
 
-            # who am I?
             try:
                 debug["current_user"] = db.execute(text("SELECT current_user")).scalar()
                 debug["session_user"] = db.execute(text("SELECT session_user")).scalar()
@@ -141,10 +139,9 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
             debug["transaction_isolation"] = _current_setting(db, "transaction_isolation")
             debug["search_path"] = _current_setting(db, "search_path")
 
-            # RLS flags + policies
             debug["rls_clinics"] = _rls_flags(db, "clinics")
             debug["rls_clinic_users"] = _rls_flags(db, "clinic_users")
-            debug["rls_governance_events"] = _rls_flags(db, "governance_events")
+            debug["rls_clinic_governance_events"] = _rls_flags(db, "clinic_governance_events")
             debug["rls_ops_metrics_events"] = _rls_flags(db, "ops_metrics_events")
             debug["rls_clinic_policies"] = _rls_flags(db, "clinic_policies")
             debug["rls_clinic_policy_state"] = _rls_flags(db, "clinic_policy_state")
@@ -153,14 +150,12 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
             debug["policies_clinics"] = _policies(db, "clinics")
             debug["policies_clinic_users"] = _policies(db, "clinic_users")
 
-            # Confirm what set_rls_context actually sets (GUCs)
             try:
                 clear_rls_context(db)
                 set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
 
                 debug["guc_app_clinic_id"] = _current_setting(db, "app.clinic_id")
                 debug["guc_app_user_id"] = _current_setting(db, "app.user_id")
-
                 debug["guc_app_tenant_id"] = _current_setting(db, "app.tenant_id")
                 debug["guc_app_clinic_uuid"] = _current_setting(db, "app.clinic_uuid")
                 debug["guc_app_tenant_uuid"] = _current_setting(db, "app.tenant_uuid")
@@ -171,7 +166,6 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
                     pass
 
             try:
-                # 1) Create clinic A under clinic A context
                 clear_rls_context(db)
                 set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
                 db.execute(
@@ -184,7 +178,6 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
                     {"cid": str(clinic_a), "name": "RLS Clinic A", "slug": slug_a},
                 )
 
-                # 2) Create clinic B under clinic B context
                 clear_rls_context(db)
                 set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
                 db.execute(
@@ -197,7 +190,6 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
                     {"cid": str(clinic_b), "name": "RLS Clinic B", "slug": slug_b},
                 )
 
-                # 3) Create clinic user A (under clinic A)
                 clear_rls_context(db)
                 set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
                 db.execute(
@@ -210,7 +202,6 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
                     {"uid": str(user_a), "cid": str(clinic_a), "email": email_a},
                 )
 
-                # 4) Create clinic user B (under clinic B)
                 clear_rls_context(db)
                 set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
                 db.execute(
@@ -225,7 +216,6 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
 
                 db.commit()
 
-                # 5) Verify visibility from clinic A context
                 clear_rls_context(db)
                 set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
 
@@ -251,7 +241,6 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
                 checks["a_sees_user_a"] = int(a_sees_user_a)
                 checks["a_sees_user_b"] = int(a_sees_user_b)
 
-                # 6) Verify visibility from clinic B context
                 clear_rls_context(db)
                 set_rls_context(db, clinic_id=str(clinic_b), user_id=str(user_b))
 
@@ -290,6 +279,8 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
                     and checks["b_sees_user_a"] == 0
                 )
 
+                result_for_audit = "ok" if ok else "fail"
+
                 return {
                     "status": "ok" if ok else "fail",
                     "now_utc": now_utc,
@@ -299,7 +290,6 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
                 }
 
             finally:
-                # Best-effort cleanup (admin route; safe to attempt)
                 try:
                     clear_rls_context(db)
                     set_rls_context(db, clinic_id=str(clinic_a), user_id=str(user_a))
@@ -325,10 +315,10 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
 
     except Exception:
         status_code_for_audit = 500
+        result_for_audit = "error"
         raise
 
     finally:
-        # Best-effort audit for this admin action (metadata-only)
         try:
             write_admin_audit_event(
                 action="admin.ops.rls_self_test",
@@ -339,7 +329,7 @@ def rls_self_test(ctx: AdminContext = Depends(require_admin)) -> Dict[str, Any]:
                 request_id=ctx.request_id,
                 ip_hash=ctx.ip_hash,
                 ua_hash=ctx.ua_hash,
-                meta={"result": "ok" if status_code_for_audit == 200 else "error"},
+                meta={"result": result_for_audit},
             )
         except Exception:
             pass
