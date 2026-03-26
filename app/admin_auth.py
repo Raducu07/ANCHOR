@@ -1,4 +1,3 @@
-# app/admin_auth.py
 from __future__ import annotations
 
 import hashlib
@@ -88,8 +87,8 @@ def _extract_admin_token(
 
 @dataclass(frozen=True)
 class AdminContext:
-    token_id: Optional[str]         # UUID string if DB token; None if legacy env token
-    token_source: str               # "db" or "env"
+    token_id: Optional[str]   # UUID string if DB token; None if legacy env token
+    token_source: str         # "db" or "env"
     ip_hash: Optional[str]
     ua_hash: Optional[str]
     request_id: Optional[str]
@@ -220,7 +219,7 @@ def _validate_env_token(token_plaintext: str) -> bool:
 
 def require_admin(
     request: Request,
-    x_anchor_admin_token: Optional[str] = Header(default=None, convert_underscores=False),
+    x_anchor_admin_token: Optional[str] = Header(default=None, alias="X-ANCHOR-ADMIN-TOKEN"),
     authorization: Optional[str] = Header(default=None),
 ) -> AdminContext:
     """
@@ -263,9 +262,7 @@ def require_admin(
         )
         raise HTTPException(status_code=401, detail="Missing admin token")
 
-    # -------------------------
     # Deterministic admin rate limiting (token fingerprinted; token never stored)
-    # -------------------------
     enforce_admin_token(request, token)
 
     token_id: Optional[str] = None
@@ -294,7 +291,6 @@ def require_admin(
         )
         raise HTTPException(status_code=401, detail="Invalid admin token")
 
-    # Success audit (auth)
     write_admin_audit_event(
         action="admin.auth",
         method=method,
@@ -314,6 +310,9 @@ def require_admin(
         ua_hash=ua_hash,
         request_id=request_id,
     )
-    # Stash for downstream (optional)
+
+    # Stash for downstream reuse (request-scoped only)
     request.state.admin_ctx = ctx
+    request.state.admin_token_presented = token
+
     return ctx
