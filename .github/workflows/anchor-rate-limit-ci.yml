@@ -13,6 +13,7 @@ jobs:
     env:
       RATE_LIMIT_ENABLED: "1"
       RATE_LIMIT_SECRET: "ci-test-secret"
+      PYTHONPATH: ${{ github.workspace }}
 
     steps:
       - name: Checkout
@@ -22,6 +23,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Show workspace
+        run: |
+          pwd
+          ls -la
+          ls -la app || true
+          python -c "import os, sys; print('cwd=', os.getcwd()); print('PYTHONPATH=', os.getenv('PYTHONPATH')); print(sys.path)"
 
       - name: Install dependencies
         run: |

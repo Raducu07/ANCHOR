@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 from typing import Callable
 
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
+
+# Make repo root importable in both local runs and GitHub Actions.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 # Make import-time limiter construction deterministic for local runs and CI.
 os.environ.setdefault("RATE_LIMIT_ENABLED", "1")
