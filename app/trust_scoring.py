@@ -52,8 +52,13 @@ def _status_from_score(score: int) -> str:
     return "needs_attention"
 
 
-def _derive_trust_state(request_count: int, rate_5xx: float, p95_latency_ms: float, governance_replaced_rate: float) -> str:
-    if request_count <= 0:
+def _derive_trust_state(
+    request_count_24h: int,
+    rate_5xx: float,
+    p95_latency_ms: float,
+    governance_replaced_rate: float,
+) -> str:
+    if request_count_24h <= 0:
         return "yellow"
 
     if rate_5xx >= 0.05 or p95_latency_ms >= 3000 or governance_replaced_rate >= 0.30:
@@ -63,7 +68,7 @@ def _derive_trust_state(request_count: int, rate_5xx: float, p95_latency_ms: flo
         return "yellow"
 
     return "green"
-
+    
 
 def _headline(posture_status: str, trust_state: str, request_count_24h: int) -> str:
     if request_count_24h <= 0:
