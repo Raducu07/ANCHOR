@@ -9,12 +9,13 @@ from sqlalchemy.orm import Session
 from app.db import SessionLocal
 from app.trust_snapshot import build_trust_snapshot
 
-# -------------------------------------------------------------------
 # IMPORTANT:
-# Keep your existing clinic/portal auth dependency if the import names
-# in your codebase differ. This is the only likely integration point.
-# -------------------------------------------------------------------
-from app.auth_and_rls import ClinicUserContext, require_clinic_user
+# Reuse the same auth dependency that already worked in your previous
+# portal_trust.py implementation.
+#
+# If your old working file already imported a different symbol from
+# app.auth_and_rls, keep that old import instead of guessing.
+from app.auth_and_rls import require_clinic_user
 
 
 router = APIRouter(prefix="/v1/portal/trust", tags=["portal-trust"])
@@ -22,6 +23,15 @@ router = APIRouter(prefix="/v1/portal/trust", tags=["portal-trust"])
 
 def _db() -> Session:
     return SessionLocal()
+
+
+def _clinic_id_from_ctx(ctx: Any) -> str:
+    # Supports object-style contexts and dict-style contexts.
+    if hasattr(ctx, "clinic_id"):
+        return str(ctx.clinic_id)
+    if isinstance(ctx, dict) and "clinic_id" in ctx:
+        return str(ctx["clinic_id"])
+    raise ValueError("Authenticated clinic context did not contain clinic_id")
 
 
 def _posture_status_from_snapshot(snapshot: Dict[str, Any]) -> str:
@@ -329,12 +339,12 @@ def _build_materials_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get("/profile")
 def trust_profile(
-    ctx: ClinicUserContext = Depends(require_clinic_user),
+    ctx: Any = Depends(require_clinic_user),
 ) -> Dict[str, Any]:
+    clinic_id = _clinic_id_from_ctx(ctx)
     with _db() as db:
-        snapshot = build_trust_snapshot(db=db, clinic_id=str(ctx.clinic_id))
+        snapshot = build_trust_snapshot(db=db, clinic_id=clinic_id)
 
-    # Keep this broadly stable because /trust/profile already works.
     return {
         "clinic_name": snapshot["clinic"]["clinic_name"],
         "clinic_slug": snapshot["clinic"]["clinic_slug"],
@@ -358,26 +368,29 @@ def trust_profile(
 
 @router.get("/posture")
 def trust_posture(
-    ctx: ClinicUserContext = Depends(require_clinic_user),
+    ctx: Any = Depends(require_clinic_user),
 ) -> Dict[str, Any]:
+    clinic_id = _clinic_id_from_ctx(ctx)
     with _db() as db:
-        snapshot = build_trust_snapshot(db=db, clinic_id=str(ctx.clinic_id))
+        snapshot = build_trust_snapshot(db=db, clinic_id=clinic_id)
     return _build_posture_response(snapshot)
 
 
 @router.get("/pack")
 def trust_pack(
-    ctx: ClinicUserContext = Depends(require_clinic_user),
+    ctx: Any = Depends(require_clinic_user),
 ) -> Dict[str, Any]:
+    clinic_id = _clinic_id_from_ctx(ctx)
     with _db() as db:
-        snapshot = build_trust_snapshot(db=db, clinic_id=str(ctx.clinic_id))
+        snapshot = build_trust_snapshot(db=db, clinic_id=clinic_id)
     return _build_pack_response(snapshot)
 
 
 @router.get("/materials")
 def trust_materials(
-    ctx: ClinicUserContext = Depends(require_clinic_user),
+    ctx: Any = Depends(require_clinic_user),
 ) -> Dict[str, Any]:
+    clinic_id = _clinic_id_from_ctx(ctx)
     with _db() as db:
-        snapshot = build_trust_snapshot(db=db, clinic_id=str(ctx.clinic_id))
+        snapshot = build_trust_snapshot(db=db, clinic_id=clinic_id)
     return _build_materials_response(snapshot)
