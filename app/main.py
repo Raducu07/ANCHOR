@@ -155,33 +155,37 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
     allow_origins = _parse_csv_env("CORS_ALLOW_ORIGINS")
     if allow_origins:
         allow_credentials = _env_truthy("CORS_ALLOW_CREDENTIALS", default=False)
-        if allow_credentials and any(o == "*" for o in allow_origins):
-            raise RuntimeError("CORS misconfig: cannot use '*' in CORS_ALLOW_ORIGINS when CORS_ALLOW_CREDENTIALS=true")
 
-        allow_methods = _parse_csv_env("CORS_ALLOW_METHODS") or ["GET", "POST", "OPTIONS"]
-        allow_headers = _parse_csv_env("CORS_ALLOW_HEADERS") or ["Authorization", "Content-Type", "X-Request-ID"]
-        try:
-            max_age = int((os.getenv("CORS_MAX_AGE", "600") or "600").strip())
-        except Exception:
-            max_age = 600
-        max_age = max(0, min(86400, max_age))
+        if allow_credentials and any(o == "*" for o in allow_origins):
+            raise RuntimeError(
+                "CORS misconfig: cannot use '*' in CORS_ALLOW_ORIGINS when CORS_ALLOW_CREDENTIALS=true"
+            )
+
+        cors_allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+        cors_allow_headers = ["*"]
+        cors_max_age = 600
+        cors_allow_origin_regex = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 
         app.add_middleware(
             CORSMiddleware,
             allow_origins=allow_origins,
+            allow_origin_regex=cors_allow_origin_regex,
             allow_credentials=allow_credentials,
-            allow_methods=allow_methods,
-            allow_headers=allow_headers,
-            max_age=max_age,
+            allow_methods=cors_allow_methods,
+            allow_headers=cors_allow_headers,
+            expose_headers=["X-Request-ID"],
+            max_age=cors_max_age,
         )
+
         log_event(
             logging.INFO,
             "cors_enabled",
             allow_origins=allow_origins,
+            allow_origin_regex=cors_allow_origin_regex,
             allow_credentials=allow_credentials,
-            allow_methods=allow_methods,
-            allow_headers=allow_headers,
-            max_age=max_age,
+            allow_methods=cors_allow_methods,
+            allow_headers=cors_allow_headers,
+            max_age=cors_max_age,
         )
     else:
         log_event(logging.INFO, "cors_disabled")
