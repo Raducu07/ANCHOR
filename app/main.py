@@ -35,6 +35,7 @@ from app.portal_ops import router as portal_ops_router
 from app.portal_ops_summary import router as portal_ops_summary_router
 from app.portal_ops_timeseries import router as portal_ops_timeseries_router
 from app.portal_trust_state import router as portal_trust_state_router
+from app.portal_trust import router as portal_trust_router
 from app.portal_error_budget import router as portal_error_budget_router
 from app.portal_ops_health import router as portal_ops_health_router
 from app.portal_dashboard import router as portal_dashboard_router
@@ -237,6 +238,7 @@ app.include_router(ops_rls_router)
 app.include_router(portal_submit_router)
 app.include_router(portal_read_router)
 app.include_router(portal_export_router)
+app.include_router(portal_trust_router)
 
 app.include_router(portal_ops_router)
 app.include_router(portal_ops_summary_router)
