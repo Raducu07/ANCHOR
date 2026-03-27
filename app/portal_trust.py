@@ -1,37 +1,83 @@
 # app/portal_trust.py
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.db import SessionLocal
+from app.db import SessionLocal, set_rls_context, clear_rls_context
 from app.trust_snapshot import build_trust_snapshot
 
 # IMPORTANT:
-# Reuse the same auth dependency that already worked in your previous
-# portal_trust.py implementation.
-#
-# If your old working file already imported a different symbol from
-# app.auth_and_rls, keep that old import instead of guessing.
+# Keep this aligned with the auth dependency used by your working
+# clinic portal routes. If your working routes use a different symbol,
+# swap only this import + the Depends(...) calls below.
 from app.auth_and_rls import require_clinic_user
 
 
 router = APIRouter(prefix="/v1/portal/trust", tags=["portal-trust"])
 
 
-def _db() -> Session:
-    return SessionLocal()
+def _ctx_value(ctx: Any, key: str) -> Optional[Any]:
+    # direct attr
+    if hasattr(ctx, key):
+        value = getattr(ctx, key)
+        if value is not None:
+            return value
+
+    # dict style
+    if isinstance(ctx, dict) and key in ctx and ctx[key] is not None:
+        return ctx[key]
+
+    # nested claims attr/dict
+    claims = getattr(ctx, "claims", None)
+    if isinstance(claims, dict) and key in claims and claims[key] is not None:
+        return claims[key]
+
+    if isinstance(ctx, dict):
+        nested_claims = ctx.get("claims")
+        if isinstance(nested_claims, dict) and key in nested_claims and nested_claims[key] is not None:
+            return nested_claims[key]
+
+    return None
 
 
-def _clinic_id_from_ctx(ctx: Any) -> str:
-    # Supports object-style contexts and dict-style contexts.
-    if hasattr(ctx, "clinic_id"):
-        return str(ctx.clinic_id)
-    if isinstance(ctx, dict) and "clinic_id" in ctx:
-        return str(ctx["clinic_id"])
-    raise ValueError("Authenticated clinic context did not contain clinic_id")
+def _ctx_ids(ctx: Any) -> Tuple[str, Optional[str]]:
+    clinic_id = _ctx_value(ctx, "clinic_id")
+    clinic_user_id = (
+        _ctx_value(ctx, "clinic_user_id")
+        or _ctx_value(ctx, "user_id")
+        or _ctx_value(ctx, "sub")
+    )
+
+    if not clinic_id:
+        raise HTTPException(status_code=401, detail="Missing clinic_id in authenticated context")
+
+    return str(clinic_id), str(clinic_user_id) if clinic_user_id else None
+
+
+def _build_snapshot_for_ctx(ctx: Any) -> Dict[str, Any]:
+    clinic_id, clinic_user_id = _ctx_ids(ctx)
+
+    with SessionLocal() as db:
+        try:
+            # Critical: restore tenant RLS context for this DB session
+            set_rls_context(
+                db,
+                clinic_id=clinic_id,
+                user_id=clinic_user_id,
+            )
+            snapshot = build_trust_snapshot(
+                db=db,
+                clinic_id=clinic_id,
+            )
+            return snapshot
+        finally:
+            try:
+                clear_rls_context(db)
+            except Exception:
+                pass
 
 
 def _posture_status_from_snapshot(snapshot: Dict[str, Any]) -> str:
@@ -79,7 +125,7 @@ def _build_posture_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
                 "Governance receipts are active.",
                 "Policy versioning is active.",
                 "Metadata-only accountability remains the core operating model.",
-                "Current active policy version: v%s." % policy_version,
+                f"Current active policy version: v{policy_version}.",
                 "Override model is append-only and audit-oriented.",
             ],
         },
@@ -110,11 +156,11 @@ def _build_posture_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             "title": "Operational trust posture",
             "status": _posture_status_from_snapshot(snapshot),
             "items": [
-                "Trust state: %s." % trust_state,
-                "Recent intervention rate: %.1f%%." % (snapshot["operations"]["intervention_rate_24h"] * 100.0),
-                "Recent privacy warning rate: %.1f%%." % (snapshot["operations"]["pii_warned_rate_24h"] * 100.0),
-                "Top mode (24h): %s." % snapshot["operations"]["top_mode_24h"],
-                "Top route (24h): %s." % snapshot["operations"]["top_route_24h"],
+                f"Trust state: {trust_state}.",
+                f"Recent intervention rate: {snapshot['operations']['intervention_rate_24h'] * 100.0:.1f}%.",
+                f"Recent privacy warning rate: {snapshot['operations']['pii_warned_rate_24h'] * 100.0:.1f}%.",
+                f"Top mode (24h): {snapshot['operations']['top_mode_24h']}.",
+                f"Top route (24h): {snapshot['operations']['top_route_24h']}.",
             ],
         },
         {
@@ -125,7 +171,7 @@ def _build_posture_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
                 "ANCHOR Learn baseline is enabled.",
                 "Explainers and microlearning cards are available.",
                 "Receipts and governance events can link back into learning support.",
-                "Recommended reinforcement: %s." % snapshot["learning"]["recommended_learning"]["title"],
+                f"Recommended reinforcement: {snapshot['learning']['recommended_learning']['title']}.",
             ],
         },
     ]
@@ -145,10 +191,10 @@ def _build_pack_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     policy_version = snapshot["governance"]["policy_version"]
 
     executive_summary = (
-        "%s currently operates with ANCHOR as governance, trust, and learning infrastructure for safe AI use in veterinary settings. "
+        f"{clinic_name} currently operates with ANCHOR as governance, trust, and learning infrastructure for safe AI use in veterinary settings. "
         "This pack is derived from metadata-only governance and operational evidence, with privacy-aware controls, governance receipts, "
         "tenant isolation safeguards, and staff enablement surfaces active."
-    ) % clinic_name
+    )
 
     sections: List[Dict[str, Any]] = [
         {
@@ -156,8 +202,8 @@ def _build_pack_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             "title": "Executive summary",
             "body": executive_summary,
             "bullets": [
-                "Trust state: %s." % trust_state,
-                "Active policy version: v%s." % policy_version,
+                f"Trust state: {trust_state}.",
+                f"Active policy version: v{policy_version}.",
                 "Generated from metadata-only evidence.",
             ],
         },
@@ -211,10 +257,10 @@ def _build_pack_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
                 "latency and error posture, and recent activity concentration."
             ),
             "bullets": [
-                "Recent intervention rate: %.1f%%." % (snapshot["operations"]["intervention_rate_24h"] * 100.0),
-                "Recent privacy warning rate: %.1f%%." % (snapshot["operations"]["pii_warned_rate_24h"] * 100.0),
-                "P95 latency (24h): %sms." % snapshot["operations"]["p95_latency_ms"],
-                "Top mode (24h): %s." % snapshot["operations"]["top_mode_24h"],
+                f"Recent intervention rate: {snapshot['operations']['intervention_rate_24h'] * 100.0:.1f}%.",
+                f"Recent privacy warning rate: {snapshot['operations']['pii_warned_rate_24h'] * 100.0:.1f}%.",
+                f"P95 latency (24h): {snapshot['operations']['p95_latency_ms']}ms.",
+                f"Top mode (24h): {snapshot['operations']['top_mode_24h']}.",
             ],
         },
         {
@@ -228,7 +274,7 @@ def _build_pack_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
                 "Explainers available.",
                 "Microlearning cards available.",
                 "Governance-to-learning tie-ins active.",
-                "Recommended learning focus: %s." % snapshot["learning"]["recommended_learning"]["title"],
+                f"Recommended learning focus: {snapshot['learning']['recommended_learning']['title']}.",
             ],
         },
         {
@@ -268,18 +314,18 @@ def _build_materials_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             "id": "short_trust_statement",
             "title": "Short trust statement",
             "body": (
-                "%s uses ANCHOR as governance, trust, and learning infrastructure for safe AI use in veterinary practice operations. "
+                f"{clinic_name} uses ANCHOR as governance, trust, and learning infrastructure for safe AI use in veterinary practice operations. "
                 "ANCHOR provides metadata-only oversight, governance receipts, privacy-aware controls, and operational trust visibility."
-            ) % clinic_name,
+            ),
         },
         {
             "id": "website_paragraph",
             "title": "Website / brochure paragraph",
             "body": (
-                "%s uses ANCHOR to support safe and accountable use of AI in veterinary clinic workflows. "
+                f"{clinic_name} uses ANCHOR to support safe and accountable use of AI in veterinary clinic workflows. "
                 "The platform is governance-first and designed around metadata-only accountability, privacy-aware controls, tenant isolation, "
                 "and trust surfaces that help leadership oversee operational AI use without relying on stored raw prompts or outputs."
-            ) % clinic_name,
+            ),
         },
         {
             "id": "responsible_ai_operations",
@@ -318,8 +364,8 @@ def _build_materials_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             "title": "Procurement / partnership support line",
             "body": (
                 "ANCHOR is positioned as governance, trust, and learning infrastructure for safe AI use in veterinary clinics, rather than as a "
-                "clinical decision-making system. Current reinforcement focus: %s."
-            ) % recommended_learning_title,
+                f"clinical decision-making system. Current reinforcement focus: {recommended_learning_title}."
+            ),
         },
     ]
 
@@ -341,10 +387,7 @@ def _build_materials_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 def trust_profile(
     ctx: Any = Depends(require_clinic_user),
 ) -> Dict[str, Any]:
-    clinic_id = _clinic_id_from_ctx(ctx)
-    with _db() as db:
-        snapshot = build_trust_snapshot(db=db, clinic_id=clinic_id)
-
+    snapshot = _build_snapshot_for_ctx(ctx)
     return {
         "clinic_name": snapshot["clinic"]["clinic_name"],
         "clinic_slug": snapshot["clinic"]["clinic_slug"],
@@ -370,9 +413,7 @@ def trust_profile(
 def trust_posture(
     ctx: Any = Depends(require_clinic_user),
 ) -> Dict[str, Any]:
-    clinic_id = _clinic_id_from_ctx(ctx)
-    with _db() as db:
-        snapshot = build_trust_snapshot(db=db, clinic_id=clinic_id)
+    snapshot = _build_snapshot_for_ctx(ctx)
     return _build_posture_response(snapshot)
 
 
@@ -380,9 +421,7 @@ def trust_posture(
 def trust_pack(
     ctx: Any = Depends(require_clinic_user),
 ) -> Dict[str, Any]:
-    clinic_id = _clinic_id_from_ctx(ctx)
-    with _db() as db:
-        snapshot = build_trust_snapshot(db=db, clinic_id=clinic_id)
+    snapshot = _build_snapshot_for_ctx(ctx)
     return _build_pack_response(snapshot)
 
 
@@ -390,7 +429,5 @@ def trust_pack(
 def trust_materials(
     ctx: Any = Depends(require_clinic_user),
 ) -> Dict[str, Any]:
-    clinic_id = _clinic_id_from_ctx(ctx)
-    with _db() as db:
-        snapshot = build_trust_snapshot(db=db, clinic_id=clinic_id)
+    snapshot = _build_snapshot_for_ctx(ctx)
     return _build_materials_response(snapshot)
