@@ -112,12 +112,18 @@ export default function GovernanceEventsPage() {
                 New governed activity will appear here for clinic-scoped operational review and receipt access.
                 Once a submission is processed through the backend, its metadata record should become visible in this table.
               </p>
-              <div className="mt-4">
+              <div className="mt-4 flex flex-wrap gap-4">
                 <Link
                   href="/receipts"
                   className="text-sm font-medium text-slate-900 underline underline-offset-4"
                 >
                   Open receipt viewer
+                </Link>
+                <Link
+                  href="/learn"
+                  className="text-sm font-medium text-slate-900 underline underline-offset-4"
+                >
+                  Open Learn
                 </Link>
               </div>
             </div>
@@ -176,6 +182,25 @@ export default function GovernanceEventsPage() {
               </table>
             </div>
           )}
+        </Card>
+
+        <Card>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900">Learning tie-in</h2>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">
+                Governance events show what happened. ANCHOR Learn helps staff understand why patterns matter and how safer AI use can be strengthened over time.
+              </p>
+            </div>
+            <div className="mt-2 sm:mt-0">
+              <Link
+                href="/learn/explainers"
+                className="text-sm font-medium text-slate-900 underline underline-offset-4"
+              >
+                Open explainers
+              </Link>
+            </div>
+          </div>
         </Card>
       </div>
     </AppShell>

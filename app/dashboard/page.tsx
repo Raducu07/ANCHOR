@@ -60,7 +60,7 @@ export default function DashboardPage() {
   return (
     <AppShell>
       <div className="space-y-6">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <p className="text-sm font-medium text-slate-500">Dashboard</p>
             <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
@@ -72,16 +72,29 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="text-right">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Current trust state</p>
-              <div className="mt-1">
-                <StatusBadge value={trustState} />
+          <div className="flex justify-start lg:justify-end">
+            <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 shadow-sm">
+              <div className="min-w-[160px]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                  Current trust state
+                </p>
+                <div className="mt-2">
+                  <TrustPill value={trustState} />
+                </div>
               </div>
+
+              <div className="hidden h-10 w-px bg-slate-200 sm:block" />
+
+              <Button
+                variant="secondary"
+                onClick={() => void load(true)}
+                loading={refreshing}
+                disabled={loading}
+                className="shrink-0"
+              >
+                Refresh
+              </Button>
             </div>
-            <Button variant="secondary" onClick={() => void load(true)} loading={refreshing} disabled={loading}>
-              Refresh
-            </Button>
           </div>
         </div>
 
@@ -105,7 +118,7 @@ export default function DashboardPage() {
                   description="Current clinic-facing trust signal derived from the backend surface."
                 />
                 <div className="mt-4 flex items-center gap-3">
-                  <StatusBadge value={trustState} />
+                  <TrustPill value={trustState} />
                 </div>
                 <div className="mt-4 space-y-2">
                   {trustReasons.length ? (
@@ -161,6 +174,11 @@ export default function DashboardPage() {
                     title="Export governance data"
                     description="Generate a metadata-only CSV export."
                   />
+                  <QuickLink
+                    href="/learn"
+                    title="Open Learn"
+                    description="Build safe AI-use literacy through explainers and microlearning."
+                  />
                 </div>
               </Card>
             </div>
@@ -172,43 +190,49 @@ export default function DashboardPage() {
                   description="A slightly richer reading of current dashboard activity signals."
                 />
                 <dl className="mt-4 space-y-4 text-sm">
-                  <Detail
-                    label="Events per hour"
-                    value={formatNumber(summary.eventsPerHour)}
-                  />
-                  <Detail
-                    label="Intervention rate"
-                    value={formatPercent(summary.interventionRate)}
-                  />
-                  <Detail
-                    label="PII warned rate"
-                    value={formatPercent(summary.piiWarnedRate)}
-                  />
-                  <Detail
-                    label="Top route"
-                    value={summary.topRoute}
-                  />
-                  <Detail
-                    label="Snapshot time"
-                    value={formatDateTime(data?.now_utc)}
-                  />
+                  <Detail label="Events per hour" value={formatNumber(summary.eventsPerHour)} />
+                  <Detail label="Intervention rate" value={formatPercent(summary.interventionRate)} />
+                  <Detail label="PII warned rate" value={formatPercent(summary.piiWarnedRate)} />
+                  <Detail label="Top route" value={summary.topRoute} />
+                  <Detail label="Snapshot time" value={formatDateTime(data?.now_utc)} />
                 </dl>
               </Card>
 
               <Card>
                 <SectionTitle
-                  title="Governance posture note"
-                  description="What this dashboard is intended to communicate."
+                  title="Recommended learning"
+                  description="A lightweight bridge from governance operations into staff learning."
                 />
-                <div className="mt-4 space-y-3 text-sm leading-6 text-slate-600">
-                  <p>
-                    This dashboard is intentionally restrained. It summarizes governance posture and recent
-                    clinic activity without turning ANCHOR into a raw-content workspace.
-                  </p>
-                  <p>
-                    The strongest evidence surfaces remain receipts, governance events, and bounded exports.
-                    The dashboard should orient users, not overwhelm them.
-                  </p>
+                <div className="mt-4 space-y-4">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-sm font-semibold text-slate-900">Why metadata-only governance matters</p>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      Reinforce why ANCHOR records governance evidence without turning the product into a raw-content archive.
+                    </p>
+                    <div className="mt-3">
+                      <Link
+                        href="/learn/explainers"
+                        className="text-sm font-medium text-slate-900 underline underline-offset-4"
+                      >
+                        Open explainers
+                      </Link>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-sm font-semibold text-slate-900">Human review responsibility</p>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      Strengthen safe AI use by reinforcing that staff remain responsible for review and judgment.
+                    </p>
+                    <div className="mt-3">
+                      <Link
+                        href="/learn/cards"
+                        className="text-sm font-medium text-slate-900 underline underline-offset-4"
+                      >
+                        Open microlearning cards
+                      </Link>
+                    </div>
+                  </div>
                 </div>
               </Card>
             </div>
@@ -364,6 +388,30 @@ function QuickLink({
       <p className="text-sm font-semibold text-slate-900">{title}</p>
       <p className="mt-1 text-sm leading-6 text-slate-600">{description}</p>
     </Link>
+  );
+}
+
+function TrustPill({ value }: { value: string }) {
+  const normalized = String(value || "unknown").toLowerCase().trim();
+
+  const tone =
+    normalized === "green"
+      ? "border border-emerald-200 bg-emerald-50/70 text-emerald-800"
+      : normalized === "amber" || normalized === "yellow"
+        ? "border border-amber-200 bg-amber-50/70 text-amber-800"
+        : normalized === "red"
+          ? "border border-rose-200 bg-rose-50/70 text-rose-800"
+          : "border border-slate-200 bg-slate-100 text-slate-700";
+
+  return (
+    <span
+      className={[
+        "inline-flex items-center rounded-full px-3 py-1.5 text-sm font-medium tracking-wide",
+        tone,
+      ].join(" ")}
+    >
+      {normalized === "unknown" ? "Unknown" : normalized.charAt(0).toUpperCase() + normalized.slice(1)}
+    </span>
   );
 }
 

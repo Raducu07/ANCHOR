@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -72,7 +73,9 @@ export default function ReceiptsPage() {
           <p className="text-sm font-medium text-slate-500">Governance receipts</p>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Receipt viewer</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Inspect a clinic-scoped governance receipt by request ID. Receipt views preserve the metadata-only posture and surface accountability fields without storing raw prompt or output content.
+            Inspect a clinic-scoped governance receipt by request ID. Receipt views preserve the
+            metadata-only posture and surface accountability fields without storing raw prompt or
+            output content.
           </p>
         </div>
 
@@ -92,74 +95,135 @@ export default function ReceiptsPage() {
         </Card>
 
         {receipt ? (
-          <div className="grid gap-4 xl:grid-cols-2">
-            <Card>
-              <SectionTitle
-                title="Decision summary"
-                description="Primary governance outcome fields for this request."
-              />
-              <dl className="mt-4 space-y-3 text-sm">
-                <Detail label="Request ID" value={receipt.request_id} />
-                <Detail label="Mode" value={<StatusBadge value={String(receipt.mode ?? "unknown")} />} />
-                <Detail label="Decision" value={<StatusBadge value={String(receipt.decision ?? "unknown")} />} />
-                <Detail label="Risk grade" value={<StatusBadge value={String(receipt.risk_grade ?? "unknown")} />} />
-                <Detail label="Reason code" value={receipt.reason_code} />
-                <Detail label="Governance score" value={formatScore(receipt.governance_score)} />
-              </dl>
-            </Card>
-
-            <Card>
-              <SectionTitle
-                title="Policy trace"
-                description="Versioning and traceability fields supporting audit review."
-              />
-              <dl className="mt-4 space-y-3 text-sm">
-                <Detail label="Policy version" value={receipt.policy_version} />
-                <Detail label="Neutrality version" value={receipt.neutrality_version} />
-                <Detail label="Policy hash" value={receipt.policy_hash ?? receipt.policy_sha256 ?? "—"} />
-              </dl>
-            </Card>
-
-            <Card>
-              <SectionTitle
-                title="Privacy and accountability"
-                description="Privacy-aware controls and oversight indicators recorded for this request."
-              />
-              <dl className="mt-4 space-y-3 text-sm">
-                <Detail label="PII detected" value={receipt.pii_detected ? "Yes" : "No"} />
-                <Detail label="PII action" value={receipt.pii_action} />
-                <Detail
-                  label="PII types"
-                  value={receipt.pii_types?.length ? receipt.pii_types.join(", ") : "None returned"}
+          <>
+            <div className="grid gap-4 xl:grid-cols-2">
+              <Card>
+                <SectionTitle
+                  title="Decision summary"
+                  description="Primary governance outcome fields for this request."
                 />
-                <Detail label="Override flag" value={receipt.override_flag ? "Yes" : "No"} />
-                <Detail label="No content stored" value={receipt.no_content_stored ?? true ? "Yes" : "No"} />
-              </dl>
-            </Card>
+                <dl className="mt-4 space-y-3 text-sm">
+                  <Detail label="Request ID" value={receipt.request_id} />
+                  <Detail
+                    label="Mode"
+                    value={<StatusBadge value={String(receipt.mode ?? "unknown")} />}
+                  />
+                  <Detail
+                    label="Decision"
+                    value={<StatusBadge value={String(receipt.decision ?? "unknown")} />}
+                  />
+                  <Detail
+                    label="Risk grade"
+                    value={<StatusBadge value={String(receipt.risk_grade ?? "unknown")} />}
+                  />
+                  <Detail label="Reason code" value={receipt.reason_code} />
+                  <Detail label="Governance score" value={formatScore(receipt.governance_score)} />
+                </dl>
+              </Card>
+
+              <Card>
+                <SectionTitle
+                  title="Policy trace"
+                  description="Versioning and traceability fields supporting audit review."
+                />
+                <dl className="mt-4 space-y-3 text-sm">
+                  <Detail label="Policy version" value={receipt.policy_version} />
+                  <Detail label="Neutrality version" value={receipt.neutrality_version} />
+                  <Detail
+                    label="Policy hash"
+                    value={receipt.policy_hash ?? receipt.policy_sha256 ?? "—"}
+                  />
+                </dl>
+              </Card>
+
+              <Card>
+                <SectionTitle
+                  title="Privacy and accountability"
+                  description="Privacy-aware controls and oversight indicators recorded for this request."
+                />
+                <dl className="mt-4 space-y-3 text-sm">
+                  <Detail label="PII detected" value={receipt.pii_detected ? "Yes" : "No"} />
+                  <Detail label="PII action" value={receipt.pii_action} />
+                  <Detail
+                    label="PII types"
+                    value={receipt.pii_types?.length ? receipt.pii_types.join(", ") : "None returned"}
+                  />
+                  <Detail label="Override flag" value={receipt.override_flag ? "Yes" : "No"} />
+                  <Detail
+                    label="No content stored"
+                    value={receipt.no_content_stored ?? true ? "Yes" : "No"}
+                  />
+                </dl>
+              </Card>
+
+              <Card>
+                <SectionTitle
+                  title="Interpretation note"
+                  description="How to read this ANCHOR receipt operationally."
+                />
+                <div className="mt-4 space-y-3 text-sm leading-6 text-slate-600">
+                  <p>
+                    This receipt reflects governance metadata only. It is designed to support
+                    clinic-scoped auditability, policy review, and privacy-aware operational oversight.
+                  </p>
+                  <p>
+                    Raw prompt and output content are intentionally excluded from this surface under
+                    ANCHOR’s current metadata-only product doctrine.
+                  </p>
+                </div>
+              </Card>
+            </div>
 
             <Card>
               <SectionTitle
-                title="Interpretation note"
-                description="How to read this ANCHOR receipt operationally."
+                title="Related learning"
+                description="Use ANCHOR Learn to turn governance understanding into safer day-to-day practice."
               />
-              <div className="mt-4 space-y-3 text-sm leading-6 text-slate-600">
-                <p>
-                  This receipt reflects governance metadata only. It is designed to support clinic-scoped auditability,
-                  policy review, and privacy-aware operational oversight.
-                </p>
-                <p>
-                  Raw prompt and output content are intentionally excluded from this surface under ANCHOR’s current
-                  metadata-only product doctrine.
-                </p>
+              <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-sm font-semibold text-slate-900">
+                    Why metadata-only governance matters
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    Reinforce why ANCHOR provides request-level accountability without storing raw
+                    content in routine review surfaces.
+                  </p>
+                  <div className="mt-3">
+                    <Link
+                      href="/learn/explainers"
+                      className="text-sm font-medium text-slate-900 underline underline-offset-4"
+                    >
+                      Open explainers
+                    </Link>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-sm font-semibold text-slate-900">
+                    Human review responsibility
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    Revisit why AI-assisted material still requires staff review, judgment, and
+                    accountability before use.
+                  </p>
+                  <div className="mt-3">
+                    <Link
+                      href="/learn/cards"
+                      className="text-sm font-medium text-slate-900 underline underline-offset-4"
+                    >
+                      Open microlearning cards
+                    </Link>
+                  </div>
+                </div>
               </div>
             </Card>
-          </div>
+          </>
         ) : (
           <Card>
             <p className="text-sm font-medium text-slate-900">No receipt selected</p>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-              Paste a request ID to inspect a single governance receipt. This is the clearest clinic-facing expression
-              of ANCHOR’s metadata-only accountability model.
+              Paste a request ID to inspect a single governance receipt. This is the clearest
+              clinic-facing expression of ANCHOR’s metadata-only accountability model.
             </p>
           </Card>
         )}
