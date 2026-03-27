@@ -29,6 +29,11 @@ const items = [
     label: "Privacy & Policy",
     helper: "Review platform posture",
   },
+  {
+    href: "/learn",
+    label: "Learn",
+    helper: "Build safe AI-use literacy",
+  },
 ];
 
 export function SideNav() {
@@ -60,7 +65,8 @@ export function SideNav() {
           <nav className="mt-3">
             <ul className="space-y-2">
               {items.map((item) => {
-                const active = pathname === item.href;
+                const active =
+                  pathname === item.href || (item.href === "/learn" && pathname.startsWith("/learn"));
 
                 return (
                   <li key={item.href}>
@@ -106,7 +112,7 @@ export function SideNav() {
               Current posture
             </p>
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              Metadata-only accountability, clinic-scoped exports, and policy traceability remain the core operating model.
+              Metadata-only accountability, clinic-scoped exports, policy traceability, and safe-use learning now form the core operating model.
             </p>
           </div>
         </div>
