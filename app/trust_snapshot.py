@@ -1,6 +1,7 @@
 # app/trust_snapshot.py
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -8,9 +9,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
-# ---------------------------
-# Shared thresholds
-# ---------------------------
+logger = logging.getLogger(__name__)
+
 
 SLO_MAX_5XX_RATE = 0.01
 SLO_MAX_P95_LATENCY_MS = 1000
@@ -20,10 +20,6 @@ RED_MAX_5XX_RATE = 0.05
 RED_MAX_P95_LATENCY_MS = 3000
 RED_MAX_GOV_REPLACED_RATE = 0.30
 
-
-# ---------------------------
-# Small utilities
-# ---------------------------
 
 def _to_int(value: Any, default: int = 0) -> int:
     try:
@@ -112,9 +108,18 @@ def _derive_recommended_learning(
     }
 
 
-def _row_mapping(db: Session, sql: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    row = db.execute(text(sql), params).mappings().first()
-    return dict(row) if row else {}
+def _safe_row_mapping(
+    db: Session,
+    sql: str,
+    params: Dict[str, Any],
+    query_name: str,
+) -> Dict[str, Any]:
+    try:
+        row = db.execute(text(sql), params).mappings().first()
+        return dict(row) if row else {}
+    except Exception as exc:
+        logger.exception("trust_snapshot query failed: %s", query_name)
+        return {}
 
 
 def _build_limitations(signal_quality: str) -> List[str]:
@@ -132,10 +137,6 @@ def _build_limitations(signal_quality: str) -> List[str]:
     return limitations
 
 
-# ---------------------------
-# Main builder
-# ---------------------------
-
 def build_trust_snapshot(
     db: Session,
     clinic_id: str,
@@ -144,34 +145,23 @@ def build_trust_snapshot(
     now_utc = datetime.now(timezone.utc)
     cutoff = now_utc - timedelta(hours=max(1, int(evidence_window_hours)))
 
-    clinic = _row_mapping(
+    clinic = _safe_row_mapping(
         db,
         """
         SELECT
-            clinic_id::text AS clinic_id,
+            CAST(clinic_id AS text) AS clinic_id,
             clinic_name,
             clinic_slug,
             COALESCE(active_status, true) AS active_status
         FROM public.clinics
-        WHERE clinic_id = :clinic_id::uuid
+        WHERE clinic_id = CAST(:clinic_id AS uuid)
         LIMIT 1
         """,
         {"clinic_id": clinic_id},
+        "clinic_lookup",
     )
 
-    policy = _row_mapping(
-        db,
-        """
-        SELECT
-            active_policy_version
-        FROM public.clinic_policy_state
-        WHERE clinic_id = :clinic_id::uuid
-        LIMIT 1
-        """,
-        {"clinic_id": clinic_id},
-    )
-
-    gov = _row_mapping(
+    gov = _safe_row_mapping(
         db,
         """
         SELECT
@@ -179,15 +169,17 @@ def build_trust_snapshot(
             COALESCE(SUM(CASE WHEN decision IN ('replaced', 'blocked', 'modified') THEN 1 ELSE 0 END), 0)::int AS interventions_24h,
             COALESCE(AVG(CASE WHEN decision IN ('replaced', 'blocked', 'modified') THEN 1.0 ELSE 0.0 END), 0.0) AS intervention_rate_24h,
             COALESCE(SUM(CASE WHEN pii_action = 'warn' THEN 1 ELSE 0 END), 0)::int AS pii_warned_24h,
-            COALESCE(AVG(CASE WHEN pii_action = 'warn' THEN 1.0 ELSE 0.0 END), 0.0) AS pii_warned_rate_24h
+            COALESCE(AVG(CASE WHEN pii_action = 'warn' THEN 1.0 ELSE 0.0 END), 0.0) AS pii_warned_rate_24h,
+            COALESCE(MAX(policy_version), 0)::int AS latest_policy_version
         FROM public.clinic_governance_events
-        WHERE clinic_id = :clinic_id::uuid
+        WHERE clinic_id = CAST(:clinic_id AS uuid)
           AND created_at >= :cutoff
         """,
         {"clinic_id": clinic_id, "cutoff": cutoff},
+        "governance_summary",
     )
 
-    ops = _row_mapping(
+    ops = _safe_row_mapping(
         db,
         """
         SELECT
@@ -197,42 +189,45 @@ def build_trust_snapshot(
             COALESCE(AVG(CASE WHEN governance_replaced THEN 1.0 ELSE 0.0 END), 0.0) AS gov_replaced_rate,
             COALESCE(AVG(CASE WHEN pii_warned THEN 1.0 ELSE 0.0 END), 0.0) AS ops_pii_warned_rate_24h
         FROM public.ops_metrics_events
-        WHERE clinic_id = :clinic_id::uuid
+        WHERE clinic_id = CAST(:clinic_id AS uuid)
           AND created_at >= :cutoff
         """,
         {"clinic_id": clinic_id, "cutoff": cutoff},
+        "ops_summary",
     )
 
-    top_mode = _row_mapping(
+    top_mode = _safe_row_mapping(
         db,
         """
         SELECT
             mode,
             COUNT(*)::int AS n
         FROM public.ops_metrics_events
-        WHERE clinic_id = :clinic_id::uuid
+        WHERE clinic_id = CAST(:clinic_id AS uuid)
           AND created_at >= :cutoff
         GROUP BY mode
         ORDER BY COUNT(*) DESC, mode ASC
         LIMIT 1
         """,
         {"clinic_id": clinic_id, "cutoff": cutoff},
+        "top_mode",
     )
 
-    top_route = _row_mapping(
+    top_route = _safe_row_mapping(
         db,
         """
         SELECT
             route,
             COUNT(*)::int AS n
         FROM public.ops_metrics_events
-        WHERE clinic_id = :clinic_id::uuid
+        WHERE clinic_id = CAST(:clinic_id AS uuid)
           AND created_at >= :cutoff
         GROUP BY route
         ORDER BY COUNT(*) DESC, route ASC
         LIMIT 1
         """,
         {"clinic_id": clinic_id, "cutoff": cutoff},
+        "top_route",
     )
 
     request_count_24h = _to_int(ops.get("request_count_24h"))
@@ -248,6 +243,12 @@ def build_trust_snapshot(
 
     top_mode_24h = _clean_label(top_mode.get("mode"))
     top_route_24h = _clean_label(top_route.get("route"))
+
+    if request_count_24h <= 0:
+        top_mode_24h = "—"
+        top_route_24h = "—"
+
+    observed_policy_version = _to_int(gov.get("latest_policy_version"), default=1)
 
     trust_state = _derive_trust_state(
         rate_5xx=rate_5xx,
@@ -280,7 +281,7 @@ def build_trust_snapshot(
             "active_status": bool(clinic.get("active_status", True)),
         },
         "governance": {
-            "policy_version": _to_int(policy.get("active_policy_version")),
+            "policy_version": observed_policy_version,
             "policy_versioning": True,
             "governance_receipts_active": True,
             "metadata_only_accountability": True,
