@@ -39,9 +39,9 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _clean_label(value: Optional[str]) -> str:
+def _clean_optional_label(value: Optional[str]) -> Optional[str]:
     value = (value or "").strip()
-    return value if value else "—"
+    return value if value else None
 
 
 def _derive_trust_state(
@@ -76,7 +76,7 @@ def _derive_signal_quality(request_count_24h: int, events_24h: int) -> str:
 
 
 def _derive_recommended_learning(
-    top_mode_24h: str,
+    top_mode_24h: Optional[str],
     intervention_rate_24h: float,
     pii_warned_rate_24h: float,
 ) -> Dict[str, str]:
@@ -117,7 +117,7 @@ def _safe_row_mapping(
     try:
         row = db.execute(text(sql), params).mappings().first()
         return dict(row) if row else {}
-    except Exception as exc:
+    except Exception:
         logger.exception("trust_snapshot query failed: %s", query_name)
         return {}
 
@@ -135,6 +135,41 @@ def _build_limitations(signal_quality: str) -> List[str]:
         )
 
     return limitations
+
+
+def _resolve_policy_version(db: Session, clinic_id: str) -> int:
+    row = _safe_row_mapping(
+        db,
+        """
+        SELECT
+            COALESCE(active_policy_version, 0)::int AS active_policy_version
+        FROM public.clinic_policy_state
+        WHERE clinic_id = CAST(:clinic_id AS uuid)
+        LIMIT 1
+        """,
+        {"clinic_id": clinic_id},
+        "policy_state_lookup",
+    )
+    active_policy_version = _to_int(row.get("active_policy_version"), default=0)
+    if active_policy_version > 0:
+        return active_policy_version
+
+    row = _safe_row_mapping(
+        db,
+        """
+        SELECT
+            COALESCE(MAX(policy_version), 0)::int AS latest_policy_version
+        FROM public.clinic_governance_events
+        WHERE clinic_id = CAST(:clinic_id AS uuid)
+        """,
+        {"clinic_id": clinic_id},
+        "policy_version_from_governance_history",
+    )
+    latest_policy_version = _to_int(row.get("latest_policy_version"), default=0)
+    if latest_policy_version > 0:
+        return latest_policy_version
+
+    return 1
 
 
 def build_trust_snapshot(
@@ -241,14 +276,14 @@ def build_trust_snapshot(
     p95_latency_ms = _to_float(ops.get("p95_latency_ms"))
     gov_replaced_rate = _to_float(ops.get("gov_replaced_rate"))
 
-    top_mode_24h = _clean_label(top_mode.get("mode"))
-    top_route_24h = _clean_label(top_route.get("route"))
+    top_mode_24h = _clean_optional_label(top_mode.get("mode"))
+    top_route_24h = _clean_optional_label(top_route.get("route"))
 
     if request_count_24h <= 0:
-        top_mode_24h = "—"
-        top_route_24h = "—"
+        top_mode_24h = None
+        top_route_24h = None
 
-    observed_policy_version = _to_int(gov.get("latest_policy_version"), default=1)
+    observed_policy_version = _resolve_policy_version(db=db, clinic_id=clinic_id)
 
     trust_state = _derive_trust_state(
         rate_5xx=rate_5xx,
