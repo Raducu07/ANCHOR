@@ -159,8 +159,8 @@ def _build_posture_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
                 f"Trust state: {trust_state}.",
                 f"Recent intervention rate: {snapshot['operations']['intervention_rate_24h'] * 100.0:.1f}%.",
                 f"Recent privacy warning rate: {snapshot['operations']['pii_warned_rate_24h'] * 100.0:.1f}%.",
-                f"Top mode (24h): {snapshot['operations']['top_mode_24h']}.",
-                f"Top route (24h): {snapshot['operations']['top_route_24h']}.",
+                f"Top mode (24h): {snapshot['operations']['top_mode_24h'] or '—'}.",
+                f"Top route (24h): {snapshot['operations']['top_route_24h'] or '—'}.",
             ],
         },
         {
@@ -260,7 +260,7 @@ def _build_pack_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
                 f"Recent intervention rate: {snapshot['operations']['intervention_rate_24h'] * 100.0:.1f}%.",
                 f"Recent privacy warning rate: {snapshot['operations']['pii_warned_rate_24h'] * 100.0:.1f}%.",
                 f"P95 latency (24h): {snapshot['operations']['p95_latency_ms']}ms.",
-                f"Top mode (24h): {snapshot['operations']['top_mode_24h']}.",
+                f"Top mode (24h): {snapshot['operations']['top_mode_24h'] or '—'}.",
             ],
         },
         {
