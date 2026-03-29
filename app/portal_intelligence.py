@@ -7,11 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.db import SessionLocal
-
-# Assumption:
-# Keep this import if your live auth dependency already exposes it.
-# If the symbol name differs, replace only this import/dependency line.
+from app.db import SessionLocal, set_rls_context, clear_rls_context
 from app.auth_and_rls import require_clinic_user
 
 
@@ -19,13 +15,46 @@ router = APIRouter(prefix="/v1/portal/intelligence", tags=["portal-intelligence"
 
 
 # -------------------------------------------------------------------
-# DB session
+# Clinic-scoped DB dependency (RLS-aware)
 # -------------------------------------------------------------------
-def get_db() -> Iterable[Session]:
+def _extract_clinic_id(clinic_ctx: Any) -> str:
+    if isinstance(clinic_ctx, dict):
+        clinic_id = clinic_ctx.get("clinic_id")
+    else:
+        clinic_id = getattr(clinic_ctx, "clinic_id", None)
+
+    if not clinic_id:
+        raise HTTPException(status_code=401, detail="Missing clinic context")
+
+    return str(clinic_id)
+
+
+def _extract_clinic_user_id(clinic_ctx: Any) -> str:
+    if isinstance(clinic_ctx, dict):
+        clinic_user_id = clinic_ctx.get("clinic_user_id")
+    else:
+        clinic_user_id = getattr(clinic_ctx, "clinic_user_id", None)
+
+    if not clinic_user_id:
+        raise HTTPException(status_code=401, detail="Missing clinic user context")
+
+    return str(clinic_user_id)
+
+
+def get_clinic_scoped_db(
+    clinic_ctx: Any = Depends(require_clinic_user),
+) -> Iterable[Session]:
     db = SessionLocal()
     try:
+        clinic_id = _extract_clinic_id(clinic_ctx)
+        clinic_user_id = _extract_clinic_user_id(clinic_ctx)
+        set_rls_context(db, clinic_id, clinic_user_id)
         yield db
     finally:
+        try:
+            clear_rls_context(db)
+        except Exception:
+            pass
         db.close()
 
 
@@ -43,7 +72,7 @@ _LEARN_MAPPING = {
     "reason_code:PII_WARNING": "/learn/cards/privacy-safe-ai-use",
     "reason_code:LOW_CONFIDENCE_REWRITE": "/learn/cards/reviewing-ai-rewrites",
     "pii_action:warn": "/learn/cards/privacy-safe-ai-use",
-    "route:POST /v1/portal/assist": "/learn/explainers/using-assisted-workflows-safely",
+    "route:/v1/portal/assist": "/learn/explainers/using-assisted-workflows-safely",
 }
 
 _GOVERNANCE_DIM_SQL = {
@@ -86,19 +115,6 @@ def _severity_label(score: int) -> str:
     if score >= 40:
         return "medium"
     return "low"
-
-
-def _extract_clinic_id(clinic_ctx: Any) -> str:
-    # Supports either a dict-like or object-like auth context.
-    if isinstance(clinic_ctx, dict):
-        clinic_id = clinic_ctx.get("clinic_id")
-    else:
-        clinic_id = getattr(clinic_ctx, "clinic_id", None)
-
-    if not clinic_id:
-        raise HTTPException(status_code=401, detail="Missing clinic context")
-
-    return str(clinic_id)
 
 
 def _normalize_dimension(dimension: str) -> str:
@@ -242,15 +258,30 @@ def _load_dimension_rows(
     return [dict(r) for r in rows]
 
 
+def _build_hotspot_summary(item: Dict[str, Any]) -> str:
+    dimension = item["dimension"]
+    key = item["key"]
+    severity = item.get("severity") or "unknown"
+
+    if dimension == "mode":
+        return f"{key} shows {severity} governance friction concentration in the selected window."
+    if dimension == "route":
+        return f"{key} shows {severity} operational governance friction in the selected window."
+    if dimension == "reason_code":
+        return f"{key} is a repeated governance intervention driver in the selected window."
+    if dimension == "risk_grade":
+        return f"{key} risk-grade events show meaningful concentration in the selected window."
+    if dimension == "pii_action":
+        return f"{key} privacy action events show repeated concentration in the selected window."
+    return f"{key} shows governance concentration in the selected window."
+
+
 def _score_hotspots(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not items:
         return items
 
-    max_event_share = max((float(x["event_share"]) for x in items), default=1.0)
-    max_spike = max((float(x["recency_spike_ratio"]) for x in items), default=1.0)
-
-    max_event_share = max(max_event_share, 1.0)
-    max_spike = max(max_spike, 1.0)
+    max_event_share = max((float(x["event_share"]) for x in items), default=0.0) or 1.0
+    max_spike = max((float(x["recency_spike_ratio"]) for x in items), default=0.0) or 1.0
 
     for item in items:
         intervention_rate_norm = _clamp(float(item["intervention_rate"]), 0.0, 1.0)
@@ -267,6 +298,7 @@ def _score_hotspots(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         item["severity_score"] = int(severity_score)
         item["severity"] = _severity_label(int(severity_score))
+        item["summary"] = _build_hotspot_summary(item)
 
     items.sort(
         key=lambda x: (
@@ -323,28 +355,9 @@ def _build_hotspots_for_dimension(
             "summary": "",
         }
 
-        item["summary"] = _build_hotspot_summary(item)
         items.append(item)
 
     return _score_hotspots(items)
-
-
-def _build_hotspot_summary(item: Dict[str, Any]) -> str:
-    dimension = item["dimension"]
-    key = item["key"]
-    severity = item.get("severity") or "unknown"
-
-    if dimension == "mode":
-        return f"{key} shows {severity} governance friction concentration in the selected window."
-    if dimension == "route":
-        return f"{key} shows {severity} operational governance friction in the selected window."
-    if dimension == "reason_code":
-        return f"{key} is a repeated governance intervention driver in the selected window."
-    if dimension == "risk_grade":
-        return f"{key} risk-grade events show meaningful concentration in the selected window."
-    if dimension == "pii_action":
-        return f"{key} privacy action events show repeated concentration in the selected window."
-    return f"{key} shows governance concentration in the selected window."
 
 
 def _build_all_hotspots(
@@ -370,6 +383,7 @@ def _build_recommendations(hotspots: List[Dict[str, Any]]) -> List[Dict[str, Any
         dimension = h["dimension"]
         key = h["key"]
         severity = h["severity"]
+        intervention_count = int(h["intervention_count"])
         intervention_rate = float(h["intervention_rate"])
         share_of_all_interventions = float(h.get("share_of_all_interventions", 0.0))
         pii_warned_rate = float(h["pii_warned_rate"])
@@ -391,7 +405,9 @@ def _build_recommendations(hotspots: List[Dict[str, Any]]) -> List[Dict[str, Any
                 items.append(rec)
 
         # Policy review recommendation
-        if dimension == "reason_code" and (share_of_all_interventions >= 0.25 or severity == "high"):
+        if dimension == "reason_code" and intervention_count > 0 and (
+            share_of_all_interventions >= 0.25 or severity == "high"
+        ):
             rec = {
                 "type": "policy_review",
                 "priority": "high" if severity == "high" else "medium",
@@ -440,7 +456,14 @@ def _build_recommendations(hotspots: List[Dict[str, Any]]) -> List[Dict[str, Any
     return items[:8]
 
 
-def _top_value(db: Session, clinic_id: str, start_ts: datetime, end_ts: datetime, table: str, column: str) -> Optional[str]:
+def _top_value(
+    db: Session,
+    clinic_id: str,
+    start_ts: datetime,
+    end_ts: datetime,
+    table: str,
+    column: str,
+) -> Optional[str]:
     sql = f"""
     SELECT COALESCE({column}, 'unknown') AS key
     FROM {table}
@@ -501,7 +524,7 @@ def _overall_metrics(db: Session, clinic_id: str, start_ts: datetime, end_ts: da
 def get_intelligence_summary(
     window: str = Query(default="30d"),
     clinic_ctx: Any = Depends(require_clinic_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_clinic_scoped_db),
 ) -> Dict[str, Any]:
     delta = _parse_window(window)
     clinic_id = _extract_clinic_id(clinic_ctx)
@@ -531,7 +554,7 @@ def get_intelligence_hotspots(
     dimension: str = Query(default="all"),
     limit: int = Query(default=10, ge=1, le=50),
     clinic_ctx: Any = Depends(require_clinic_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_clinic_scoped_db),
 ) -> Dict[str, Any]:
     delta = _parse_window(window)
     dimension = _normalize_dimension(dimension)
@@ -557,7 +580,7 @@ def get_intelligence_hotspots(
 def get_intelligence_recommendations(
     window: str = Query(default="30d"),
     clinic_ctx: Any = Depends(require_clinic_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_clinic_scoped_db),
 ) -> Dict[str, Any]:
     delta = _parse_window(window)
     clinic_id = _extract_clinic_id(clinic_ctx)
