@@ -266,18 +266,135 @@ def _build_hotspot_summary(item: Dict[str, Any]) -> str:
     dimension = item["dimension"]
     key = item["key"]
     severity = item.get("severity") or "unknown"
+    intervention_count = int(item.get("intervention_count", 0))
 
     if dimension == "mode":
         return f"{key} shows {severity} governance friction concentration in the selected window."
     if dimension == "route":
         return f"{key} shows {severity} operational governance friction in the selected window."
     if dimension == "reason_code":
-        return f"{key} is a repeated governance intervention driver in the selected window."
+        if intervention_count > 0:
+            return f"{key} is a repeated governance intervention driver in the selected window."
+        return f"{key} is a repeated governance outcome pattern in the selected window."
     if dimension == "risk_grade":
         return f"{key} risk-grade events show meaningful concentration in the selected window."
     if dimension == "pii_action":
         return f"{key} privacy action events show repeated concentration in the selected window."
     return f"{key} shows governance concentration in the selected window."
+
+
+def _build_recommendations(hotspots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str, str]] = set()
+    privacy_added = False
+
+    privacy_candidates = [
+        h for h in hotspots
+        if float(h.get("pii_warned_rate", 0.0)) >= 0.03
+    ]
+    privacy_candidates.sort(
+        key=lambda h: (
+            float(h.get("pii_warned_rate", 0.0)),
+            int(h.get("event_count", 0)),
+            int(h.get("severity_score", 0)),
+        ),
+        reverse=True,
+    )
+    best_privacy_candidate = privacy_candidates[0] if privacy_candidates else None
+
+    for h in hotspots:
+        dimension = h["dimension"]
+        key = h["key"]
+        severity = h["severity"]
+        intervention_count = int(h["intervention_count"])
+        intervention_rate = float(h["intervention_rate"])
+        share_of_all_interventions = float(h.get("share_of_all_interventions", 0.0))
+
+        # Learning recommendation
+        if dimension == "mode" and (severity == "high" or intervention_rate >= 0.12):
+            target = _LEARN_MAPPING.get(f"mode:{key}")
+            rec = {
+                "type": "learning",
+                "priority": "high" if severity == "high" else "medium",
+                "title": f"Reinforce safe AI use in {key} workflows",
+                "why": f"{key} has elevated governance intervention concentration in the selected period.",
+                "based_on": {"dimension": dimension, "key": key},
+                "target_path": target,
+            }
+            sig = (rec["type"], dimension, key)
+            if sig not in seen:
+                seen.add(sig)
+                items.append(rec)
+
+        # Policy review recommendation
+        if dimension == "reason_code" and intervention_count > 0 and (
+            share_of_all_interventions >= 0.25 or severity == "high"
+        ):
+            rec = {
+                "type": "policy_review",
+                "priority": "high" if severity == "high" else "medium",
+                "title": f"Review policy wording for {key}",
+                "why": f"{key} is a recurring intervention driver across the selected window.",
+                "based_on": {"dimension": dimension, "key": key},
+                "target_path": "/privacy-policy",
+            }
+            sig = (rec["type"], dimension, key)
+            if sig not in seen:
+                seen.add(sig)
+                items.append(rec)
+
+        # Workflow guidance recommendation
+        if dimension == "route" and (severity == "high" or intervention_rate >= 0.12):
+            rec = {
+                "type": "workflow_guidance",
+                "priority": "high" if severity == "high" else "medium",
+                "title": f"Review workflow guidance for {key}",
+                "why": f"{key} has elevated governance friction relative to peer routes.",
+                "based_on": {"dimension": dimension, "key": key},
+                "target_path": _LEARN_MAPPING.get(f"route:{key}", "/governance-events"),
+            }
+            sig = (rec["type"], dimension, key)
+            if sig not in seen:
+                seen.add(sig)
+                items.append(rec)
+
+        # Preferred privacy recommendation
+        if not privacy_added and dimension == "pii_action" and key == "warn":
+            rec = {
+                "type": "privacy_training",
+                "priority": "high" if severity == "high" else "medium",
+                "title": "Refresh privacy-safe AI use guidance",
+                "why": "PII warnings exceed advisory thresholds in the selected period.",
+                "based_on": {"dimension": dimension, "key": key},
+                "target_path": _LEARN_MAPPING.get("pii_action:warn", "/learn/cards/privacy-safe-ai-use"),
+            }
+            sig = (rec["type"], dimension, key)
+            if sig not in seen:
+                seen.add(sig)
+                items.append(rec)
+                privacy_added = True
+
+    # Fallback privacy recommendation when pii_action:warn does not surface due to thresholding
+    if not privacy_added and best_privacy_candidate is not None:
+        rec = {
+            "type": "privacy_training",
+            "priority": "medium",
+            "title": "Refresh privacy-safe AI use guidance",
+            "why": "PII warnings exceed advisory thresholds in the selected period.",
+            "based_on": {
+                "dimension": best_privacy_candidate["dimension"],
+                "key": best_privacy_candidate["key"],
+            },
+            "target_path": _LEARN_MAPPING.get("pii_action:warn", "/learn/cards/privacy-safe-ai-use"),
+        }
+        sig = (rec["type"], rec["based_on"]["dimension"], rec["based_on"]["key"])
+        if sig not in seen:
+            seen.add(sig)
+            items.append(rec)
+
+    priority_rank = {"high": 3, "medium": 2, "low": 1}
+    items.sort(key=lambda x: priority_rank.get(x["priority"], 0), reverse=True)
+    return items[:8]
 
 
 def _score_hotspots(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
