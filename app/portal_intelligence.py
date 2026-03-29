@@ -48,7 +48,11 @@ def get_clinic_scoped_db(
     try:
         clinic_id = _extract_clinic_id(clinic_ctx)
         clinic_user_id = _extract_clinic_user_id(clinic_ctx)
-        set_rls_context(db, clinic_id, clinic_user_id)
+        set_rls_context(
+            db,
+            clinic_id=clinic_id,
+            clinic_user_id=clinic_user_id,
+        )
         yield db
     finally:
         try:
