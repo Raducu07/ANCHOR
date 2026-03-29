@@ -41,6 +41,7 @@ from app.portal_ops_health import router as portal_ops_health_router
 from app.portal_dashboard import router as portal_dashboard_router
 from app.portal_me import router as portal_me_router
 from app.portal_assist import router as portal_assist_router
+from app.portal_intelligence import router as portal_intelligence_router
 
 from app.admin_tokens import router as admin_tokens_router
 from app.admin_audit import router as admin_audit_router
@@ -253,6 +254,7 @@ app.include_router(portal_ops_health_router)
 app.include_router(portal_dashboard_router)
 app.include_router(portal_me_router)
 app.include_router(portal_assist_router)
+app.include_router(portal_intelligence_router)
 
 # Routers (platform admin)
 app.include_router(admin_tokens_router)
