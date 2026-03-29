@@ -67,7 +67,6 @@ def get_clinic_scoped_db(
 # -------------------------------------------------------------------
 _ALLOWED_WINDOWS = {"7d", "30d"}
 _ALLOWED_DIMENSIONS = {"all", "mode", "route", "reason_code", "risk_grade", "pii_action"}
-_INTERVENTION_DECISIONS = ("replaced", "modified", "blocked")
 
 _LEARN_MAPPING = {
     "mode:client_comm": "/learn/explainers/client-communication-safety",
@@ -283,6 +282,105 @@ def _build_hotspot_summary(item: Dict[str, Any]) -> str:
     return f"{key} shows governance concentration in the selected window."
 
 
+def _score_hotspots(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not items:
+        return items
+
+    max_event_share = max((float(x["event_share"]) for x in items), default=0.0) or 1.0
+    max_spike = max((float(x["recency_spike_ratio"]) for x in items), default=0.0) or 1.0
+
+    for item in items:
+        intervention_rate_norm = _clamp(float(item["intervention_rate"]), 0.0, 1.0)
+        event_share_norm = _clamp(float(item["event_share"]) / max_event_share, 0.0, 1.0)
+        pii_warned_rate_norm = _clamp(float(item["pii_warned_rate"]), 0.0, 1.0)
+        recency_spike_norm = _clamp(float(item["recency_spike_ratio"]) / max_spike, 0.0, 1.0)
+
+        severity_score = round(
+            (35 * intervention_rate_norm)
+            + (25 * event_share_norm)
+            + (20 * pii_warned_rate_norm)
+            + (20 * recency_spike_norm)
+        )
+
+        item["severity_score"] = int(severity_score)
+        item["severity"] = _severity_label(int(severity_score))
+        item["summary"] = _build_hotspot_summary(item)
+
+    items.sort(
+        key=lambda x: (
+            int(x["severity_score"]),
+            float(x["intervention_rate"]),
+            int(x["event_count"]),
+        ),
+        reverse=True,
+    )
+    return items
+
+
+def _build_hotspots_for_dimension(
+    db: Session,
+    clinic_id: str,
+    start_ts: datetime,
+    end_ts: datetime,
+    recent_start: datetime,
+    dimension: str,
+) -> List[Dict[str, Any]]:
+    raw_rows = _load_dimension_rows(db, clinic_id, start_ts, end_ts, recent_start, dimension)
+
+    # Privacy-aware suppression threshold
+    filtered_rows = [r for r in raw_rows if int(r["event_count"]) >= 5]
+    total_events = sum(int(r["event_count"]) for r in filtered_rows)
+    total_interventions = sum(int(r["intervention_count"]) for r in filtered_rows)
+
+    items: List[Dict[str, Any]] = []
+    for row in filtered_rows:
+        event_count = int(row["event_count"])
+        intervention_count = int(row["intervention_count"])
+        pii_warned_count = int(row["pii_warned_count"])
+
+        recent_event_count = int(row["recent_event_count"])
+        recent_intervention_count = int(row["recent_intervention_count"])
+        baseline_event_count = int(row["baseline_event_count"])
+        baseline_intervention_count = int(row["baseline_intervention_count"])
+
+        recent_rate = _safe_div(recent_intervention_count, recent_event_count)
+        baseline_rate = _safe_div(baseline_intervention_count, baseline_event_count)
+        recency_spike_ratio = recent_rate / max(baseline_rate, 0.01)
+
+        item = {
+            "dimension": dimension,
+            "key": str(row["segment_key"]),
+            "event_count": event_count,
+            "event_share": round(_safe_div(event_count, total_events), 4),
+            "intervention_count": intervention_count,
+            "intervention_rate": round(_safe_div(intervention_count, event_count), 4),
+            "pii_warned_count": pii_warned_count,
+            "pii_warned_rate": round(_safe_div(pii_warned_count, event_count), 4),
+            "recency_spike_ratio": round(_clamp(recency_spike_ratio, 0.0, 3.0), 2),
+            "share_of_all_interventions": round(_safe_div(intervention_count, total_interventions), 4),
+            "summary": "",
+        }
+
+        items.append(item)
+
+    return _score_hotspots(items)
+
+
+def _build_all_hotspots(
+    db: Session,
+    clinic_id: str,
+    start_ts: datetime,
+    end_ts: datetime,
+    recent_start: datetime,
+) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for dimension in ("mode", "route", "reason_code", "risk_grade", "pii_action"):
+        items.extend(_build_hotspots_for_dimension(db, clinic_id, start_ts, end_ts, recent_start, dimension))
+
+    items = _score_hotspots(items)
+    return items
+
+
 def _build_recommendations(hotspots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     seen: set[Tuple[str, str, str]] = set()
@@ -391,186 +489,6 @@ def _build_recommendations(hotspots: List[Dict[str, Any]]) -> List[Dict[str, Any
         if sig not in seen:
             seen.add(sig)
             items.append(rec)
-
-    priority_rank = {"high": 3, "medium": 2, "low": 1}
-    items.sort(key=lambda x: priority_rank.get(x["priority"], 0), reverse=True)
-    return items[:8]
-
-
-def _score_hotspots(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    if not items:
-        return items
-
-    max_event_share = max((float(x["event_share"]) for x in items), default=0.0) or 1.0
-    max_spike = max((float(x["recency_spike_ratio"]) for x in items), default=0.0) or 1.0
-
-    for item in items:
-        intervention_rate_norm = _clamp(float(item["intervention_rate"]), 0.0, 1.0)
-        event_share_norm = _clamp(float(item["event_share"]) / max_event_share, 0.0, 1.0)
-        pii_warned_rate_norm = _clamp(float(item["pii_warned_rate"]), 0.0, 1.0)
-        recency_spike_norm = _clamp(float(item["recency_spike_ratio"]) / max_spike, 0.0, 1.0)
-
-        severity_score = round(
-            (35 * intervention_rate_norm)
-            + (25 * event_share_norm)
-            + (20 * pii_warned_rate_norm)
-            + (20 * recency_spike_norm)
-        )
-
-        item["severity_score"] = int(severity_score)
-        item["severity"] = _severity_label(int(severity_score))
-        item["summary"] = _build_hotspot_summary(item)
-
-    items.sort(
-        key=lambda x: (
-            int(x["severity_score"]),
-            float(x["intervention_rate"]),
-            int(x["event_count"]),
-        ),
-        reverse=True,
-    )
-    return items
-
-
-def _build_hotspots_for_dimension(
-    db: Session,
-    clinic_id: str,
-    start_ts: datetime,
-    end_ts: datetime,
-    recent_start: datetime,
-    dimension: str,
-) -> List[Dict[str, Any]]:
-    raw_rows = _load_dimension_rows(db, clinic_id, start_ts, end_ts, recent_start, dimension)
-
-    # Privacy-aware suppression threshold
-    filtered_rows = [r for r in raw_rows if int(r["event_count"]) >= 5]
-    total_events = sum(int(r["event_count"]) for r in filtered_rows)
-    total_interventions = sum(int(r["intervention_count"]) for r in filtered_rows)
-
-    items: List[Dict[str, Any]] = []
-    for row in filtered_rows:
-        event_count = int(row["event_count"])
-        intervention_count = int(row["intervention_count"])
-        pii_warned_count = int(row["pii_warned_count"])
-
-        recent_event_count = int(row["recent_event_count"])
-        recent_intervention_count = int(row["recent_intervention_count"])
-        baseline_event_count = int(row["baseline_event_count"])
-        baseline_intervention_count = int(row["baseline_intervention_count"])
-
-        recent_rate = _safe_div(recent_intervention_count, recent_event_count)
-        baseline_rate = _safe_div(baseline_intervention_count, baseline_event_count)
-        recency_spike_ratio = recent_rate / max(baseline_rate, 0.01)
-
-        item = {
-            "dimension": dimension,
-            "key": str(row["segment_key"]),
-            "event_count": event_count,
-            "event_share": round(_safe_div(event_count, total_events), 4),
-            "intervention_count": intervention_count,
-            "intervention_rate": round(_safe_div(intervention_count, event_count), 4),
-            "pii_warned_count": pii_warned_count,
-            "pii_warned_rate": round(_safe_div(pii_warned_count, event_count), 4),
-            "recency_spike_ratio": round(_clamp(recency_spike_ratio, 0.0, 3.0), 2),
-            "share_of_all_interventions": round(_safe_div(intervention_count, total_interventions), 4),
-            "summary": "",
-        }
-
-        items.append(item)
-
-    return _score_hotspots(items)
-
-
-def _build_all_hotspots(
-    db: Session,
-    clinic_id: str,
-    start_ts: datetime,
-    end_ts: datetime,
-    recent_start: datetime,
-) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    for dimension in ("mode", "route", "reason_code", "risk_grade", "pii_action"):
-        items.extend(_build_hotspots_for_dimension(db, clinic_id, start_ts, end_ts, recent_start, dimension))
-
-    items = _score_hotspots(items)
-    return items
-
-
-def _build_recommendations(hotspots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    seen: set[Tuple[str, str, str]] = set()
-
-    for h in hotspots:
-        dimension = h["dimension"]
-        key = h["key"]
-        severity = h["severity"]
-        intervention_count = int(h["intervention_count"])
-        intervention_rate = float(h["intervention_rate"])
-        share_of_all_interventions = float(h.get("share_of_all_interventions", 0.0))
-        pii_warned_rate = float(h["pii_warned_rate"])
-
-        # Learning recommendation
-        if dimension == "mode" and (severity == "high" or intervention_rate >= 0.12):
-            target = _LEARN_MAPPING.get(f"mode:{key}")
-            rec = {
-                "type": "learning",
-                "priority": "high" if severity == "high" else "medium",
-                "title": f"Reinforce safe AI use in {key} workflows",
-                "why": f"{key} has elevated governance intervention concentration in the selected period.",
-                "based_on": {"dimension": dimension, "key": key},
-                "target_path": target,
-            }
-            sig = (rec["type"], dimension, key)
-            if sig not in seen:
-                seen.add(sig)
-                items.append(rec)
-
-        # Policy review recommendation
-        if dimension == "reason_code" and intervention_count > 0 and (
-            share_of_all_interventions >= 0.25 or severity == "high"
-        ):
-            rec = {
-                "type": "policy_review",
-                "priority": "high" if severity == "high" else "medium",
-                "title": f"Review policy wording for {key}",
-                "why": f"{key} is a recurring intervention driver across the selected window.",
-                "based_on": {"dimension": dimension, "key": key},
-                "target_path": "/privacy-policy",
-            }
-            sig = (rec["type"], dimension, key)
-            if sig not in seen:
-                seen.add(sig)
-                items.append(rec)
-
-        # Privacy training recommendation
-        if (dimension == "pii_action" and key == "warn") or pii_warned_rate >= 0.03:
-            rec = {
-                "type": "privacy_training",
-                "priority": "medium" if severity != "high" else "high",
-                "title": "Refresh privacy-safe AI use guidance",
-                "why": "PII warnings exceed advisory thresholds in the selected period.",
-                "based_on": {"dimension": dimension, "key": key},
-                "target_path": _LEARN_MAPPING.get("pii_action:warn", "/learn/cards/privacy-safe-ai-use"),
-            }
-            sig = (rec["type"], dimension, key)
-            if sig not in seen:
-                seen.add(sig)
-                items.append(rec)
-
-        # Workflow guidance recommendation
-        if dimension == "route" and (severity == "high" or intervention_rate >= 0.12):
-            rec = {
-                "type": "workflow_guidance",
-                "priority": "high" if severity == "high" else "medium",
-                "title": f"Review workflow guidance for {key}",
-                "why": f"{key} has elevated governance friction relative to peer routes.",
-                "based_on": {"dimension": dimension, "key": key},
-                "target_path": _LEARN_MAPPING.get(f"route:{key}", "/governance-events"),
-            }
-            sig = (rec["type"], dimension, key)
-            if sig not in seen:
-                seen.add(sig)
-                items.append(rec)
 
     priority_rank = {"high": 3, "medium": 2, "low": 1}
     items.sort(key=lambda x: priority_rank.get(x["priority"], 0), reverse=True)
