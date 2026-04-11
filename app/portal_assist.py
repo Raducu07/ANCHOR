@@ -12,9 +12,8 @@ from __future__ import annotations
 # Important note:
 # - This endpoint still uses a deterministic drafting layer (_stub_llm_generate)
 #   rather than a real model provider.
-# - The changes below make internal_summary / internal_governance_review
-#   substantially more useful while keeping ANCHOR within purpose:
-#   governed drafting support, not clinical decision-making AI.
+# - This version is designed to be broader and more stable so ANCHOR does not
+#   need a one-off code tweak for every slightly different request phrasing.
 
 import logging
 import re
@@ -105,19 +104,20 @@ _SOAP_O_RE = re.compile(r"(?im)^\s*O:\s*")
 _SOAP_A_RE = re.compile(r"(?im)^\s*A:\s*")
 _SOAP_P_RE = re.compile(r"(?im)^\s*P:\s*")
 
-_EMAIL_REQUEST_RE = re.compile(r"\b(email|message|memo|letter|update)\b", flags=re.I)
+_EMAIL_RE = re.compile(r"\b(email|message|memo|letter|update|reply|response)\b", flags=re.I)
+_BULLETS_RE = re.compile(r"\b(bullet point|bullet points|bullets|key points|main points|discussion points)\b", flags=re.I)
+_ACTIONS_RE = re.compile(r"\b(action items|actions|next steps|follow-up|follow up)\b", flags=re.I)
+_SUMMARY_RE = re.compile(r"\b(summary|summarise|summarize|overview|handover)\b", flags=re.I)
+_REVIEW_RE = re.compile(r"\b(review|governance review|internal review|oversight|policy review|governance)\b", flags=re.I)
 _GOVERNANCE_KEYWORDS_RE = re.compile(
-    r"\b(governance|anchor|policy|privacy|compliance|audit|oversight|review|breach|incident|risk)\b",
+    r"\b(governance|anchor|policy|privacy|compliance|audit|oversight|review|breach|incident|risk|disciplinary)\b",
     flags=re.I,
 )
 _STAFF_AUDIENCE_RE = re.compile(r"\b(staff|team|practice staff|all practice staff|colleagues)\b", flags=re.I)
-_LEADERSHIP_AUDIENCE_RE = re.compile(r"\b(general director|director|leadership|manager)\b", flags=re.I)
+_LEADERSHIP_AUDIENCE_RE = re.compile(r"\b(general director|director|leadership|manager|owners?)\b", flags=re.I)
 
 
 def _looks_like_soap(text_value: str) -> bool:
-    """
-    Heuristic: if the note already contains S:, O:, A:, P: headings on separate lines.
-    """
     t = (text_value or "")
     return bool(_SOAP_S_RE.search(t) and _SOAP_O_RE.search(t) and _SOAP_A_RE.search(t) and _SOAP_P_RE.search(t))
 
@@ -144,9 +144,6 @@ def _now_iso_utc() -> str:
 
 
 def _sanitize_instruction(instr: Optional[str]) -> str:
-    """
-    Control-plane only: used to guide generation, never included verbatim in output.
-    """
     s = (instr or "").strip()
     if not s:
         return ""
@@ -161,9 +158,9 @@ def _normalize_whitespace(text_value: str) -> str:
 def _normalize_sentence(text_value: str) -> str:
     t = _normalize_whitespace(text_value)
     if not t:
-      return ""
+        return ""
     if t[-1] not in ".!?":
-      t += "."
+        t += "."
     return t
 
 
@@ -186,9 +183,6 @@ def _non_empty_lines(text_value: str) -> List[str]:
 
 
 def _strip_request_wrapper(text_value: str) -> str:
-    """
-    Remove common leading task phrasing so output does not echo the request itself.
-    """
     t = (text_value or "").strip()
 
     patterns = [
@@ -196,10 +190,12 @@ def _strip_request_wrapper(text_value: str) -> str:
         r"(?is)^\s*please\s+draft\s+",
         r"(?is)^\s*please\s+prepare\s+",
         r"(?is)^\s*please\s+provide\s+",
+        r"(?is)^\s*please\s+summari[sz]e\s+",
         r"(?is)^\s*write\s+",
         r"(?is)^\s*draft\s+",
         r"(?is)^\s*prepare\s+",
         r"(?is)^\s*provide\s+",
+        r"(?is)^\s*summari[sz]e\s+",
     ]
     for pattern in patterns:
         t = re.sub(pattern, "", t, count=1)
@@ -208,16 +204,13 @@ def _strip_request_wrapper(text_value: str) -> str:
 
 
 def _strip_meta_object(text_value: str) -> str:
-    """
-    Remove meta task nouns like 'a summary regarding', 'a review regarding', etc.
-    """
     t = _strip_request_wrapper(text_value)
 
     patterns = [
-        r"(?is)^\s*(an?|the)\s+(summary|review|email|message|note|update)\s+(regarding|about|on|for)\s+",
-        r"(?is)^\s*(summary|review|email|message|note|update)\s+(regarding|about|on|for)\s+",
-        r"(?is)^\s*(an?|the)\s+(summary|review|email|message|note|update)\s+",
-        r"(?is)^\s*(summary|review|email|message|note|update)\s+",
+        r"(?is)^\s*(an?|the)\s+(summary|review|email|message|note|update|overview)\s+(regarding|about|on|for)\s+",
+        r"(?is)^\s*(summary|review|email|message|note|update|overview)\s+(regarding|about|on|for)\s+",
+        r"(?is)^\s*(an?|the)\s+(summary|review|email|message|note|update|overview)\s+",
+        r"(?is)^\s*(summary|review|email|message|note|update|overview)\s+",
     ]
     for pattern in patterns:
         t = re.sub(pattern, "", t, count=1)
@@ -226,9 +219,6 @@ def _strip_meta_object(text_value: str) -> str:
 
 
 def _extract_topic_phrase(text_value: str) -> str:
-    """
-    Pull out a simple topical phrase without inventing detail.
-    """
     t = _normalize_whitespace(text_value)
 
     patterns = [
@@ -260,12 +250,6 @@ def _title_case_subject(value: str) -> str:
 
 
 def _infer_internal_profile(*, role: Optional[str], instruction: str, text_value: str) -> str:
-    """
-    Split internal_summary behavior into:
-    - internal_governance_review
-    - internal_summary
-    without changing the external backend mode.
-    """
     role_text = (role or "").strip().lower()
     combined = f"{role or ''} {instruction or ''} {text_value or ''}"
 
@@ -276,6 +260,38 @@ def _infer_internal_profile(*, role: Optional[str], instruction: str, text_value
         return "internal_governance_review"
 
     return "internal_summary"
+
+
+def _infer_request_shape(*, mode: str, role: Optional[str], instruction: str, text_value: str) -> Dict[str, Any]:
+    combined = f"{instruction or ''} {text_value or ''}"
+    profile = _infer_internal_profile(role=role, instruction=instruction, text_value=text_value)
+
+    wants_email = bool(_EMAIL_RE.search(combined))
+    wants_bullets = bool(_BULLETS_RE.search(combined))
+    wants_actions = bool(_ACTIONS_RE.search(combined))
+    wants_summary = bool(_SUMMARY_RE.search(combined))
+    wants_review = bool(_REVIEW_RE.search(combined)) or profile == "internal_governance_review"
+
+    audience = "internal"
+    if mode == "client_comm":
+        audience = "client"
+    elif _LEADERSHIP_AUDIENCE_RE.search(combined):
+        audience = "leadership"
+    elif _STAFF_AUDIENCE_RE.search(combined):
+        audience = "staff"
+
+    sparse = _word_count(text_value) < 24 or len(_non_empty_lines(text_value)) <= 1
+
+    return {
+        "profile": profile,
+        "wants_email": wants_email,
+        "wants_bullets": wants_bullets,
+        "wants_actions": wants_actions,
+        "wants_summary": wants_summary,
+        "wants_review": wants_review,
+        "audience": audience,
+        "sparse": sparse,
+    }
 
 
 def _build_sparse_client_comm(text_value: str) -> str:
@@ -356,17 +372,45 @@ def _build_clinical_note(text_value: str, instruction: str) -> str:
     )
 
 
-def _build_internal_email(*, text_value: str, profile: str) -> str:
+def _derive_internal_bullets(text_value: str, *, sparse: bool) -> List[str]:
+    lines = _non_empty_lines(text_value)
+
+    if len(lines) > 1:
+        cleaned = []
+        for line in lines:
+            item = _normalize_sentence(_strip_meta_object(line))
+            if item:
+                cleaned.append(item)
+        if cleaned:
+            return cleaned
+
+    topic = _normalize_sentence(_extract_topic_phrase(text_value))
+    if sparse:
+        return [
+            topic,
+            "Specific discussion details should be confirmed during human review.",
+        ]
+
+    if topic:
+        return [topic]
+
+    return ["Details should be confirmed during human review."]
+
+
+def _derive_internal_action_items(text_value: str, *, sparse: bool) -> List[str]:
+    if _ACTIONS_RE.search(text_value or ""):
+        if sparse:
+            return ["Action items should be confirmed during human review."]
+        return ["Review and confirm follow-up actions before operational use."]
+
+    return []
+
+
+def _build_internal_email(*, text_value: str, profile: str, wants_bullets: bool, wants_actions: bool, audience: str, sparse: bool) -> str:
     topic = _extract_topic_phrase(text_value)
-    audience_staff = bool(_STAFF_AUDIENCE_RE.search(text_value or ""))
-    audience_leadership = bool(_LEADERSHIP_AUDIENCE_RE.search(text_value or ""))
-
     greeting = "Hello,"
-    if audience_staff:
+    if audience == "staff":
         greeting = "Hello team,"
-
-    subject = "Internal update"
-    opening = "I am writing to provide an internal update."
 
     if profile == "internal_governance_review":
         if "anchor" in (text_value or "").lower() and "governance" in (text_value or "").lower():
@@ -378,9 +422,10 @@ def _build_internal_email(*, text_value: str, profile: str) -> str:
         else:
             subject = "Internal governance update"
             opening = "I am writing to provide an internal governance update."
-
-        if audience_leadership:
-            greeting = "Hello,"
+        if audience == "leadership":
+            extra = "This note is intended for internal leadership review."
+        else:
+            extra = "This note is intended for internal review."
     else:
         if topic:
             subject = f"Internal update regarding {topic}"
@@ -388,88 +433,104 @@ def _build_internal_email(*, text_value: str, profile: str) -> str:
         else:
             subject = "Internal update"
             opening = "I am writing to share an internal update."
+        if audience == "staff":
+            extra = "This communication is intended for internal staff circulation."
+        else:
+            extra = "This communication is intended for internal review."
 
-    body_lines = [opening]
+    parts: List[str] = [
+        f"Subject: {_title_case_subject(subject)}",
+        "",
+        greeting,
+        "",
+        opening,
+        extra,
+    ]
 
-    if audience_staff:
-        body_lines.append("This communication is intended for internal staff circulation.")
-    elif audience_leadership and profile == "internal_governance_review":
-        body_lines.append("This note is intended for internal leadership review.")
+    if wants_bullets:
+        bullets = _derive_internal_bullets(text_value, sparse=sparse)
+        parts.extend(["", "Key points:"])
+        parts.extend([f"- {item}" for item in bullets])
 
-    body_lines.append("Details should be reviewed and confirmed before operational use.")
+    if wants_actions:
+        actions = _derive_internal_action_items(text_value, sparse=sparse)
+        if actions:
+            parts.extend(["", "Action items:"])
+            parts.extend([f"- {item}" for item in actions])
 
-    body = "\n".join(body_lines)
-
-    return (
-        f"Subject: {_title_case_subject(subject)}\n\n"
-        f"{greeting}\n\n"
-        f"{body}\n\n"
-        "Kind regards,\n"
+    parts.extend(
+        [
+            "",
+            "Details should be reviewed and confirmed before operational use.",
+            "",
+            "Kind regards,",
+        ]
     )
 
-
-def _build_sparse_internal_governance_review(text_value: str) -> str:
-    topic = _normalize_sentence(_extract_topic_phrase(text_value))
-
-    return (
-        "Internal governance review note:\n"
-        f"- Topic: {topic}\n"
-        "- Purpose: internal governance review requested.\n"
-        "- Status: requires human review before operational use.\n"
-    )
-
-
-def _build_sparse_internal_summary(text_value: str) -> str:
-    topic = _normalize_sentence(_extract_topic_phrase(text_value))
-
-    return (
-        "Internal summary:\n"
-        f"- Topic: {topic}\n"
-        "- Context: summary prepared for internal review.\n"
-        "- Status: requires human review before operational use.\n"
-    )
+    return "\n".join(parts) + "\n"
 
 
 def _build_internal_governance_review(text_value: str, instruction: str, role: Optional[str]) -> str:
-    t = (text_value or "").strip()
-    lines = _non_empty_lines(t)
+    shape = _infer_request_shape(mode="internal_summary", role=role, instruction=instruction, text_value=text_value)
 
-    if _EMAIL_REQUEST_RE.search(t):
-        return _build_internal_email(text_value=t, profile="internal_governance_review")
+    if shape["wants_email"]:
+        return _build_internal_email(
+            text_value=text_value,
+            profile="internal_governance_review",
+            wants_bullets=shape["wants_bullets"],
+            wants_actions=shape["wants_actions"],
+            audience=shape["audience"],
+            sparse=shape["sparse"],
+        )
 
-    if len(lines) <= 1 or _word_count(t) < 20:
-        return _build_sparse_internal_governance_review(t)
+    topic = _normalize_sentence(_extract_topic_phrase(text_value))
+    bullets = [
+        f"Topic: {topic}",
+        "Purpose: internal governance review requested.",
+        "Status: requires human review before operational use.",
+    ]
 
-    cleaned_lines = [_normalize_sentence(_strip_meta_object(line)) for line in lines if line.strip()]
-    bullets = [f"- {line}" for line in cleaned_lines if line]
-    return "Internal governance review note:\n" + "\n".join(bullets) + "\n"
+    if shape["wants_bullets"]:
+        bullets.append("Discussion details should be confirmed during human review.")
+
+    lines = ["Internal governance review note:"]
+    lines.extend([f"- {item}" for item in bullets])
+    return "\n".join(lines) + "\n"
 
 
 def _build_internal_summary(text_value: str, instruction: str, role: Optional[str]) -> str:
-    t = (text_value or "").strip()
-    instr = _sanitize_instruction(instruction)
-    profile = _infer_internal_profile(role=role, instruction=instr, text_value=t)
-    lines = _non_empty_lines(t)
+    shape = _infer_request_shape(mode="internal_summary", role=role, instruction=instruction, text_value=text_value)
+    profile = shape["profile"]
 
     if profile == "internal_governance_review":
-        return _build_internal_governance_review(t, instr, role)
+        return _build_internal_governance_review(text_value, instruction, role)
 
-    if _EMAIL_REQUEST_RE.search(t):
-        return _build_internal_email(text_value=t, profile="internal_summary")
+    if shape["wants_email"]:
+        return _build_internal_email(
+            text_value=text_value,
+            profile="internal_summary",
+            wants_bullets=shape["wants_bullets"],
+            wants_actions=shape["wants_actions"],
+            audience=shape["audience"],
+            sparse=shape["sparse"],
+        )
 
-    if re.search(r"\b(one line|one-liner|single line)\b", instr, flags=re.I):
-        first = _normalize_sentence(_strip_meta_object(lines[0] if lines else t))
+    if re.search(r"\b(one line|one-liner|single line)\b", instruction or "", flags=re.I):
+        first = _normalize_sentence(_strip_meta_object(text_value))
         return first + "\n" if first else ""
 
-    if not lines:
-        return ""
+    topic = _normalize_sentence(_extract_topic_phrase(text_value))
+    lines = [
+        "Internal summary:",
+        f"- Topic: {topic}",
+        "- Context: summary prepared for internal review.",
+        "- Status: requires human review before operational use.",
+    ]
 
-    if len(lines) == 1 or _word_count(t) < 20:
-        return _build_sparse_internal_summary(t)
+    if shape["wants_bullets"]:
+        lines.append("- Discussion details should be confirmed during human review.")
 
-    cleaned_lines = [_normalize_sentence(_strip_meta_object(line)) for line in lines if line.strip()]
-    bullets = [f"- {line}" for line in cleaned_lines if line]
-    return "Internal summary:\n" + "\n".join(bullets) + "\n"
+    return "\n".join(lines) + "\n"
 
 
 def _stub_llm_generate(*, mode: str, user_text: str, instruction: Optional[str], role: Optional[str] = None) -> str:
@@ -516,13 +577,11 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
 
     req_id = payload.request_id or uuid.uuid4()
 
-    # Load active policy JSON
     policy_version = _get_active_policy_version(db)
     policy_obj = _get_policy_json(db, policy_version=policy_version)
     policy_sha256 = _sha256_hex(_canonical_json(policy_obj)) if policy_obj is not None else None
     neutrality_version = extract_neutrality_version(policy_obj)
 
-    # -------- INPUT GATE (metadata only)
     pii_types = detect_pii_types(payload.text)
     ig = evaluate_input_governance(
         text_value=payload.text,
