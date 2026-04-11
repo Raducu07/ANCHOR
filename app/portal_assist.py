@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # app/portal_assist.py
 #
 # Portal Assist (OUTPUT gate) — minimal endpoint that generates assistant output
@@ -7,7 +9,11 @@
 # - Does NOT store prompt or output content
 # - Stores metadata-only in clinic_governance_events + ops_metrics_events
 #
-# This is the "Output Gate" that makes neutrality_v11 + governance.py real.
+# Important note:
+# - This endpoint still uses a deterministic drafting layer (_stub_llm_generate)
+#   rather than a real model provider.
+# - The changes below make that drafting layer substantially better while keeping
+#   ANCHOR within purpose: governed drafting support, not clinical decision-making AI.
 
 import logging
 import re
@@ -31,7 +37,7 @@ from app.portal_submit import (
     detect_pii_types,
 )
 from app.portal_governance_engine import evaluate_input_governance, extract_neutrality_version
-from app.governance import govern_output  # your output governance engine
+from app.governance import govern_output
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +60,9 @@ class PortalAssistRequest(BaseModel):
 
     # Optional: lightweight instruction for drafting style (NOT stored, NOT echoed)
     instruction: Optional[str] = Field(default=None, max_length=1000)
+
+    # Optional control-plane context from Workspace
+    role: Optional[str] = Field(default=None, max_length=100)
 
     # R1
     ai_assisted: bool = Field(default=True)
@@ -102,6 +111,7 @@ def _looks_like_soap(text_value: str) -> bool:
     t = (text_value or "")
     return bool(_SOAP_S_RE.search(t) and _SOAP_O_RE.search(t) and _SOAP_A_RE.search(t) and _SOAP_P_RE.search(t))
 
+
 def _compute_event_sha256(
     *,
     clinic_id: uuid.UUID,
@@ -119,7 +129,6 @@ def _compute_event_sha256(
 
 
 def _now_iso_utc() -> str:
-    # avoid importing datetime at module load; keep simple + consistent with other modules
     import datetime
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -132,89 +141,215 @@ def _sanitize_instruction(instr: Optional[str]) -> str:
     s = (instr or "").strip()
     if not s:
         return ""
-    # collapse whitespace
     s = re.sub(r"\s+", " ", s).strip()
-    # hard cap (already capped by pydantic, but keep defensive)
     return s[:1000]
 
 
-def _stub_llm_generate(*, mode: str, user_text: str, instruction: Optional[str]) -> str:
+def _normalize_whitespace(text_value: str) -> str:
+    return re.sub(r"\s+", " ", (text_value or "").strip()).strip()
+
+
+def _non_empty_lines(text_value: str) -> List[str]:
+    lines = []
+    for raw in (text_value or "").splitlines():
+        cleaned = raw.strip()
+        if not cleaned:
+            continue
+        cleaned = re.sub(r"^[\-\*\u2022]+\s*", "", cleaned)
+        lines.append(cleaned)
+    return lines
+
+
+def _word_count(text_value: str) -> int:
+    trimmed = (text_value or "").strip()
+    if not trimmed:
+        return 0
+    return len(re.findall(r"\S+", trimmed))
+
+
+def _looks_like_email_already(text_value: str) -> bool:
+    t = (text_value or "").strip()
+    if not t:
+        return False
+    return bool(re.match(r"(?is)^\s*(hello|hi|dear)\b", t))
+
+
+def _extract_case_reference(text_value: str) -> str:
     """
-    Replace this with a real model call later.
-    For now: deterministic drafting behavior that DOES NOT echo instruction
-    and DOES NOT double-wrap SOAP.
+    Try to recover a light case reference without inventing detail.
+    """
+    t = _normalize_whitespace(text_value)
+    m = re.search(r"\bregarding\s+(.+?)(?:[.!?]|$)", t, flags=re.I)
+    if m:
+        return m.group(1).strip()
+
+    m = re.search(r"\bfor\s+(.+?)(?:[.!?]|$)", t, flags=re.I)
+    if m:
+        return m.group(1).strip()
+
+    return "your message"
+
+
+def _clean_request_like_prefix(text_value: str) -> str:
+    """
+    Remove common request wrappers so the output does not echo meta-instructions.
+    """
+    t = (text_value or "").strip()
+
+    patterns = [
+        r"(?is)^\s*please\s+write\s+",
+        r"(?is)^\s*please\s+draft\s+",
+        r"(?is)^\s*please\s+provide\s+",
+        r"(?is)^\s*write\s+",
+        r"(?is)^\s*draft\s+",
+        r"(?is)^\s*provide\s+",
+    ]
+    for pattern in patterns:
+        t = re.sub(pattern, "", t, count=1)
+
+    return t.strip()
+
+
+def _normalize_sentence(text_value: str) -> str:
+    t = _normalize_whitespace(text_value)
+    if not t:
+        return ""
+    if t[-1] not in ".!?":
+        t += "."
+    return t
+
+
+def _build_sparse_client_comm(text_value: str) -> str:
+    """
+    Safe holding response for thin client-communication inputs.
+    This avoids inventing case facts while still producing a usable output.
+    """
+    ref = _extract_case_reference(text_value)
+
+    return (
+        "Hello,\n\n"
+        f"Thank you for your message regarding {ref}.\n\n"
+        "We have noted your concern and a member of the team will review the matter and follow up with you as appropriate.\n\n"
+        "Kind regards,\n"
+    )
+
+
+def _build_client_comm(text_value: str, instruction: str) -> str:
+    t = (text_value or "").strip()
+    instr = _sanitize_instruction(instruction)
+    sparse = _word_count(t) < 14
+
+    # If the source is already a plausible email/message, lightly normalize and return it.
+    if _looks_like_email_already(t):
+        cleaned = t.strip()
+        if not cleaned.endswith("\n"):
+            cleaned += "\n"
+        return cleaned
+
+    # Thin request-like prompts need a safe, usable holding response rather than an echo.
+    if sparse:
+        return _build_sparse_client_comm(t)
+
+    core = _clean_request_like_prefix(t)
+    core = _normalize_sentence(core)
+
+    warm = bool(re.search(r"\b(warm|empathetic|kind)\b", instr, flags=re.I))
+    formal = bool(re.search(r"\b(formal|very formal)\b", instr, flags=re.I))
+
+    greeting = "Hello,"
+    signoff = "Kind regards,"
+
+    if formal:
+        greeting = "Dear client,"
+        signoff = "Kind regards,"
+    elif warm:
+        greeting = "Hello,"
+        signoff = "Kind regards,"
+
+    return (
+        f"{greeting}\n\n"
+        f"{core}\n\n"
+        f"{signoff}\n"
+    )
+
+
+def _build_internal_summary(text_value: str, instruction: str) -> str:
+    t = (text_value or "").strip()
+    instr = _sanitize_instruction(instruction)
+    lines = _non_empty_lines(t)
+
+    if not lines:
+        return ""
+
+    # If the instruction explicitly asks for a one-liner, keep it to one line.
+    if re.search(r"\b(one line|one-liner|single line)\b", instr, flags=re.I):
+        return _normalize_sentence(lines[0]) + "\n"
+
+    # One-line source becomes one clear bullet.
+    if len(lines) == 1:
+        return f"- {_normalize_sentence(lines[0])}\n"
+
+    # Multi-line source becomes a clean bullet summary.
+    bullets = [f"- {_normalize_sentence(line)}" for line in lines]
+    return "\n".join(bullets) + "\n"
+
+
+def _build_clinical_note(text_value: str, instruction: str) -> str:
+    t = (text_value or "").strip()
+
+    # If already SOAP, preserve structure and normalize lightly.
+    if _looks_like_soap(t):
+        lines = [ln.rstrip() for ln in t.splitlines()]
+        out_lines: List[str] = []
+        for ln in lines:
+            m = re.match(r"^\s*([SOAPsoap])\s*:\s*(.*)$", ln)
+            if m:
+                head = m.group(1).upper()
+                rest = m.group(2).strip()
+                out_lines.append(f"{head}: {rest}".rstrip())
+            else:
+                out_lines.append(ln)
+        cleaned = "\n".join(out_lines)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned + ("\n" if not cleaned.endswith("\n") else "")
+
+    # For sparse inputs, use a safe scaffold that preserves the source in S and leaves the rest blank.
+    # This improves usability without inventing findings or clinical judgment.
+    cleaned = _normalize_sentence(t)
+
+    return (
+        "S:\n"
+        f"- {cleaned}\n\n"
+        "O:\n"
+        "- \n\n"
+        "A:\n"
+        "- \n\n"
+        "P:\n"
+        "- \n"
+    )
+
+
+def _stub_llm_generate(*, mode: str, user_text: str, instruction: Optional[str], role: Optional[str] = None) -> str:
+    """
+    Deterministic governed drafting layer.
+
+    This is NOT a real model call yet.
+    It is a constrained drafting layer that:
+    - preserves meaning
+    - avoids invention of facts
+    - avoids new clinical decision-making
+    - produces more usable mode-specific output
     """
     t = (user_text or "").strip()
     instr = _sanitize_instruction(instruction)
 
-    # NOTE: instruction is used only to pick style, never included in the output.
-    # This is critical: we do not want "Tighten wording..." to appear in final_text.
-
     if mode == "clinical_note":
-        # If already SOAP, preserve structure and do a minimal "tightening" pass.
-        if _looks_like_soap(t):
-            # minimal deterministic cleanup:
-            # - strip trailing spaces
-            # - normalize blank lines
-            # - ensure headings are clean "S:", "O:", "A:", "P:" with one space removed
-            lines = [ln.rstrip() for ln in t.splitlines()]
-            # normalize headings like "S:   ..." -> "S: ..."
-            out_lines: List[str] = []
-            for ln in lines:
-                m = re.match(r"^\s*([SOAPsoap])\s*:\s*(.*)$", ln)
-                if m:
-                    head = m.group(1).upper()
-                    rest = m.group(2).strip()
-                    out_lines.append(f"{head}: {rest}".rstrip())
-                else:
-                    out_lines.append(ln)
-            cleaned = "\n".join(out_lines)
-            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-            return cleaned + ("\n" if not cleaned.endswith("\n") else "")
-
-        # If not SOAP, we can scaffold SOAP, but WITHOUT echoing instruction
-        # and WITHOUT duplicating the original "S:" etc.
-        # Use instruction to choose concision level only.
-        concise = True
-        if instr:
-            # tiny heuristic: if instruction mentions "detailed" or "expand", allow slightly longer
-            if re.search(r"\b(detailed|expand|elaborate|full)\b", instr, flags=re.I):
-                concise = False
-
-        bullet = "- " if concise else "- "
-        return (
-            "S:\n"
-            f"{bullet}{t}\n\n"
-            "O:\n"
-            f"{bullet}\n\n"
-            "A:\n"
-            f"{bullet}\n\n"
-            "P:\n"
-            f"{bullet}\n"
-        )
+        return _build_clinical_note(t, instr)
 
     if mode == "client_comm":
-        # Use instruction to pick tone, but never echo it.
-        tone = "friendly, professional"
-        if instr:
-            if re.search(r"\b(formal|very formal)\b", instr, flags=re.I):
-                tone = "formal, professional"
-            elif re.search(r"\b(warm|empathetic|kind)\b", instr, flags=re.I):
-                tone = "warm, professional"
+        return _build_client_comm(t, instr)
 
-        # Deterministic structure:
-        # No instruction line in body.
-        return (
-            "Hello,\n\n"
-            f"{t}\n\n"
-            f"Kind regards,\n"
-        )
-
-    # internal_summary
-    # Use instruction to decide if we should be one-liner vs bullet.
-    if instr and re.search(r"\b(one line|one-liner|single line)\b", instr, flags=re.I):
-        return t + ("\n" if not t.endswith("\n") else "")
-    return f"- {t}\n"
+    return _build_internal_summary(t, instr)
 
 
 # ----------------------------
@@ -264,15 +399,15 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
         governance_grade = None
         rules_fired = ig.rules_fired
     else:
-        # -------- GENERATE candidate assistant output (stub for now)
+        # -------- GENERATE candidate assistant output
         candidate = _stub_llm_generate(
             mode=mode,
             user_text=payload.text,
             instruction=payload.instruction,
+            role=payload.role,
         )
 
         # -------- OUTPUT GATE (neutrality + hard rules)
-        # Inject policy keys expected by app.governance.govern_output
         gov_policy = dict(policy_obj or {})
         gov_policy.setdefault("policy_version", f"clinic-policy-v{policy_version}")
         gov_policy.setdefault("neutrality_version", neutrality_version)
@@ -292,11 +427,9 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
 
         governance_score = float(getattr(decision_obj, "score", 0) or 0)
         governance_grade = str(getattr(decision_obj, "grade", "") or "")
-        # reason_code here reflects output gate; keep input gate reason_code separate
         out_reason_code = f"output_{getattr(decision_obj, 'reason', 'allowed')}"
         risk_grade = "med" if governance_replaced else ig.risk_grade
 
-        # Combine explainability (M2.7): input + output
         rules_fired = {
             "input": ig.rules_fired,
             "output": (audit.get("decision_trace") if isinstance(audit, dict) else None),
