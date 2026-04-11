@@ -61,7 +61,7 @@ class PortalAssistRequest(BaseModel):
     # Optional: lightweight instruction for drafting style (NOT stored, NOT echoed)
     instruction: Optional[str] = Field(default=None, max_length=1000)
 
-    # Optional control-plane context from Workspace
+    # Optional UI context from Workspace
     role: Optional[str] = Field(default=None, max_length=100)
 
     # R1
@@ -103,6 +103,15 @@ _SOAP_S_RE = re.compile(r"(?im)^\s*S:\s*")
 _SOAP_O_RE = re.compile(r"(?im)^\s*O:\s*")
 _SOAP_A_RE = re.compile(r"(?im)^\s*A:\s*")
 _SOAP_P_RE = re.compile(r"(?im)^\s*P:\s*")
+
+_EMAIL_REQUEST_RE = re.compile(r"\b(email|message|memo|letter|update)\b", flags=re.I)
+_GOVERNANCE_KEYWORDS_RE = re.compile(
+    r"\b(governance|anchor|policy|privacy|compliance|audit|oversight|review|breach|incident|risk)\b",
+    flags=re.I,
+)
+_STAFF_AUDIENCE_RE = re.compile(r"\b(staff|team|practice staff|all practice staff|colleagues)\b", flags=re.I)
+_LEADERSHIP_AUDIENCE_RE = re.compile(r"\b(general director|director|leadership|manager)\b", flags=re.I)
+
 
 def _looks_like_soap(text_value: str) -> bool:
     """
@@ -149,6 +158,22 @@ def _normalize_whitespace(text_value: str) -> str:
     return re.sub(r"\s+", " ", (text_value or "").strip()).strip()
 
 
+def _normalize_sentence(text_value: str) -> str:
+    t = _normalize_whitespace(text_value)
+    if not t:
+        return ""
+    if t[-1] not in ".!?":
+        t += "."
+    return t
+
+
+def _word_count(text_value: str) -> int:
+    trimmed = (text_value or "").strip()
+    if not trimmed:
+        return 0
+    return len(re.findall(r"\S+", trimmed))
+
+
 def _non_empty_lines(text_value: str) -> List[str]:
     lines = []
     for raw in (text_value or "").splitlines():
@@ -160,48 +185,20 @@ def _non_empty_lines(text_value: str) -> List[str]:
     return lines
 
 
-def _word_count(text_value: str) -> int:
-    trimmed = (text_value or "").strip()
-    if not trimmed:
-        return 0
-    return len(re.findall(r"\S+", trimmed))
-
-
-def _looks_like_email_already(text_value: str) -> bool:
-    t = (text_value or "").strip()
-    if not t:
-        return False
-    return bool(re.match(r"(?is)^\s*(hello|hi|dear)\b", t))
-
-
-def _extract_case_reference(text_value: str) -> str:
+def _strip_request_wrapper(text_value: str) -> str:
     """
-    Try to recover a light case reference without inventing detail.
-    """
-    t = _normalize_whitespace(text_value)
-    m = re.search(r"\bregarding\s+(.+?)(?:[.!?]|$)", t, flags=re.I)
-    if m:
-        return m.group(1).strip()
-
-    m = re.search(r"\bfor\s+(.+?)(?:[.!?]|$)", t, flags=re.I)
-    if m:
-        return m.group(1).strip()
-
-    return "your message"
-
-
-def _clean_request_like_prefix(text_value: str) -> str:
-    """
-    Remove common request wrappers so the output does not echo meta-instructions.
+    Remove common leading task phrasing so output does not echo the request itself.
     """
     t = (text_value or "").strip()
 
     patterns = [
         r"(?is)^\s*please\s+write\s+",
         r"(?is)^\s*please\s+draft\s+",
+        r"(?is)^\s*please\s+prepare\s+",
         r"(?is)^\s*please\s+provide\s+",
         r"(?is)^\s*write\s+",
         r"(?is)^\s*draft\s+",
+        r"(?is)^\s*prepare\s+",
         r"(?is)^\s*provide\s+",
     ]
     for pattern in patterns:
@@ -210,21 +207,61 @@ def _clean_request_like_prefix(text_value: str) -> str:
     return t.strip()
 
 
-def _normalize_sentence(text_value: str) -> str:
+def _extract_topic_phrase(text_value: str) -> str:
+    """
+    Pull out a simple topical phrase without inventing detail.
+    """
     t = _normalize_whitespace(text_value)
+
+    patterns = [
+        r"\bregarding\s+(.+?)(?:[.!?]|$)",
+        r"\babout\s+(.+?)(?:[.!?]|$)",
+        r"\bon\s+(.+?)(?:[.!?]|$)",
+        r"\bwith\s+(.+?)(?:[.!?]|$)",
+        r"\bfor\s+(.+?)(?:[.!?]|$)",
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, t, flags=re.I)
+        if m:
+            value = m.group(1).strip(" ,.;:")
+            if value:
+                return value
+
+    cleaned = _strip_request_wrapper(t)
+    return cleaned.strip(" ,.;:")
+
+
+def _title_case_subject(value: str) -> str:
+    t = _normalize_whitespace(value)
     if not t:
-        return ""
-    if t[-1] not in ".!?":
-        t += "."
-    return t
+        return "Internal update"
+    if len(t) > 90:
+        t = t[:90].rstrip()
+    return t[0].upper() + t[1:]
+
+
+def _infer_internal_profile(*, role: Optional[str], instruction: str, text_value: str) -> str:
+    """
+    Split internal_summary behavior into:
+    - internal_governance_review
+    - internal_summary
+    without changing the external backend mode.
+    """
+    role_text = (role or "").strip().lower()
+    combined = f"{role or ''} {instruction or ''} {text_value or ''}"
+
+    if "practice manager" in role_text:
+        return "internal_governance_review"
+
+    if _GOVERNANCE_KEYWORDS_RE.search(combined):
+        return "internal_governance_review"
+
+    return "internal_summary"
 
 
 def _build_sparse_client_comm(text_value: str) -> str:
-    """
-    Safe holding response for thin client-communication inputs.
-    This avoids inventing case facts while still producing a usable output.
-    """
-    ref = _extract_case_reference(text_value)
+    ref = _extract_topic_phrase(text_value) or "your message"
 
     return (
         "Hello,\n\n"
@@ -239,18 +276,16 @@ def _build_client_comm(text_value: str, instruction: str) -> str:
     instr = _sanitize_instruction(instruction)
     sparse = _word_count(t) < 14
 
-    # If the source is already a plausible email/message, lightly normalize and return it.
-    if _looks_like_email_already(t):
+    if re.match(r"(?is)^\s*(hello|hi|dear)\b", t):
         cleaned = t.strip()
         if not cleaned.endswith("\n"):
             cleaned += "\n"
         return cleaned
 
-    # Thin request-like prompts need a safe, usable holding response rather than an echo.
     if sparse:
         return _build_sparse_client_comm(t)
 
-    core = _clean_request_like_prefix(t)
+    core = _strip_request_wrapper(t)
     core = _normalize_sentence(core)
 
     warm = bool(re.search(r"\b(warm|empathetic|kind)\b", instr, flags=re.I))
@@ -261,10 +296,8 @@ def _build_client_comm(text_value: str, instruction: str) -> str:
 
     if formal:
         greeting = "Dear client,"
-        signoff = "Kind regards,"
     elif warm:
         greeting = "Hello,"
-        signoff = "Kind regards,"
 
     return (
         f"{greeting}\n\n"
@@ -273,31 +306,9 @@ def _build_client_comm(text_value: str, instruction: str) -> str:
     )
 
 
-def _build_internal_summary(text_value: str, instruction: str) -> str:
-    t = (text_value or "").strip()
-    instr = _sanitize_instruction(instruction)
-    lines = _non_empty_lines(t)
-
-    if not lines:
-        return ""
-
-    # If the instruction explicitly asks for a one-liner, keep it to one line.
-    if re.search(r"\b(one line|one-liner|single line)\b", instr, flags=re.I):
-        return _normalize_sentence(lines[0]) + "\n"
-
-    # One-line source becomes one clear bullet.
-    if len(lines) == 1:
-        return f"- {_normalize_sentence(lines[0])}\n"
-
-    # Multi-line source becomes a clean bullet summary.
-    bullets = [f"- {_normalize_sentence(line)}" for line in lines]
-    return "\n".join(bullets) + "\n"
-
-
 def _build_clinical_note(text_value: str, instruction: str) -> str:
     t = (text_value or "").strip()
 
-    # If already SOAP, preserve structure and normalize lightly.
     if _looks_like_soap(t):
         lines = [ln.rstrip() for ln in t.splitlines()]
         out_lines: List[str] = []
@@ -313,8 +324,6 @@ def _build_clinical_note(text_value: str, instruction: str) -> str:
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned + ("\n" if not cleaned.endswith("\n") else "")
 
-    # For sparse inputs, use a safe scaffold that preserves the source in S and leaves the rest blank.
-    # This improves usability without inventing findings or clinical judgment.
     cleaned = _normalize_sentence(t)
 
     return (
@@ -327,6 +336,105 @@ def _build_clinical_note(text_value: str, instruction: str) -> str:
         "P:\n"
         "- \n"
     )
+
+
+def _build_internal_email(*, text_value: str, profile: str) -> str:
+    topic = _extract_topic_phrase(text_value)
+    audience_staff = bool(_STAFF_AUDIENCE_RE.search(text_value or ""))
+    audience_leadership = bool(_LEADERSHIP_AUDIENCE_RE.search(text_value or ""))
+
+    greeting = "Hello,"
+    if audience_staff:
+        greeting = "Hello team,"
+
+    subject = "Internal update"
+    opening = "I am writing to provide an internal update."
+
+    if profile == "internal_governance_review":
+        if "anchor" in (text_value or "").lower() and "governance" in (text_value or "").lower():
+            subject = "Internal AI governance update"
+            opening = "I am writing to provide an internal update on the AI governance arrangements supported by ANCHOR."
+        elif topic:
+            subject = f"Internal governance update regarding {topic}"
+            opening = f"I am writing to provide an internal governance update regarding {topic}."
+        else:
+            subject = "Internal governance update"
+            opening = "I am writing to provide an internal governance update."
+
+        if audience_leadership:
+            greeting = "Hello,"
+    else:
+        if topic:
+            subject = f"Internal update regarding {topic}"
+            opening = f"I am writing regarding {topic}."
+        else:
+            subject = "Internal update"
+            opening = "I am writing to share an internal update."
+
+    body_lines = [opening]
+
+    if audience_staff:
+        body_lines.append("This communication is intended for internal staff circulation.")
+    elif audience_leadership and profile == "internal_governance_review":
+        body_lines.append("This note is intended for internal leadership review.")
+
+    body = "\n".join(body_lines)
+
+    return (
+        f"Subject: {_title_case_subject(subject)}\n\n"
+        f"{greeting}\n\n"
+        f"{body}\n\n"
+        "Kind regards,\n"
+    )
+
+
+def _build_internal_governance_review(text_value: str, instruction: str, role: Optional[str]) -> str:
+    t = (text_value or "").strip()
+    lines = _non_empty_lines(t)
+
+    if _EMAIL_REQUEST_RE.search(t):
+        return _build_internal_email(text_value=t, profile="internal_governance_review")
+
+    # If sparse, convert to a cleaner internal review note rather than echoing the request.
+    if len(lines) <= 1:
+        topic = _extract_topic_phrase(t)
+        note_line = _normalize_sentence(topic or _strip_request_wrapper(t) or t)
+
+        return (
+            "Internal governance review note:\n"
+            f"- {note_line}\n"
+        )
+
+    bullets = [f"- {_normalize_sentence(line)}" for line in lines]
+    return "Internal governance review note:\n" + "\n".join(bullets) + "\n"
+
+
+def _build_internal_summary(text_value: str, instruction: str, role: Optional[str]) -> str:
+    t = (text_value or "").strip()
+    instr = _sanitize_instruction(instruction)
+    profile = _infer_internal_profile(role=role, instruction=instr, text_value=t)
+    lines = _non_empty_lines(t)
+
+    if profile == "internal_governance_review":
+        return _build_internal_governance_review(t, instr, role)
+
+    if _EMAIL_REQUEST_RE.search(t):
+        return _build_internal_email(text_value=t, profile="internal_summary")
+
+    if re.search(r"\b(one line|one-liner|single line)\b", instr, flags=re.I):
+        first = _normalize_sentence(lines[0] if lines else t)
+        return first + "\n" if first else ""
+
+    if not lines:
+        return ""
+
+    if len(lines) == 1:
+        cleaned = _strip_request_wrapper(lines[0])
+        cleaned = _normalize_sentence(cleaned)
+        return f"- {cleaned}\n"
+
+    bullets = [f"- {_normalize_sentence(_strip_request_wrapper(line))}" for line in lines]
+    return "\n".join(bullets) + "\n"
 
 
 def _stub_llm_generate(*, mode: str, user_text: str, instruction: Optional[str], role: Optional[str] = None) -> str:
@@ -349,7 +457,7 @@ def _stub_llm_generate(*, mode: str, user_text: str, instruction: Optional[str],
     if mode == "client_comm":
         return _build_client_comm(t, instr)
 
-    return _build_internal_summary(t, instr)
+    return _build_internal_summary(t, instr, role)
 
 
 # ----------------------------
