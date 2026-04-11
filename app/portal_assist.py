@@ -12,8 +12,9 @@ from __future__ import annotations
 # Important note:
 # - This endpoint still uses a deterministic drafting layer (_stub_llm_generate)
 #   rather than a real model provider.
-# - The changes below make that drafting layer substantially better while keeping
-#   ANCHOR within purpose: governed drafting support, not clinical decision-making AI.
+# - The changes below make internal_summary / internal_governance_review
+#   substantially more useful while keeping ANCHOR within purpose:
+#   governed drafting support, not clinical decision-making AI.
 
 import logging
 import re
@@ -145,7 +146,6 @@ def _now_iso_utc() -> str:
 def _sanitize_instruction(instr: Optional[str]) -> str:
     """
     Control-plane only: used to guide generation, never included verbatim in output.
-    Keep it low-risk, short, and non-directive.
     """
     s = (instr or "").strip()
     if not s:
@@ -161,9 +161,9 @@ def _normalize_whitespace(text_value: str) -> str:
 def _normalize_sentence(text_value: str) -> str:
     t = _normalize_whitespace(text_value)
     if not t:
-        return ""
+      return ""
     if t[-1] not in ".!?":
-        t += "."
+      t += "."
     return t
 
 
@@ -207,6 +207,24 @@ def _strip_request_wrapper(text_value: str) -> str:
     return t.strip()
 
 
+def _strip_meta_object(text_value: str) -> str:
+    """
+    Remove meta task nouns like 'a summary regarding', 'a review regarding', etc.
+    """
+    t = _strip_request_wrapper(text_value)
+
+    patterns = [
+        r"(?is)^\s*(an?|the)\s+(summary|review|email|message|note|update)\s+(regarding|about|on|for)\s+",
+        r"(?is)^\s*(summary|review|email|message|note|update)\s+(regarding|about|on|for)\s+",
+        r"(?is)^\s*(an?|the)\s+(summary|review|email|message|note|update)\s+",
+        r"(?is)^\s*(summary|review|email|message|note|update)\s+",
+    ]
+    for pattern in patterns:
+        t = re.sub(pattern, "", t, count=1)
+
+    return t.strip(" ,.;:")
+
+
 def _extract_topic_phrase(text_value: str) -> str:
     """
     Pull out a simple topical phrase without inventing detail.
@@ -228,7 +246,7 @@ def _extract_topic_phrase(text_value: str) -> str:
             if value:
                 return value
 
-    cleaned = _strip_request_wrapper(t)
+    cleaned = _strip_meta_object(t)
     return cleaned.strip(" ,.;:")
 
 
@@ -378,6 +396,8 @@ def _build_internal_email(*, text_value: str, profile: str) -> str:
     elif audience_leadership and profile == "internal_governance_review":
         body_lines.append("This note is intended for internal leadership review.")
 
+    body_lines.append("Details should be reviewed and confirmed before operational use.")
+
     body = "\n".join(body_lines)
 
     return (
@@ -388,6 +408,28 @@ def _build_internal_email(*, text_value: str, profile: str) -> str:
     )
 
 
+def _build_sparse_internal_governance_review(text_value: str) -> str:
+    topic = _normalize_sentence(_extract_topic_phrase(text_value))
+
+    return (
+        "Internal governance review note:\n"
+        f"- Topic: {topic}\n"
+        "- Purpose: internal governance review requested.\n"
+        "- Status: requires human review before operational use.\n"
+    )
+
+
+def _build_sparse_internal_summary(text_value: str) -> str:
+    topic = _normalize_sentence(_extract_topic_phrase(text_value))
+
+    return (
+        "Internal summary:\n"
+        f"- Topic: {topic}\n"
+        "- Context: summary prepared for internal review.\n"
+        "- Status: requires human review before operational use.\n"
+    )
+
+
 def _build_internal_governance_review(text_value: str, instruction: str, role: Optional[str]) -> str:
     t = (text_value or "").strip()
     lines = _non_empty_lines(t)
@@ -395,17 +437,11 @@ def _build_internal_governance_review(text_value: str, instruction: str, role: O
     if _EMAIL_REQUEST_RE.search(t):
         return _build_internal_email(text_value=t, profile="internal_governance_review")
 
-    # If sparse, convert to a cleaner internal review note rather than echoing the request.
-    if len(lines) <= 1:
-        topic = _extract_topic_phrase(t)
-        note_line = _normalize_sentence(topic or _strip_request_wrapper(t) or t)
+    if len(lines) <= 1 or _word_count(t) < 20:
+        return _build_sparse_internal_governance_review(t)
 
-        return (
-            "Internal governance review note:\n"
-            f"- {note_line}\n"
-        )
-
-    bullets = [f"- {_normalize_sentence(line)}" for line in lines]
+    cleaned_lines = [_normalize_sentence(_strip_meta_object(line)) for line in lines if line.strip()]
+    bullets = [f"- {line}" for line in cleaned_lines if line]
     return "Internal governance review note:\n" + "\n".join(bullets) + "\n"
 
 
@@ -422,19 +458,18 @@ def _build_internal_summary(text_value: str, instruction: str, role: Optional[st
         return _build_internal_email(text_value=t, profile="internal_summary")
 
     if re.search(r"\b(one line|one-liner|single line)\b", instr, flags=re.I):
-        first = _normalize_sentence(lines[0] if lines else t)
+        first = _normalize_sentence(_strip_meta_object(lines[0] if lines else t))
         return first + "\n" if first else ""
 
     if not lines:
         return ""
 
-    if len(lines) == 1:
-        cleaned = _strip_request_wrapper(lines[0])
-        cleaned = _normalize_sentence(cleaned)
-        return f"- {cleaned}\n"
+    if len(lines) == 1 or _word_count(t) < 20:
+        return _build_sparse_internal_summary(t)
 
-    bullets = [f"- {_normalize_sentence(_strip_request_wrapper(line))}" for line in lines]
-    return "\n".join(bullets) + "\n"
+    cleaned_lines = [_normalize_sentence(_strip_meta_object(line)) for line in lines if line.strip()]
+    bullets = [f"- {line}" for line in cleaned_lines if line]
+    return "Internal summary:\n" + "\n".join(bullets) + "\n"
 
 
 def _stub_llm_generate(*, mode: str, user_text: str, instruction: Optional[str], role: Optional[str] = None) -> str:
@@ -497,7 +532,6 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
     )
 
     if ig.decision == "blocked":
-        # We do not generate model output if input is blocked
         final_text = "Submission blocked by clinic policy."
         governance_replaced = False
         out_decision = "blocked"
@@ -507,7 +541,6 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
         governance_grade = None
         rules_fired = ig.rules_fired
     else:
-        # -------- GENERATE candidate assistant output
         candidate = _stub_llm_generate(
             mode=mode,
             user_text=payload.text,
@@ -515,7 +548,6 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
             role=payload.role,
         )
 
-        # -------- OUTPUT GATE (neutrality + hard rules)
         gov_policy = dict(policy_obj or {})
         gov_policy.setdefault("policy_version", f"clinic-policy-v{policy_version}")
         gov_policy.setdefault("neutrality_version", neutrality_version)
@@ -543,7 +575,6 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
             "output": (audit.get("decision_trace") if isinstance(audit, dict) else None),
         }
 
-    # Metadata-only fingerprint for this request
     event_sha256 = _compute_event_sha256(
         clinic_id=clinic_id,
         request_id=req_id,
@@ -571,7 +602,6 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
     req_id_s = str(req_id)
 
     try:
-        # Persist governance metadata ONLY
         gov_row = (
             db.execute(
                 text(
