@@ -12,8 +12,7 @@ from __future__ import annotations
 # Important note:
 # - This endpoint still uses a deterministic drafting layer (_stub_llm_generate)
 #   rather than a real model provider.
-# - This version is designed to be broader and more stable so ANCHOR does not
-#   need a one-off code tweak for every slightly different request phrasing.
+# - This version is the cleaned v1 deterministic drafting layer.
 
 import logging
 import re
@@ -57,14 +56,8 @@ class PortalAssistRequest(BaseModel):
     mode: str = Field(..., description="clinical_note | client_comm | internal_summary")
     text: str = Field(..., min_length=1, max_length=20000)
     request_id: Optional[uuid.UUID] = Field(default=None)
-
-    # Optional: lightweight instruction for drafting style (NOT stored, NOT echoed)
     instruction: Optional[str] = Field(default=None, max_length=1000)
-
-    # Optional UI context from Workspace
     role: Optional[str] = Field(default=None, max_length=100)
-
-    # R1
     ai_assisted: bool = Field(default=True)
     user_confirmed_review: bool = Field(default=False)
 
@@ -74,8 +67,7 @@ class PortalAssistResponse(BaseModel):
     mode: str
     final_text: str
 
-    # Governance metadata (safe to return)
-    decision: str               # allowed | replaced | blocked
+    decision: str
     reason_code: str
     risk_grade: str
     pii_detected: bool
@@ -88,10 +80,8 @@ class PortalAssistResponse(BaseModel):
     governance_grade: Optional[str] = None
     governance_replaced: bool = False
 
-    # M2.7
     policy_sha256: Optional[str] = None
     rules_fired: Optional[dict] = None
-
     created_at_utc: str
 
 
@@ -113,8 +103,33 @@ _GOVERNANCE_KEYWORDS_RE = re.compile(
     r"\b(governance|anchor|policy|privacy|compliance|audit|oversight|review|breach|incident|risk|disciplinary)\b",
     flags=re.I,
 )
-_STAFF_AUDIENCE_RE = re.compile(r"\b(staff|team|practice staff|all practice staff|colleagues)\b", flags=re.I)
+_STAFF_AUDIENCE_RE = re.compile(r"\b(staff|team|practice staff|all practice staff|colleagues|nursing team)\b", flags=re.I)
 _LEADERSHIP_AUDIENCE_RE = re.compile(r"\b(general director|director|leadership|manager|owners?)\b", flags=re.I)
+
+_META_TAIL_RE = re.compile(
+    r"(?is)\s*(?:,?\s*|\s+)(and\s+)?(include|with|plus|adding|provide)\s+"
+    r"(bullet points?|bullets?|key points?|main points?|discussion points?|what was discussed|action items?|next steps?).*$"
+)
+
+_META_HEAD_RE_PATTERNS = [
+    r"(?is)^\s*please\s+write\s+",
+    r"(?is)^\s*please\s+draft\s+",
+    r"(?is)^\s*please\s+prepare\s+",
+    r"(?is)^\s*please\s+provide\s+",
+    r"(?is)^\s*please\s+summari[sz]e\s+",
+    r"(?is)^\s*write\s+",
+    r"(?is)^\s*draft\s+",
+    r"(?is)^\s*prepare\s+",
+    r"(?is)^\s*provide\s+",
+    r"(?is)^\s*summari[sz]e\s+",
+]
+
+_META_OBJECT_RE_PATTERNS = [
+    r"(?is)^\s*(an?|the)\s+(summary|review|email|message|note|update|overview|response)\s+(regarding|about|on|for)\s+",
+    r"(?is)^\s*(summary|review|email|message|note|update|overview|response)\s+(regarding|about|on|for)\s+",
+    r"(?is)^\s*(an?|the)\s+(summary|review|email|message|note|update|overview|response)\s+",
+    r"(?is)^\s*(summary|review|email|message|note|update|overview|response)\s+",
+]
 
 
 def _looks_like_soap(text_value: str) -> bool:
@@ -184,38 +199,30 @@ def _non_empty_lines(text_value: str) -> List[str]:
 
 def _strip_request_wrapper(text_value: str) -> str:
     t = (text_value or "").strip()
-
-    patterns = [
-        r"(?is)^\s*please\s+write\s+",
-        r"(?is)^\s*please\s+draft\s+",
-        r"(?is)^\s*please\s+prepare\s+",
-        r"(?is)^\s*please\s+provide\s+",
-        r"(?is)^\s*please\s+summari[sz]e\s+",
-        r"(?is)^\s*write\s+",
-        r"(?is)^\s*draft\s+",
-        r"(?is)^\s*prepare\s+",
-        r"(?is)^\s*provide\s+",
-        r"(?is)^\s*summari[sz]e\s+",
-    ]
-    for pattern in patterns:
+    for pattern in _META_HEAD_RE_PATTERNS:
         t = re.sub(pattern, "", t, count=1)
-
     return t.strip()
 
 
 def _strip_meta_object(text_value: str) -> str:
     t = _strip_request_wrapper(text_value)
-
-    patterns = [
-        r"(?is)^\s*(an?|the)\s+(summary|review|email|message|note|update|overview)\s+(regarding|about|on|for)\s+",
-        r"(?is)^\s*(summary|review|email|message|note|update|overview)\s+(regarding|about|on|for)\s+",
-        r"(?is)^\s*(an?|the)\s+(summary|review|email|message|note|update|overview)\s+",
-        r"(?is)^\s*(summary|review|email|message|note|update|overview)\s+",
-    ]
-    for pattern in patterns:
+    for pattern in _META_OBJECT_RE_PATTERNS:
         t = re.sub(pattern, "", t, count=1)
-
+    t = re.sub(_META_TAIL_RE, "", t)
     return t.strip(" ,.;:")
+
+
+def _clean_topic_text(text_value: str) -> str:
+    t = _strip_meta_object(text_value)
+    t = re.sub(r"(?is)\bwith what was discussed\b", "", t)
+    t = re.sub(r"(?is)\bwhat was discussed\b", "", t)
+    t = re.sub(r"(?is)\binclude bullet points?\b", "", t)
+    t = re.sub(r"(?is)\bbullet points?\b", "", t)
+    t = re.sub(r"(?is)\bkey points?\b", "", t)
+    t = re.sub(r"(?is)\bmain points?\b", "", t)
+    t = re.sub(r"(?is)\bdiscussion points?\b", "", t)
+    t = re.sub(r"\s+", " ", t).strip(" ,.;:")
+    return t
 
 
 def _extract_topic_phrase(text_value: str) -> str:
@@ -232,11 +239,11 @@ def _extract_topic_phrase(text_value: str) -> str:
     for pattern in patterns:
         m = re.search(pattern, t, flags=re.I)
         if m:
-            value = m.group(1).strip(" ,.;:")
+            value = _clean_topic_text(m.group(1))
             if value:
                 return value
 
-    cleaned = _strip_meta_object(t)
+    cleaned = _clean_topic_text(t)
     return cleaned.strip(" ,.;:")
 
 
@@ -330,8 +337,6 @@ def _build_client_comm(text_value: str, instruction: str) -> str:
 
     if formal:
         greeting = "Dear client,"
-    elif warm:
-        greeting = "Hello,"
 
     return (
         f"{greeting}\n\n"
@@ -378,7 +383,7 @@ def _derive_internal_bullets(text_value: str, *, sparse: bool) -> List[str]:
     if len(lines) > 1:
         cleaned = []
         for line in lines:
-            item = _normalize_sentence(_strip_meta_object(line))
+            item = _normalize_sentence(_clean_topic_text(line))
             if item:
                 cleaned.append(item)
         if cleaned:
@@ -402,7 +407,6 @@ def _derive_internal_action_items(text_value: str, *, sparse: bool) -> List[str]
         if sparse:
             return ["Action items should be confirmed during human review."]
         return ["Review and confirm follow-up actions before operational use."]
-
     return []
 
 
@@ -422,10 +426,7 @@ def _build_internal_email(*, text_value: str, profile: str, wants_bullets: bool,
         else:
             subject = "Internal governance update"
             opening = "I am writing to provide an internal governance update."
-        if audience == "leadership":
-            extra = "This note is intended for internal leadership review."
-        else:
-            extra = "This note is intended for internal review."
+        extra = "This note is intended for internal leadership review." if audience == "leadership" else "This note is intended for internal review."
     else:
         if topic:
             subject = f"Internal update regarding {topic}"
@@ -433,10 +434,7 @@ def _build_internal_email(*, text_value: str, profile: str, wants_bullets: bool,
         else:
             subject = "Internal update"
             opening = "I am writing to share an internal update."
-        if audience == "staff":
-            extra = "This communication is intended for internal staff circulation."
-        else:
-            extra = "This communication is intended for internal review."
+        extra = "This communication is intended for internal staff circulation." if audience == "staff" else "This communication is intended for internal review."
 
     parts: List[str] = [
         f"Subject: {_title_case_subject(subject)}",
@@ -516,7 +514,7 @@ def _build_internal_summary(text_value: str, instruction: str, role: Optional[st
         )
 
     if re.search(r"\b(one line|one-liner|single line)\b", instruction or "", flags=re.I):
-        first = _normalize_sentence(_strip_meta_object(text_value))
+        first = _normalize_sentence(_clean_topic_text(text_value))
         return first + "\n" if first else ""
 
     topic = _normalize_sentence(_extract_topic_phrase(text_value))
@@ -534,16 +532,6 @@ def _build_internal_summary(text_value: str, instruction: str, role: Optional[st
 
 
 def _stub_llm_generate(*, mode: str, user_text: str, instruction: Optional[str], role: Optional[str] = None) -> str:
-    """
-    Deterministic governed drafting layer.
-
-    This is NOT a real model call yet.
-    It is a constrained drafting layer that:
-    - preserves meaning
-    - avoids invention of facts
-    - avoids new clinical decision-making
-    - produces more usable mode-specific output
-    """
     t = (user_text or "").strip()
     instr = _sanitize_instruction(instruction)
 
