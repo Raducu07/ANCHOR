@@ -1,3 +1,5 @@
+// Reference / experimental UI only.
+// This file is currently not used by active routes and should not be treated as current source-of-truth UI.
 "use client";
 
 import Link from "next/link";
