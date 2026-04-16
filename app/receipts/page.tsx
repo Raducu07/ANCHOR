@@ -30,7 +30,7 @@ function buildHtml(apiBase: string, initialRequestId: string) {
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ANCHOR | Receipts</title>
-  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"><\\/script>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"/>
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
   <script>
@@ -109,7 +109,7 @@ function buildHtml(apiBase: string, initialRequestId: string) {
         },
       },
     };
-  <\\/script>
+  </script>
   <style>
     body { font-family: "Inter", sans-serif; margin: 0; -webkit-font-smoothing: antialiased; }
     .font-manrope { font-family: "Manrope", sans-serif; }
@@ -1176,7 +1176,7 @@ function buildHtml(apiBase: string, initialRequestId: string) {
   renderReceipt(null);
   refreshAll();
 })();
-<\\/script>
+</script>
 </body>
 </html>`;
 }
