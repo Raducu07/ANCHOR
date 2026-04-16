@@ -225,7 +225,7 @@ const stitchHtml = `
       <div class="grid grid-cols-12 gap-10">
         <div class="col-span-8 space-y-8">
           <div class="grid grid-cols-2 gap-6">
-            <div class="bg-surface-container-lowest p-6 rounded-xl border border-outline-variant/15 shadow-soft soft-ring relative">
+            <div class="bg-surface-container-lowest p-6 rounded-xl border border-outline-variant/12 shadow-soft soft-ring relative">
               <label class="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-3">Staff role</label>
               <button id="staff-role-button" type="button" class="w-full flex items-center justify-between p-3 bg-surface-container-low rounded-lg border border-transparent hover:border-primary/20 cursor-pointer transition-all text-left">
                 <div class="flex items-center gap-3">
@@ -242,7 +242,7 @@ const stitchHtml = `
               </div>
             </div>
 
-            <div class="bg-surface-container-lowest p-6 rounded-xl border border-outline-variant/15 shadow-soft soft-ring relative">
+            <div class="bg-surface-container-lowest p-6 rounded-xl border border-outline-variant/12 shadow-soft soft-ring relative">
               <label class="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-3">Workflow mode</label>
               <button id="workflow-mode-button" type="button" class="w-full flex items-center justify-between p-3 bg-surface-container-low rounded-lg border border-transparent hover:border-primary/20 cursor-pointer transition-all text-left">
                 <div class="flex items-center gap-3">
@@ -260,7 +260,7 @@ const stitchHtml = `
             </div>
           </div>
 
-          <section class="bg-surface-container-lowest p-8 rounded-xl border border-outline-variant/15 shadow-soft soft-ring">
+          <section class="bg-surface-container-lowest p-8 rounded-xl border border-outline-variant/10 shadow-[0_18px_40px_rgba(42,52,57,0.07)] soft-ring">
             <div class="flex justify-between items-center mb-6">
               <h3 class="font-manrope font-bold text-lg">Source material</h3>
             </div>
@@ -270,7 +270,7 @@ const stitchHtml = `
             <p class="mt-4 text-[11px] text-on-surface-variant italic">Privacy-aware handling is applied during governed review. Metadata-only accountability remains the default doctrine. Always confirm the output before operational use.</p>
           </section>
 
-          <section class="bg-surface-container-lowest p-8 rounded-xl border border-outline-variant/15 shadow-soft soft-ring">
+          <section class="bg-surface-container-lowest p-8 rounded-xl border border-outline-variant/12 shadow-soft soft-ring">
             <h3 class="font-manrope font-bold text-lg mb-6">Review settings</h3>
             <div class="space-y-4">
               <div class="flex items-start gap-4">
@@ -299,7 +299,7 @@ const stitchHtml = `
             </div>
           </section>
 
-          <section class="bg-surface-container-lowest rounded-xl border border-outline-variant/15 shadow-soft soft-ring overflow-hidden">
+          <section class="bg-surface-container-lowest rounded-xl border border-outline-variant/10 shadow-[0_18px_40px_rgba(42,52,57,0.07)] soft-ring overflow-hidden">
             <div class="px-8 py-6 border-b border-outline-variant/10">
               <div class="flex items-start justify-between gap-4">
                 <div>
@@ -314,7 +314,7 @@ const stitchHtml = `
             </div>
 
             <div class="p-8">
-              <div id="governed-result-panel" class="min-h-[260px] rounded-xl border border-dashed border-outline-variant/35 bg-gradient-to-br from-surface-container-lowest to-surface-container-low p-6 flex flex-col justify-between">
+              <div id="governed-result-panel" class="min-h-[260px] rounded-xl border border-dashed border-outline-variant/25 bg-gradient-to-br from-surface-container-lowest to-surface-container-low p-6 flex flex-col justify-between">
                 <div>
                   <div class="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center mb-4">
                     <span class="material-symbols-outlined">description</span>
@@ -364,7 +364,7 @@ const stitchHtml = `
         </div>
 
         <div class="col-span-4 space-y-6">
-          <div class="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/15 shadow-soft soft-ring">
+          <div class="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/12 shadow-soft soft-ring">
             <h4 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-5">Current context</h4>
             <div class="space-y-4">
               <div class="flex justify-between items-start text-sm">
@@ -391,7 +391,7 @@ const stitchHtml = `
             </div>
           </div>
 
-          <div class="bg-surface-container-low rounded-xl p-6 border border-outline-variant/15 shadow-soft soft-ring">
+          <div class="bg-surface-container-low rounded-xl p-6 border border-outline-variant/14 shadow-[0_10px_24px_rgba(42,52,57,0.05)] soft-ring">
             <h4 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-4">Governance summary</h4>
             <div class="space-y-3">
               <div class="flex justify-between items-center text-xs py-1 border-b border-outline-variant/10">
@@ -438,9 +438,9 @@ const stitchHtml = `
             </div>
           </div>
 
-          <div class="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/15 shadow-soft soft-ring">
+          <div class="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/12 shadow-soft soft-ring">
             <h4 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-5">Recommended next</h4>
-            <div class="rounded-lg border border-outline-variant/15 bg-surface-container-low px-4 py-4 mb-4">
+            <div class="rounded-lg border border-outline-variant/12 bg-surface-container-low px-4 py-4 mb-4">
               <p class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Receipt actions</p>
               <p id="receipt-actions-text" class="text-sm text-on-surface-variant leading-6">Receipt actions will appear after a governed run.</p>
             </div>
@@ -457,7 +457,7 @@ const stitchHtml = `
             </div>
           </div>
 
-          <div class="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/15 shadow-soft soft-ring">
+          <div class="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/12 shadow-soft soft-ring">
             <h4 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-6">Traceability</h4>
             <div class="space-y-4">
               <div>
@@ -485,7 +485,7 @@ const stitchHtml = `
             </div>
           </div>
 
-          <div class="bg-slate-900 text-white rounded-xl overflow-hidden shadow-xl">
+          <div class="bg-slate-900 text-white rounded-xl overflow-hidden shadow-[0_20px_44px_rgba(15,23,42,0.28)]">
             <div class="p-6 bg-slate-800/50 flex justify-between items-center">
               <div>
                 <p class="text-[10px] font-bold tracking-widest opacity-60">RECEIPT PREVIEW</p>

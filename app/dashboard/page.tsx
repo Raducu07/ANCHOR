@@ -255,7 +255,7 @@ const stitchHtml = `
 
       <div class="grid grid-cols-12 gap-10">
         <div class="col-span-8 space-y-8">
-          <section class="bg-surface-container-lowest rounded-xl p-8 border border-outline-variant/15 shadow-soft soft-ring">
+          <section class="bg-surface-container-lowest rounded-xl p-8 border border-outline-variant/10 shadow-[0_18px_40px_rgba(42,52,57,0.07)] soft-ring">
             <div class="mb-8 flex justify-between items-start">
               <div>
                 <span class="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-1">Governance Telemetry</span>
@@ -268,19 +268,19 @@ const stitchHtml = `
             </div>
 
             <div class="mb-10 grid grid-cols-2 gap-4 md:grid-cols-4">
-              <div class="rounded-lg border border-outline-variant/10 bg-surface-container-low p-4">
+              <div class="rounded-lg border border-outline-variant/8 bg-surface-container-low p-4">
                 <p class="mb-1 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">EVENTS</p>
                 <p id="kpi-events" class="font-manrope text-3xl font-extrabold tracking-tight text-on-surface">0</p>
               </div>
-              <div class="rounded-lg border border-outline-variant/10 bg-surface-container-low p-4">
+              <div class="rounded-lg border border-outline-variant/8 bg-surface-container-low p-4">
                 <p class="mb-1 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">INTERVENTIONS</p>
                 <p id="kpi-interventions" class="font-manrope text-3xl font-extrabold tracking-tight text-on-surface">0</p>
               </div>
-              <div class="rounded-lg border border-outline-variant/10 bg-surface-container-low p-4">
+              <div class="rounded-lg border border-outline-variant/8 bg-surface-container-low p-4">
                 <p class="mb-1 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">PII WARNED</p>
                 <p id="kpi-pii" class="font-manrope text-3xl font-extrabold tracking-tight text-error">0</p>
               </div>
-              <div class="rounded-lg border border-outline-variant/10 bg-surface-container-low p-4">
+              <div class="rounded-lg border border-outline-variant/8 bg-surface-container-low p-4">
                 <p class="mb-1 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">TOP MODE</p>
                 <p id="kpi-top-mode" class="mt-1 font-manrope text-sm font-bold leading-tight text-on-surface">—</p>
               </div>
@@ -325,7 +325,7 @@ const stitchHtml = `
             </div>
           </section>
 
-          <section class="bg-surface-container-lowest rounded-xl p-8 border border-outline-variant/15 shadow-soft soft-ring">
+          <section class="bg-surface-container-lowest rounded-xl p-8 border border-outline-variant/12 shadow-soft soft-ring">
             <div class="mb-8">
               <span class="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-1">Accountability Surfaces</span>
               <h3 class="font-manrope font-bold text-xl tracking-tight">Recent governance receipts</h3>
@@ -352,7 +352,7 @@ const stitchHtml = `
           </section>
 
           <div class="grid md:grid-cols-2 gap-8">
-            <div class="bg-surface-container-lowest rounded-xl p-8 border border-outline-variant/15 shadow-soft soft-ring">
+            <div class="bg-surface-container-lowest rounded-xl p-8 border border-outline-variant/12 shadow-soft soft-ring">
               <h4 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-6">Recommended learning</h4>
               <div class="space-y-6">
                 <a id="learning-primary-link" class="group flex items-center gap-4" href="/learn/cards/privacy-safe-ai-use" data-anchor-route="/learn/cards/privacy-safe-ai-use">
@@ -377,7 +377,7 @@ const stitchHtml = `
               </div>
             </div>
 
-            <div class="flex flex-col justify-between rounded-xl bg-slate-900 p-8 text-white">
+            <div class="flex flex-col justify-between rounded-xl bg-slate-900 p-8 text-white shadow-[0_20px_44px_rgba(15,23,42,0.28)]">
               <div>
                 <div class="mb-6 flex justify-between items-start">
                   <h4 class="text-[10px] font-bold uppercase tracking-widest text-slate-400">RECOMMENDED NEXT ACTION</h4>
@@ -395,7 +395,7 @@ const stitchHtml = `
         </div>
 
         <div class="col-span-4 space-y-6">
-          <div class="bg-slate-900 text-white rounded-xl p-8 relative overflow-hidden shadow-xl">
+          <div class="bg-slate-900 text-white rounded-xl p-8 relative overflow-hidden shadow-[0_20px_44px_rgba(15,23,42,0.28)]">
             <div class="relative z-10">
               <div class="mb-10 flex items-center gap-5">
                 <div class="relative flex h-20 w-20 items-center justify-center rounded-full border-[6px] border-primary/20 bg-white/5">
@@ -425,7 +425,7 @@ const stitchHtml = `
             </div>
           </div>
 
-          <div class="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/15 shadow-soft soft-ring">
+          <div class="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/12 shadow-soft soft-ring">
             <div class="mb-6 flex justify-between items-start">
               <h4 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">INTELLIGENCE SNAPSHOT</h4>
               <span id="intelligence-severity" class="inline-flex items-center rounded-full border border-tertiary/15 bg-tertiary/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-tertiary">LOW</span>
@@ -442,11 +442,11 @@ const stitchHtml = `
             </div>
 
             <div class="grid grid-cols-2 gap-2">
-              <div class="rounded-lg border border-outline-variant/5 bg-surface-container-low p-3">
+              <div class="rounded-lg border border-outline-variant/8 bg-surface-container-low p-3">
                 <p class="mb-0.5 text-[9px] font-bold uppercase text-outline-variant">EVENT SHARE</p>
                 <p id="hotspot-metric-a" class="text-base font-bold text-on-surface">—</p>
               </div>
-              <div class="rounded-lg border border-outline-variant/5 bg-surface-container-low p-3">
+              <div class="rounded-lg border border-outline-variant/8 bg-surface-container-low p-3">
                 <p class="mb-0.5 text-[9px] font-bold uppercase text-outline-variant">RECENCY SPIKE</p>
                 <p id="hotspot-metric-b" class="text-base font-bold text-on-surface">—</p>
               </div>
