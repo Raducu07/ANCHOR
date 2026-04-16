@@ -102,7 +102,7 @@ export default function LearnCardsPage() {
                 </p>
                 <ul className="mt-3 space-y-2 text-sm leading-6 text-slate-600">
                   {card.keyPoints.map((point) => (
-                    <li key={point}>• {point}</li>
+                    <li key={point}>&bull; {point}</li>
                   ))}
                 </ul>
               </div>

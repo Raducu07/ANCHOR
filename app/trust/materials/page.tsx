@@ -19,8 +19,22 @@ function formatLabel(value: string) {
   return value.replaceAll("_", " ");
 }
 
-function buildMaterialText(item: { title: string; body: string }) {
-  return [item.title, "", item.body].join("\n").trim();
+function sanitizeVisibleClinicCopy(value: unknown, fallbackClinicName = "Your clinic") {
+  const text = typeof value === "string" ? value : "";
+  return text.replaceAll("M4 Portal Test Clinic", fallbackClinicName);
+}
+
+function buildMaterialText(
+  item: { title: string; body: string },
+  fallbackClinicName = "Your clinic"
+) {
+  return [
+    sanitizeVisibleClinicCopy(item.title, fallbackClinicName),
+    "",
+    sanitizeVisibleClinicCopy(item.body, fallbackClinicName),
+  ]
+    .join("\n")
+    .trim();
 }
 
 type MaterialItem = {
@@ -36,6 +50,13 @@ type AudienceFilter =
   | "Procurement"
   | "Privacy"
   | "Staff enablement";
+
+function sanitizeClinicName(value: unknown, fallback = "Your clinic") {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return fallback;
+  if (text === "M4 Portal Test Clinic") return fallback;
+  return text;
+}
 
 const AUDIENCE_OPTIONS: AudienceFilter[] = [
   "All",
@@ -121,11 +142,11 @@ function buildVisibleMaterialsText(
   items: MaterialItem[],
   selectedAudience: AudienceFilter
 ) {
+  const clinicName = sanitizeClinicName(data.snapshot?.clinic?.clinic_name, "");
+  const copyClinicName = clinicName || "Your clinic";
   const header = [
     "ANCHOR Trust Materials",
-    data.snapshot?.clinic?.clinic_name
-      ? `Clinic: ${data.snapshot.clinic.clinic_name}`
-      : null,
+    clinicName ? `Clinic: ${clinicName}` : null,
     data.generated_at ? `Generated: ${formatDate(data.generated_at)}` : null,
     selectedAudience !== "All" ? `Audience: ${selectedAudience}` : null,
     "Reusable trust language for leadership, procurement, website copy, and external trust communications.",
@@ -133,7 +154,9 @@ function buildVisibleMaterialsText(
     .filter(Boolean)
     .join("\n");
 
-  const blocks = items.map((item) => buildMaterialText(item)).join("\n\n---\n\n");
+  const blocks = items
+    .map((item) => buildMaterialText(item, copyClinicName))
+    .join("\n\n---\n\n");
 
   return `${header}\n\n${blocks}`.trim();
 }
@@ -173,7 +196,7 @@ export default function TrustMaterialsPage() {
 
   function handlePrint() {
     if (typeof window !== "undefined") {
-      const clinicName = data?.snapshot?.clinic?.clinic_name?.trim();
+      const clinicName = sanitizeClinicName(data?.snapshot?.clinic?.clinic_name, "");
       const suffix = selectedAudience !== "All" ? ` - ${selectedAudience}` : "";
       document.title = clinicName
         ? `ANCHOR Trust Materials - ${clinicName}${suffix}`
@@ -216,6 +239,8 @@ export default function TrustMaterialsPage() {
     );
   }, [data, selectedAudience]);
 
+  const clinicName = sanitizeClinicName(data?.snapshot?.clinic?.clinic_name, "Your clinic");
+
   async function handleCopyAll() {
     if (!data || filteredMaterials.length <= 0) return;
 
@@ -242,7 +267,7 @@ export default function TrustMaterialsPage() {
     try {
       setCopyingId(item.id);
       setCopiedId(null);
-      await navigator.clipboard.writeText(buildMaterialText(item));
+      await navigator.clipboard.writeText(buildMaterialText(item, clinicName));
       setCopiedId(item.id);
       window.setTimeout(() => {
         setCopiedId((current) => (current === item.id ? null : current));
@@ -430,7 +455,7 @@ export default function TrustMaterialsPage() {
                       Clinic
                     </div>
                     <div className="mt-2 text-sm font-semibold text-slate-900">
-                      {data.snapshot.clinic.clinic_name}
+                      {clinicName}
                     </div>
                   </div>
 
@@ -492,7 +517,9 @@ export default function TrustMaterialsPage() {
                           key={idx}
                           className="rounded-xl border border-slate-200 bg-white p-4"
                         >
-                          <p className="text-sm leading-6 text-slate-700">{note}</p>
+                          <p className="text-sm leading-6 text-slate-700">
+                            {sanitizeVisibleClinicCopy(note, clinicName)}
+                          </p>
                         </div>
                       ))}
                     </div>
@@ -508,7 +535,7 @@ export default function TrustMaterialsPage() {
                         Materials set
                       </p>
                       <h2 className="mt-1 text-lg font-semibold text-slate-900">
-                        {data.snapshot.clinic.clinic_name}
+                        {clinicName}
                       </h2>
                     </div>
 
@@ -587,7 +614,9 @@ export default function TrustMaterialsPage() {
                   <div className="mt-4 space-y-3">
                     {data.notes.map((note, idx) => (
                       <div key={idx} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                        <p className="text-sm leading-6 text-slate-700">{note}</p>
+                        <p className="text-sm leading-6 text-slate-700">
+                          {sanitizeVisibleClinicCopy(note, clinicName)}
+                        </p>
                       </div>
                     ))}
                   </div>
@@ -685,7 +714,7 @@ export default function TrustMaterialsPage() {
                             </div>
 
                             <h2 className="mt-2 text-lg font-semibold text-slate-900">
-                              {item.title}
+                              {sanitizeVisibleClinicCopy(item.title, clinicName)}
                             </h2>
                           </div>
 
@@ -698,7 +727,9 @@ export default function TrustMaterialsPage() {
                           </button>
                         </div>
 
-                        <p className="mt-3 text-sm leading-7 text-slate-700">{item.body}</p>
+                        <p className="mt-3 text-sm leading-7 text-slate-700">
+                          {sanitizeVisibleClinicCopy(item.body, clinicName)}
+                        </p>
                       </div>
                     );
                   })

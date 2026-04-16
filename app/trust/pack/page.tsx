@@ -6,6 +6,13 @@ import { AppShell } from "@/components/shell/AppShell";
 import { getTrustPack } from "@/lib/trust";
 import type { TrustPackResponse } from "@/lib/types";
 
+function sanitizeClinicName(value: unknown, fallback = "Your clinic") {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return fallback;
+  if (text === "M4 Portal Test Clinic") return fallback;
+  return text;
+}
+
 function formatDate(value?: string) {
   if (!value) return "—";
   try {
@@ -76,13 +83,15 @@ export default function TrustPackPage() {
 
   function handlePrint() {
     if (typeof window !== "undefined") {
-      const clinicName = data?.pack?.clinic_name?.trim();
+      const clinicName = sanitizeClinicName(data?.pack?.clinic_name, "");
       document.title = clinicName
         ? `ANCHOR Trust Pack - ${clinicName}`
         : "ANCHOR Trust Pack";
       window.print();
     }
   }
+
+  const clinicName = sanitizeClinicName(data?.pack?.clinic_name, "Your clinic");
 
   const trustStateTone = useMemo(() => {
     switch (data?.pack?.trust_state) {
@@ -293,7 +302,7 @@ export default function TrustPackPage() {
                       Clinic
                     </div>
                     <div className="mt-2 text-sm font-semibold text-slate-900">
-                      {data.pack.clinic_name}
+                      {clinicName}
                     </div>
                   </div>
 

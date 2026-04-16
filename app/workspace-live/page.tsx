@@ -144,10 +144,6 @@ const stitchHtml = `
         <span class="material-symbols-outlined">verified_user</span>
         <span>Governance Events</span>
       </a>
-      <a data-anchor-route href="/exports" class="flex items-center px-6 py-3 space-x-3 text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-colors">
-        <span class="material-symbols-outlined">download</span>
-        <span>Exports</span>
-      </a>
       <a data-anchor-route href="/learn" class="flex items-center px-6 py-3 space-x-3 text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-colors">
         <span class="material-symbols-outlined">school</span>
         <span>Learn</span>
@@ -159,6 +155,10 @@ const stitchHtml = `
       <a data-anchor-route href="/intelligence" class="flex items-center px-6 py-3 space-x-3 text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-colors">
         <span class="material-symbols-outlined">psychology</span>
         <span>Intelligence</span>
+      </a>
+      <a data-anchor-route href="/exports" class="flex items-center px-6 py-3 space-x-3 text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-colors">
+        <span class="material-symbols-outlined">download</span>
+        <span>Exports</span>
       </a>
     </nav>
 
@@ -201,10 +201,10 @@ const stitchHtml = `
         <div id="profile-menu-anchor" class="relative">
           <button id="profile-menu-button" type="button" class="flex items-center gap-3 cursor-pointer group">
             <div class="text-right">
-              <p class="text-xs font-bold leading-none">Sarah Miller</p>
-              <p class="text-[10px] text-on-surface-variant">Practice Manager</p>
+              <p id="profile-name" class="text-xs font-bold leading-none">Clinic User</p>
+              <p id="profile-role" class="text-[10px] text-on-surface-variant">Team member</p>
             </div>
-            <img alt="User Avatar" class="w-9 h-9 rounded-full object-cover grayscale-[0.2] border border-outline-variant/20" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCnbGKz0TR_w7R7vfsdlOaArbM6Ka9P4NxHiCDCVu9tUHvElC9ITX3XsjBMrYZAIv3n-S06ghZKu1BTKIbpwbNIHkKoVMCo2ETSVZB_Lp6Km6Jd_5xHoQ3zB8HXdy_1_AQMQHMaheRN7A7BSx1SZUq6yajARax2RDSLTFq-h59_vYF75fpi0P3BPE4AjWoXtE8_7Ha9IjlxtIhWjqmdQAs1gQOxFyv2ganm7lmdG5dTZxehwGb8EPX2ZU_4Pa6iXRFWnROk2MISg4nq"/>
+            <img id="profile-avatar-img" alt="User Avatar" class="w-9 h-9 rounded-full object-cover grayscale-[0.2] border border-outline-variant/20" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCnbGKz0TR_w7R7vfsdlOaArbM6Ka9P4NxHiCDCVu9tUHvElC9ITX3XsjBMrYZAIv3n-S06ghZKu1BTKIbpwbNIHkKoVMCo2ETSVZB_Lp6Km6Jd_5xHoQ3zB8HXdy_1_AQMQHMaheRN7A7BSx1SZUq6yajARax2RDSLTFq-h59_vYF75fpi0P3BPE4AjWoXtE8_7Ha9IjlxtIhWjqmdQAs1gQOxFyv2ganm7lmdG5dTZxehwGb8EPX2ZU_4Pa6iXRFWnROk2MISg4nq"/>
           </button>
           <div id="profile-menu" class="hidden absolute right-0 top-12 z-30 min-w-[140px] rounded-lg border border-outline-variant/20 bg-white p-1 shadow-soft">
             <button id="sign-out-button" type="button" class="w-full rounded-md px-3 py-2 text-left text-sm font-medium text-on-surface hover:bg-surface-container-low">Sign out</button>
@@ -608,6 +608,9 @@ const stitchHtml = `
       modeBtn: $("workflow-mode-button"),
       roleMenu: $("staff-role-menu"),
       modeMenu: $("workflow-mode-menu"),
+      profileName: $("profile-name"),
+      profileRole: $("profile-role"),
+      profileAvatarImg: $("profile-avatar-img"),
       profileBtn: $("profile-menu-button"),
       profileMenu: $("profile-menu"),
       signOutBtn: $("sign-out-button")
@@ -716,6 +719,28 @@ const stitchHtml = `
       const knownPresetValues = Object.values(INSTRUCTION_PRESETS);
       if (!current || knownPresetValues.includes(current)) {
         els.instruction.value = INSTRUCTION_PRESETS[modeLabel] || INSTRUCTION_PRESETS["Internal governance review"];
+      }
+    }
+
+    function setUserFromSession() {
+      try {
+        const raw = localStorage.getItem("anchor_session_user");
+        if (!raw) return;
+        const user = JSON.parse(raw);
+
+        if (user && typeof user.display_name === "string" && user.display_name.trim()) {
+          els.profileName.textContent = user.display_name.trim();
+        }
+
+        if (user && typeof user.display_role === "string" && user.display_role.trim()) {
+          els.profileRole.textContent = user.display_role.trim();
+        }
+
+        if (user && typeof user.avatar_url === "string" && user.avatar_url.trim()) {
+          els.profileAvatarImg.src = user.avatar_url.trim();
+        }
+      } catch (error) {
+        console.warn("Unable to read session user", error);
       }
     }
 
@@ -1117,6 +1142,8 @@ const stitchHtml = `
     document.addEventListener('click', function () {
       closeMenus();
     });
+
+    setUserFromSession();
 
     document.addEventListener('keydown', (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {

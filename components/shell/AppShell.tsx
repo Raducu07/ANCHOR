@@ -29,7 +29,34 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-[#f7f9fb] text-[#191c1e]">
+    <>
+      <link
+        rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+      />
+      <style jsx global>{`
+        .font-headline {
+          font-family: "Manrope", sans-serif;
+        }
+
+        .material-symbols-outlined {
+          font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+          font-family: "Material Symbols Outlined";
+          font-weight: normal;
+          font-style: normal;
+          font-size: 24px;
+          line-height: 1;
+          letter-spacing: normal;
+          text-transform: none;
+          display: inline-block;
+          white-space: nowrap;
+          word-wrap: normal;
+          direction: ltr;
+          -webkit-font-smoothing: antialiased;
+        }
+      `}</style>
+
+      <div className="min-h-screen bg-[#f7f9fb] text-[#191c1e]">
       <SideNav />
 
       <div className="pl-64">
@@ -39,17 +66,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           {children}
         </main>
       </div>
-
-      <div className="pointer-events-none fixed inset-0 z-[-1] opacity-[0.02]">
-        <div
-          className="absolute inset-0"
-          style={{
-            backgroundImage:
-              "radial-gradient(#2a3439 0.5px, transparent 0.5px)",
-            backgroundSize: "32px 32px",
-          }}
-        />
       </div>
-    </div>
+    </>
   );
 }

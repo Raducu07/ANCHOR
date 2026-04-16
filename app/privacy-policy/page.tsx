@@ -69,12 +69,12 @@ const adminReadiness = [
   {
     item: "Editable policy admin controls",
     status: "next",
-    note: "Next M4 pass after route verification and UX decisions.",
+    note: "Planned for a future update after route verification and UX decisions.",
   },
   {
     item: "Exportable trust artifacts",
     status: "later",
-    note: "Belongs more strongly to ANCHOR Trust after M4.5/M5.",
+    note: "May ultimately belong more naturally within ANCHOR Trust.",
   },
 ];
 
@@ -183,7 +183,7 @@ export default function PrivacyPolicyPage() {
           <Card>
             <SectionTitle
               title="Admin surface readiness"
-              description="What is ready now versus what should be wired in the next M4 pass."
+            description="What is available now versus what may be added in a future update."
             />
             <div className="mt-4 space-y-4">
               {adminReadiness.map((item) => (

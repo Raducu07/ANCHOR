@@ -165,10 +165,6 @@ function buildHtml(apiBase: string, initialRequestId: string) {
         <span aria-hidden="true" class="material-symbols-outlined">verified_user</span>
         <span>Governance Events</span>
       </a>
-      <a data-anchor-route href="/exports" class="flex items-center px-6 py-3 space-x-3 text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-colors">
-        <span aria-hidden="true" class="material-symbols-outlined">download</span>
-        <span>Exports</span>
-      </a>
       <a data-anchor-route href="/learn" class="flex items-center px-6 py-3 space-x-3 text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-colors">
         <span aria-hidden="true" class="material-symbols-outlined">school</span>
         <span>Learn</span>
@@ -180,6 +176,10 @@ function buildHtml(apiBase: string, initialRequestId: string) {
       <a data-anchor-route href="/intelligence" class="flex items-center px-6 py-3 space-x-3 text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-colors">
         <span aria-hidden="true" class="material-symbols-outlined">psychology</span>
         <span>Intelligence</span>
+      </a>
+      <a data-anchor-route href="/exports" class="flex items-center px-6 py-3 space-x-3 text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-colors">
+        <span aria-hidden="true" class="material-symbols-outlined">download</span>
+        <span>Exports</span>
       </a>
     </nav>
 
@@ -222,8 +222,8 @@ function buildHtml(apiBase: string, initialRequestId: string) {
         <div id="profile-menu-anchor" class="relative">
           <button id="profile-menu-button" type="button" class="flex items-center gap-3 cursor-pointer group">
             <div class="text-right">
-              <p id="profile-name" class="text-xs font-bold leading-none">Sarah Miller</p>
-              <p id="profile-role" class="text-[10px] text-on-surface-variant">Practice Manager</p>
+              <p id="profile-name" class="text-xs font-bold leading-none">Clinic User</p>
+              <p id="profile-role" class="text-[10px] text-on-surface-variant">Team member</p>
             </div>
             <img
               id="profile-avatar-img"

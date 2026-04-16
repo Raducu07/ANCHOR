@@ -111,14 +111,14 @@ export default function LearnHomePage() {
           <Card>
             <SectionTitle
               title="What Learn should help staff understand"
-              description="The first practical learning outcomes for M4.5."
+              description="Core learning outcomes for safer day-to-day AI use."
             />
             <ul className="mt-4 space-y-3 text-sm leading-6 text-slate-600">
-              <li>• Why governance surfaces exist and what they are for</li>
-              <li>• Why metadata-only accountability is a deliberate product doctrine</li>
-              <li>• How to handle privacy-sensitive details more safely</li>
-              <li>• Why AI-assisted outputs still require human review</li>
-              <li>• When safe drafting is appropriate and when escalation is better</li>
+              <li>&bull; Why governance surfaces exist and what they are for</li>
+              <li>&bull; Why metadata-only accountability is a deliberate product doctrine</li>
+              <li>&bull; How to handle privacy-sensitive details more safely</li>
+              <li>&bull; Why AI-assisted outputs still require human review</li>
+              <li>&bull; When safe drafting is appropriate and when escalation is better</li>
             </ul>
           </Card>
 
@@ -129,7 +129,7 @@ export default function LearnHomePage() {
             />
             <ul className="mt-4 space-y-3 text-sm leading-6 text-slate-600">
               {explainerTopics.map((topic) => (
-                <li key={topic}>• {topic}</li>
+                <li key={topic}>&bull; {topic}</li>
               ))}
             </ul>
           </Card>
@@ -137,12 +137,12 @@ export default function LearnHomePage() {
 
         <Card>
           <SectionTitle
-            title="M4.5 posture"
-            description="Why this first Learn release is intentionally disciplined."
+            title="Why Learn is intentionally focused"
+            description="Why this Learn surface is intentionally disciplined."
           />
           <div className="mt-4 space-y-3 text-sm leading-6 text-slate-600">
             <p>
-              This first Learn pass is designed to extend ANCHOR Core without turning the product into a full learning
+              Learn is designed to extend ANCHOR Core without turning the product into a full learning
               management system. The emphasis is on high-signal, clinic-relevant education tied to governance-first AI adoption.
             </p>
             <p>

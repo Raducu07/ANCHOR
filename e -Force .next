@@ -1,0 +1,245 @@
+warning: in the working copy of 'app/login/page.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'components/auth/LoginForm.tsx', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/app/login/page.tsx b/app/login/page.tsx[m
+[1mindex 5442052..87e23e2 100644[m
+[1m--- a/app/login/page.tsx[m
+[1m+++ b/app/login/page.tsx[m
+[36m@@ -2,37 +2,113 @@[m [mimport { LoginForm } from "@/components/auth/LoginForm";[m
+ [m
+ export default function LoginPage() {[m
+   return ([m
+[31m-    <main className="min-h-screen bg-slate-50">[m
+[32m+[m[32m    <>[m
+[32m+[m[32m      <link[m
+[32m+[m[32m        rel="stylesheet"[m
+[32m+[m[32m        href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"[m
+[32m+[m[32m      />[m
+[32m+[m[32m      <main[m
+[32m+[m[32m        className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.98),rgba(244,247,250,0.96)_36%,rgba(235,240,245,0.98)_100%)] text-slate-900"[m
+[32m+[m[32m        style={{ fontFamily: '"Manrope", sans-serif' }}[m
+[32m+[m[32m      >[m
+       <div className="mx-auto grid min-h-screen max-w-7xl grid-cols-1 lg:grid-cols-2">[m
+[31m-        <section className="flex items-center border-b border-slate-200 px-6 py-12 lg:border-b-0 lg:border-r lg:px-12 xl:px-16">[m
+[31m-          <div className="max-w-xl space-y-8">[m
+[31m-            <div className="space-y-4">[m
+[31m-              <div className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium uppercase tracking-[0.18em] text-slate-600">[m
+[31m-                ANCHOR[m
+[32m+[m[32m        <section className="relative flex items-center overflow-hidden border-b border-slate-200/60 bg-[linear-gradient(180deg,rgba(248,250,252,0.96),rgba(240,245,249,0.92))] px-6 py-12 lg:border-b-0 lg:border-r lg:px-12 xl:px-16">[m
+[32m+[m[32m          <div className="pointer-events-none absolute inset-x-0 top-0 h-40 bg-[linear-gradient(180deg,rgba(255,255,255,0.72),transparent)]" />[m
+[32m+[m[32m          <div className="relative w-full max-w-2xl rounded-[32px] border border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(245,248,251,0.93))] p-8 shadow-[0_30px_70px_rgba(15,23,42,0.10)] shadow-white/40 ring-1 ring-slate-200/40 sm:p-10 xl:p-12">[m
+[32m+[m[32m            <div className="space-y-6">[m
+[32m+[m[32m              <div className="inline-flex items-center gap-3 rounded-full border border-slate-200/80 bg-white px-4 py-3 shadow-[0_18px_38px_rgba(15,23,42,0.08)] shadow-white/30">[m
+[32m+[m[32m                <span[m
+[32m+[m[32m                  className="rounded-full border border-slate-200/70 bg-[linear-gradient(180deg,#f8fafc,#eef3f7)] p-2.5 text-[#565e74] shadow-[inset_0_1px_0_rgba(255,255,255,0.78),0_10px_22px_rgba(15,23,42,0.08)]"[m
+[32m+[m[32m                  style={{[m
+[32m+[m[32m                    fontFamily: '"Material Symbols Outlined"',[m
+[32m+[m[32m                    fontVariationSettings: '"FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24',[m
+[32m+[m[32m                    fontSize: "22px",[m
+[32m+[m[32m                    lineHeight: 1,[m
+[32m+[m[32m                    display: "inline-block",[m
+[32m+[m[32m                  }}[m
+[32m+[m[32m                >[m
+[32m+[m[32m                  anchor[m
+[32m+[m[32m                </span>[m
+[32m+[m[32m                <div>[m
+[32m+[m[32m                  <div className="text-2xl font-extrabold tracking-tight text-slate-900">ANCHOR</div>[m
+[32m+[m[32m                  <div className="text-[10px] font-bold uppercase tracking-[0.24em] text-slate-500">[m
+[32m+[m[32m                    Veterinary Governance[m
+[32m+[m[32m                  </div>[m
+[32m+[m[32m                </div>[m
+[32m+[m[32m              </div>[m
+[32m+[m[32m              <div className="inline-flex items-center rounded-full border border-slate-200/80 bg-white px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 shadow-[0_12px_26px_rgba(15,23,42,0.06)]">[m
+[32m+[m[32m                Secure clinic access[m
+[32m+[m[32m              </div>[m
+[32m+[m[32m              <div className="space-y-4">[m
+[32m+[m[32m                <h1 className="max-w-xl text-4xl font-extrabold tracking-tight text-slate-900 sm:text-5xl">[m
+[32m+[m[32m                  Governance infrastructure for safe clinic AI use[m
+[32m+[m[32m                </h1>[m
+[32m+[m[32m                <p className="max-w-xl text-lg leading-8 text-slate-600">[m
+[32m+[m[32m                  ANCHOR brings governance, trust, and learning workflows into one clinic-scoped workspace built for operational confidence.[m
+[32m+[m[32m                </p>[m
+               </div>[m
+[31m-              <h1 className="text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl">[m
+[31m-                Clinic governance workspace[m
+[31m-              </h1>[m
+[31m-              <p className="max-w-lg text-base leading-7 text-slate-600">[m
+[31m-                Governance, trust, and learning infrastructure for safe AI use in veterinary clinics.[m
+[31m-              </p>[m
+             </div>[m
+ [m
+[31m-            <div className="grid gap-4 sm:grid-cols-3">[m
+[31m-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">[m
+[31m-                <p className="text-sm font-medium text-slate-900">Metadata-only governance</p>[m
+[32m+[m[32m            <div className="mt-10 grid gap-4 sm:grid-cols-3">[m
+[32m+[m[32m              <div className="rounded-[26px] border border-slate-200/75 bg-white p-5 shadow-[0_22px_40px_rgba(15,23,42,0.08)]">[m
+[32m+[m[32m                <div className="flex items-center gap-2">[m
+[32m+[m[32m                  <span[m
+[32m+[m[32m                    className="rounded-full border border-slate-200/80 bg-slate-50 p-2 text-slate-600"[m
+[32m+[m[32m                    style={{[m
+[32m+[m[32m                      fontFamily: '"Material Symbols Outlined"',[m
+[32m+[m[32m                      fontVariationSettings: '"FILL" 0, "wght" 400, "GRAD" 0, "opsz" 20',[m
+[32m+[m[32m                      fontSize: "18px",[m
+[32m+[m[32m                      lineHeight: 1,[m
+[32m+[m[32m                      display: "inline-block",[m
+[32m+[m[32m                    }}[m
+[32m+[m[32m                  >[m
+[32m+[m[32m                    verified_user[m
+[32m+[m[32m                  </span>[m
+[32m+[m[32m                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Principle 01</p>[m
+[32m+[m[32m                </div>[m
+[32m+[m[32m                <p className="mt-4 text-base font-bold text-slate-900">Metadata-only governance</p>[m
+                 <p className="mt-2 text-sm leading-6 text-slate-600">[m
+                   Oversight without storing raw prompts or outputs.[m
+                 </p>[m
+               </div>[m
+[31m-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">[m
+[31m-                <p className="text-sm font-medium text-slate-900">Tenant-isolated access</p>[m
+[32m+[m[32m              <div className="rounded-[26px] border border-slate-200/75 bg-white p-5 shadow-[0_22px_40px_rgba(15,23,42,0.08)]">[m
+[32m+[m[32m                <div className="flex items-center gap-2">[m
+[32m+[m[32m                  <span[m
+[32m+[m[32m                    className="rounded-full border border-slate-200/80 bg-slate-50 p-2 text-slate-600"[m
+[32m+[m[32m                    style={{[m
+[32m+[m[32m                      fontFamily: '"Material Symbols Outlined"',[m
+[32m+[m[32m                      fontVariationSettings: '"FILL" 0, "wght" 400, "GRAD" 0, "opsz" 20',[m
+[32m+[m[32m                      fontSize: "18px",[m
+[32m+[m[32m                      lineHeight: 1,[m
+[32m+[m[32m                      display: "inline-block",[m
+[32m+[m[32m                    }}[m
+[32m+[m[32m                  >[m
+[32m+[m[32m                    lock_person[m
+[32m+[m[32m                  </span>[m
+[32m+[m[32m                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Principle 02</p>[m
+[32m+[m[32m                </div>[m
+[32m+[m[32m                <p className="mt-4 text-base font-bold text-slate-900">Tenant-isolated access</p>[m
+                 <p className="mt-2 text-sm leading-6 text-slate-600">[m
+                   Clinic-scoped workspaces with hardened backend controls.[m
+                 </p>[m
+               </div>[m
+[31m-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">[m
+[31m-                <p className="text-sm font-medium text-slate-900">Audit-friendly receipts</p>[m
+[32m+[m[32m              <div className="rounded-[26px] border border-slate-200/75 bg-white p-5 shadow-[0_22px_40px_rgba(15,23,42,0.08)]">[m
+[32m+[m[32m                <div className="flex items-center gap-2">[m
+[32m+[m[32m                  <span[m
+[32m+[m[32m                    className="rounded-full border border-slate-200/80 bg-slate-50 p-2 text-slate-600"[m
+[32m+[m[32m                    style={{[m
+[32m+[m[32m                      fontFamily: '"Material Symbols Outlined"',[m
+[32m+[m[32m                      fontVariationSettings: '"FILL" 0, "wght" 400, "GRAD" 0, "opsz" 20',[m
+[32m+[m[32m                      fontSize: "18px",[m
+[32m+[m[32m                      lineHeight: 1,[m
+[32m+[m[32m                      display: "inline-block",[m
+[32m+[m[32m                    }}[m
+[32m+[m[32m                  >[m
+[32m+[m[32m                    receipt_long[m
+[32m+[m[32m                  </span>[m
+[32m+[m[32m                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Principle 03</p>[m
+[32m+[m[32m                </div>[m
+[32m+[m[32m                <p className="mt-4 text-base font-bold text-slate-900">Audit-friendly receipts</p>[m
+                 <p className="mt-2 text-sm leading-6 text-slate-600">[m
+                   Trust surfaces built for operational review and accountability.[m
+                 </p>[m
+[36m@@ -41,12 +117,13 @@[m [mexport default function LoginPage() {[m
+           </div>[m
+         </section>[m
+ [m
+[31m-        <section className="flex items-center justify-center px-6 py-12 lg:px-12 xl:px-16">[m
+[32m+[m[32m        <section className="relative flex items-center justify-center px-6 py-12 lg:px-12 xl:px-16">[m
+           <div className="w-full max-w-md">[m
+             <LoginForm />[m
+           </div>[m
+         </section>[m
+       </div>[m
+[31m-    </main>[m
+[32m+[m[32m      </main>[m
+[32m+[m[32m    </>[m
+   );[m
+ }[m
+[1mdiff --git a/components/auth/LoginForm.tsx b/components/auth/LoginForm.tsx[m
+[1mindex 0781fcb..b135b11 100644[m
+[1m--- a/components/auth/LoginForm.tsx[m
+[1m+++ b/components/auth/LoginForm.tsx[m
+[36m@@ -59,23 +59,29 @@[m [mexport function LoginForm() {[m
+   }[m
+ [m
+   return ([m
+[31m-    <Card className="rounded-3xl p-8 shadow-sm">[m
+[31m-      <div className="space-y-2">[m
+[31m-        <h2 className="text-2xl font-semibold tracking-tight text-slate-900">[m
+[32m+[m[32m    <Card className="rounded-[32px] border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(247,249,251,0.96))] p-3 shadow-[0_34px_74px_rgba(15,23,42,0.14)] shadow-white/40 ring-1 ring-slate-200/50 sm:p-4">[m
+[32m+[m[32m      <div className="rounded-[28px] border border-slate-200/70 bg-white px-6 py-7 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] sm:px-7 sm:py-8">[m
+[32m+[m[32m      <div className="space-y-4">[m
+[32m+[m[32m        <div className="inline-flex items-center rounded-full border border-slate-200/80 bg-slate-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">[m
+[32m+[m[32m          Sign in[m
+[32m+[m[32m        </div>[m
+[32m+[m[32m        <h2 className="text-[30px] font-extrabold tracking-tight text-slate-900">[m
+           Secure clinic access[m
+         </h2>[m
+[31m-        <p className="text-sm leading-6 text-slate-600">[m
+[32m+[m[32m        <p className="max-w-sm text-sm leading-6 text-slate-600">[m
+           Sign in to your clinic-scoped governance workspace.[m
+         </p>[m
+       </div>[m
+ [m
+[31m-      <form className="mt-8 space-y-4" onSubmit={handleSubmit}>[m
+[32m+[m[32m      <form className="mt-8 rounded-[24px] border border-slate-200/70 bg-slate-50/65 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] sm:p-5" onSubmit={handleSubmit}>[m
+[32m+[m[32m        <div className="space-y-[18px]">[m
+         <Input[m
+           label="Clinic slug"[m
+           placeholder="your-clinic"[m
+           value={clinicSlug}[m
+           onChange={(event) => setClinicSlug(event.target.value)}[m
+           autoComplete="organization"[m
+[32m+[m[32m          className="rounded-[18px] border-slate-200 bg-white px-4 py-[15px] shadow-[0_8px_18px_rgba(15,23,42,0.04),inset_0_1px_0_rgba(255,255,255,0.72)] placeholder:text-slate-400 focus:border-slate-300 focus:bg-white"[m
+           required[m
+         />[m
+         <Input[m
+[36m@@ -85,6 +91,7 @@[m [mexport function LoginForm() {[m
+           value={email}[m
+           onChange={(event) => setEmail(event.target.value)}[m
+           autoComplete="email"[m
+[32m+[m[32m          className="rounded-[18px] border-slate-200 bg-white px-4 py-[15px] shadow-[0_8px_18px_rgba(15,23,42,0.04),inset_0_1px_0_rgba(255,255,255,0.72)] placeholder:text-slate-400 focus:border-slate-300 focus:bg-white"[m
+           required[m
+         />[m
+         <Input[m
+[36m@@ -94,24 +101,37 @@[m [mexport function LoginForm() {[m
+           value={password}[m
+           onChange={(event) => setPassword(event.target.value)}[m
+           autoComplete="current-password"[m
+[32m+[m[32m          className="rounded-[18px] border-slate-200 bg-white px-4 py-[15px] shadow-[0_8px_18px_rgba(15,23,42,0.04),inset_0_1px_0_rgba(255,255,255,0.72)] placeholder:text-slate-400 focus:border-slate-300 focus:bg-white"[m
+           required[m
+         />[m
+ [m
+         {error ? ([m
+[31m-          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">[m
+[32m+[m[32m          <div className="rounded-2xl border border-rose-200 bg-rose-50/90 px-4 py-3 text-sm text-rose-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">[m
+             {error}[m
+           </div>[m
+         ) : null}[m
+ [m
+[31m-        <Button type="submit" className="w-full" loading={loading} disabled={loading}>[m
+[32m+[m[32m        <Button[m
+[32m+[m[32m          type="submit"[m
+[32m+[m[32m          className="w-full rounded-[18px] border border-slate-900 py-[14px] text-sm font-bold shadow-[0_18px_34px_rgba(15,23,42,0.18)]"[m
+[32m+[m[32m          loading={loading}[m
+[32m+[m[32m          disabled={loading}[m
+[32m+[m[32m        >[m
+           Sign in[m
+         </Button>[m
+[32m+[m[32m        </div>[m
+       </form>[m
+ [m
+[31m-      <div className="mt-6 space-y-2 text-sm text-slate-500">[m
+[32m+[m[32m      <div className="mt-6 rounded-[22px] border border-slate-200/70 bg-slate-50/70 px-4 py-4 text-sm text-slate-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">[m
+[32m+[m[32m        <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">[m
+[32m+[m[32m          Support[m
+[32m+[m[32m        </div>[m
+[32m+[m[32m        <div className="space-y-2">[m
+         <p>Having trouble signing in? Contact your clinic administrator.</p>[m
+         <p>Access is clinic-scoped and activity is governed through metadata-only oversight.</p>[m
+[32m+[m[32m        </div>[m
+[32m+[m[32m      </div>[m
+       </div>[m
+     </Card>[m
+   );[m
+[31m-}[m
+\ No newline at end of file[m
+[32m+[m[32m}[m

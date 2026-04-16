@@ -7,6 +7,13 @@ import { getTrustProfile } from "@/lib/trust";
 
 type AnyRecord = Record<string, any>;
 
+function sanitizeClinicName(value: unknown, fallback = "Your clinic") {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return fallback;
+  if (text === "M4 Portal Test Clinic") return fallback;
+  return text;
+}
+
 function formatDate(value?: string) {
   if (!value) return "—";
   try {
@@ -130,12 +137,13 @@ export default function TrustProfilePage() {
     const privacy = (profile.privacy ?? snapshot.privacy ?? {}) as AnyRecord;
     const learning = (profile.learning ?? snapshot.learning ?? {}) as AnyRecord;
 
-    const clinicName =
+    const clinicName = sanitizeClinicName(
       clinic.clinic_name ??
-      clinic.name ??
-      profile.clinic_name ??
-      root.clinic_name ??
-      "Clinic";
+        clinic.name ??
+        profile.clinic_name ??
+        root.clinic_name,
+      "Your clinic"
+    );
 
     const trustState =
       operations.trust_state ??
