@@ -349,14 +349,14 @@ const stitchHtml = `
           </section>
 
           <div class="flex flex-wrap justify-end gap-4 pt-2">
-            <button id="new-workflow-button" class="px-8 py-3 bg-tertiary-fixed text-primary font-bold rounded-md shadow-soft hover:opacity-90 transition-all flex items-center gap-2 border border-white/40 soft-ring">
+            <button id="new-workflow-button" class="px-8 py-3 bg-white text-on-surface font-bold rounded-md shadow-soft hover:bg-surface-container-low transition-all flex items-center gap-2 border border-outline-variant/20 soft-ring">
               <span class="material-symbols-outlined text-[18px] text-primary">add</span>
               New governed workflow
             </button>
-            <button id="draft-receipt-button" class="px-8 py-3 bg-surface-container-highest text-on-surface font-bold rounded-md hover:bg-surface-variant transition-colors">
+            <button id="draft-receipt-button" class="px-8 py-3 bg-surface-container-low text-on-surface-variant font-bold rounded-md border border-outline-variant/15 hover:bg-surface-container transition-colors">
               Draft Receipt
             </button>
-            <button id="run-anchor-button" class="px-10 py-3 bg-gradient-to-r from-primary to-primary-dim text-white font-bold rounded-md shadow-glow flex items-center gap-2 hover:opacity-95">
+            <button id="run-anchor-button" class="px-10 py-3 bg-gradient-to-r from-primary to-primary-dim text-white font-bold rounded-md shadow-glow flex items-center gap-2 hover:opacity-95 border border-white/10 soft-ring">
               <span class="material-symbols-outlined">lock_person</span>
               Run through ANCHOR
             </button>
@@ -518,19 +518,19 @@ const stitchHtml = `
               </div>
 
               <div class="grid grid-cols-2 gap-2 pt-2">
-                <button id="open-receipt-button" class="py-2 px-3 bg-tertiary-fixed text-primary text-[10px] font-bold rounded flex items-center justify-center gap-1 hover:opacity-90">
+                <button id="open-receipt-button" class="py-2 px-3 bg-tertiary-fixed/90 text-primary text-[10px] font-bold rounded flex items-center justify-center gap-1 hover:opacity-90 border border-white/10">
                   <span class="material-symbols-outlined text-sm">open_in_new</span>
                   Open receipt
                 </button>
-                <button id="export-metadata-button" class="py-2 px-3 bg-white/10 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1 hover:bg-white/20">
+                <button id="export-metadata-button" class="py-2 px-3 bg-white/10 text-white/90 text-[10px] font-bold rounded flex items-center justify-center gap-1 hover:bg-white/16">
                   <span class="material-symbols-outlined text-sm">download</span>
                   Export metadata
                 </button>
-                <button id="receipt-copy-button" class="py-2 px-3 bg-white/10 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1 hover:bg-white/20">
+                <button id="receipt-copy-button" class="py-2 px-3 bg-white/10 text-white/90 text-[10px] font-bold rounded flex items-center justify-center gap-1 hover:bg-white/16">
                   <span class="material-symbols-outlined text-sm">content_copy</span>
                   Copy governed result
                 </button>
-                <button id="receipt-draft-button" class="py-2 px-3 bg-white/10 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1 hover:bg-white/20">
+                <button id="receipt-draft-button" class="py-2 px-3 bg-white/10 text-white/90 text-[10px] font-bold rounded flex items-center justify-center gap-1 hover:bg-white/16">
                   <span class="material-symbols-outlined text-sm">draft</span>
                   Draft Receipt
                 </button>

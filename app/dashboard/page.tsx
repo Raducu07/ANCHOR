@@ -244,10 +244,10 @@ const stitchHtml = `
         </div>
 
         <div class="flex gap-3 mt-6">
-          <button id="refresh-dashboard-button" class="px-5 py-2.5 bg-tertiary-fixed text-primary text-sm font-bold rounded-md shadow-soft hover:opacity-90 transition-all border border-white/40 soft-ring active:scale-[0.98]">
+          <button id="refresh-dashboard-button" class="px-5 py-2.5 bg-white text-on-surface-variant text-sm font-bold rounded-md hover:bg-surface-container-low transition-all border border-outline-variant/20 soft-ring active:scale-[0.98]">
             Refresh dashboard
           </button>
-          <button data-anchor-route="/workspace-live" class="px-6 py-2.5 bg-gradient-to-br from-primary to-primary-dim text-white text-sm font-bold rounded-md shadow-glow transition-all hover:opacity-95 active:scale-[0.98]">
+          <button data-anchor-route="/workspace-live" class="px-6 py-2.5 bg-gradient-to-br from-primary to-primary-dim text-white text-sm font-bold rounded-md shadow-glow transition-all hover:opacity-95 active:scale-[0.98] border border-white/10 soft-ring">
             Open Workspace
           </button>
         </div>
@@ -387,7 +387,7 @@ const stitchHtml = `
                   Review the most relevant recent receipt.
                 </p>
               </div>
-              <button id="review-receipt-button" class="inline-flex w-full items-center justify-center rounded-lg bg-white py-2.5 text-xs font-bold uppercase tracking-widest text-slate-950 transition-colors hover:bg-slate-100">
+              <button id="review-receipt-button" class="inline-flex w-full items-center justify-center rounded-lg border border-white/15 bg-white/10 py-2.5 text-xs font-bold uppercase tracking-widest text-white transition-colors hover:bg-white/14">
                 REVIEW RECEIPT
               </button>
             </div>
@@ -454,35 +454,35 @@ const stitchHtml = `
           </div>
 
           <div class="space-y-2">
-            <button data-anchor-route="/workspace-live" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/15 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
+            <button data-anchor-route="/workspace-live" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/12 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
               <div class="flex items-center gap-3">
                 <span aria-hidden="true" class="material-symbols-outlined text-primary text-[20px]">terminal</span>
                 <span class="text-[13px] font-bold text-on-surface">Open Workspace</span>
               </div>
               <span aria-hidden="true" class="material-symbols-outlined text-outline transition-transform group-hover:translate-x-0.5 text-[18px]">chevron_right</span>
             </button>
-            <button data-anchor-route="/receipts" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/15 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
+            <button data-anchor-route="/receipts" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/12 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
               <div class="flex items-center gap-3">
                 <span aria-hidden="true" class="material-symbols-outlined text-primary text-[20px]">receipt_long</span>
                 <span class="text-[13px] font-bold text-on-surface">Open receipt viewer</span>
               </div>
               <span aria-hidden="true" class="material-symbols-outlined text-outline transition-transform group-hover:translate-x-0.5 text-[18px]">chevron_right</span>
             </button>
-            <button data-anchor-route="/intelligence" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/15 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
+            <button data-anchor-route="/intelligence" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/12 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
               <div class="flex items-center gap-3">
                 <span aria-hidden="true" class="material-symbols-outlined text-primary text-[20px]">psychology</span>
                 <span class="text-[13px] font-bold text-on-surface">Open Intelligence</span>
               </div>
               <span aria-hidden="true" class="material-symbols-outlined text-outline transition-transform group-hover:translate-x-0.5 text-[18px]">chevron_right</span>
             </button>
-            <button data-anchor-route="/learn" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/15 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
+            <button data-anchor-route="/learn" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/12 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
               <div class="flex items-center gap-3">
                 <span aria-hidden="true" class="material-symbols-outlined text-primary text-[20px]">school</span>
                 <span class="text-[13px] font-bold text-on-surface">Open Learn</span>
               </div>
               <span aria-hidden="true" class="material-symbols-outlined text-outline transition-transform group-hover:translate-x-0.5 text-[18px]">chevron_right</span>
             </button>
-            <button data-anchor-route="/exports" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/15 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
+            <button data-anchor-route="/exports" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/12 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
               <div class="flex items-center gap-3">
                 <span aria-hidden="true" class="material-symbols-outlined text-primary text-[20px]">download</span>
                 <span class="text-[13px] font-bold text-on-surface">Export governance data</span>
