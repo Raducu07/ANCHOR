@@ -453,41 +453,41 @@ const stitchHtml = `
             </div>
           </div>
 
-          <div class="space-y-2">
-            <button data-anchor-route="/workspace-live" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/12 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
+          <div class="space-y-2.5">
+            <button data-anchor-route="/workspace-live" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/10 bg-white/70 px-4 py-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] transition-all duration-200 hover:border-outline-variant/16 hover:bg-surface-container-lowest">
               <div class="flex items-center gap-3">
-                <span aria-hidden="true" class="material-symbols-outlined text-primary text-[20px]">terminal</span>
-                <span class="text-[13px] font-bold text-on-surface">Open Workspace</span>
+                <span aria-hidden="true" class="material-symbols-outlined text-primary/80 text-[18px]">terminal</span>
+                <span class="text-[12px] font-semibold tracking-[0.01em] text-on-surface">Open Workspace</span>
               </div>
-              <span aria-hidden="true" class="material-symbols-outlined text-outline transition-transform group-hover:translate-x-0.5 text-[18px]">chevron_right</span>
+              <span aria-hidden="true" class="material-symbols-outlined text-on-surface-variant/60 transition-all group-hover:translate-x-0.5 group-hover:text-primary/70 text-[18px]">chevron_right</span>
             </button>
-            <button data-anchor-route="/receipts" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/12 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
+            <button data-anchor-route="/receipts" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/10 bg-white/70 px-4 py-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] transition-all duration-200 hover:border-outline-variant/16 hover:bg-surface-container-lowest">
               <div class="flex items-center gap-3">
-                <span aria-hidden="true" class="material-symbols-outlined text-primary text-[20px]">receipt_long</span>
-                <span class="text-[13px] font-bold text-on-surface">Open receipt viewer</span>
+                <span aria-hidden="true" class="material-symbols-outlined text-primary/80 text-[18px]">receipt_long</span>
+                <span class="text-[12px] font-semibold tracking-[0.01em] text-on-surface">Open receipt viewer</span>
               </div>
-              <span aria-hidden="true" class="material-symbols-outlined text-outline transition-transform group-hover:translate-x-0.5 text-[18px]">chevron_right</span>
+              <span aria-hidden="true" class="material-symbols-outlined text-on-surface-variant/60 transition-all group-hover:translate-x-0.5 group-hover:text-primary/70 text-[18px]">chevron_right</span>
             </button>
-            <button data-anchor-route="/intelligence" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/12 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
+            <button data-anchor-route="/intelligence" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/10 bg-white/70 px-4 py-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] transition-all duration-200 hover:border-outline-variant/16 hover:bg-surface-container-lowest">
               <div class="flex items-center gap-3">
-                <span aria-hidden="true" class="material-symbols-outlined text-primary text-[20px]">psychology</span>
-                <span class="text-[13px] font-bold text-on-surface">Open Intelligence</span>
+                <span aria-hidden="true" class="material-symbols-outlined text-primary/80 text-[18px]">psychology</span>
+                <span class="text-[12px] font-semibold tracking-[0.01em] text-on-surface">Open Intelligence</span>
               </div>
-              <span aria-hidden="true" class="material-symbols-outlined text-outline transition-transform group-hover:translate-x-0.5 text-[18px]">chevron_right</span>
+              <span aria-hidden="true" class="material-symbols-outlined text-on-surface-variant/60 transition-all group-hover:translate-x-0.5 group-hover:text-primary/70 text-[18px]">chevron_right</span>
             </button>
-            <button data-anchor-route="/learn" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/12 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
+            <button data-anchor-route="/learn" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/10 bg-white/70 px-4 py-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] transition-all duration-200 hover:border-outline-variant/16 hover:bg-surface-container-lowest">
               <div class="flex items-center gap-3">
-                <span aria-hidden="true" class="material-symbols-outlined text-primary text-[20px]">school</span>
-                <span class="text-[13px] font-bold text-on-surface">Open Learn</span>
+                <span aria-hidden="true" class="material-symbols-outlined text-primary/80 text-[18px]">school</span>
+                <span class="text-[12px] font-semibold tracking-[0.01em] text-on-surface">Open Learn</span>
               </div>
-              <span aria-hidden="true" class="material-symbols-outlined text-outline transition-transform group-hover:translate-x-0.5 text-[18px]">chevron_right</span>
+              <span aria-hidden="true" class="material-symbols-outlined text-on-surface-variant/60 transition-all group-hover:translate-x-0.5 group-hover:text-primary/70 text-[18px]">chevron_right</span>
             </button>
-            <button data-anchor-route="/exports" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/12 bg-surface-container-lowest px-4 py-3 transition-all hover:bg-surface-container-low">
+            <button data-anchor-route="/exports" class="group flex w-full items-center justify-between rounded-xl border border-outline-variant/10 bg-white/70 px-4 py-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] transition-all duration-200 hover:border-outline-variant/16 hover:bg-surface-container-lowest">
               <div class="flex items-center gap-3">
-                <span aria-hidden="true" class="material-symbols-outlined text-primary text-[20px]">download</span>
-                <span class="text-[13px] font-bold text-on-surface">Export governance data</span>
+                <span aria-hidden="true" class="material-symbols-outlined text-primary/80 text-[18px]">download</span>
+                <span class="text-[12px] font-semibold tracking-[0.01em] text-on-surface">Export governance data</span>
               </div>
-              <span aria-hidden="true" class="material-symbols-outlined text-outline transition-transform group-hover:translate-x-0.5 text-[18px]">chevron_right</span>
+              <span aria-hidden="true" class="material-symbols-outlined text-on-surface-variant/60 transition-all group-hover:translate-x-0.5 group-hover:text-primary/70 text-[18px]">chevron_right</span>
             </button>
           </div>
 
