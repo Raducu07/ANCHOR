@@ -621,6 +621,15 @@ const stitchHtml = `
       running: false
     };
 
+    function getActiveRequestId() {
+      return state.requestId || (state.receipt && state.receipt.request_id) || null;
+    }
+
+    function setReceiptActionMessage(message) {
+      if (!els.receiptActionsText) return;
+      els.receiptActionsText.textContent = message;
+    }
+
     function getAuthHeaders() {
       const token = localStorage.getItem('anchor_access_token');
       return token ? { Authorization: 'Bearer ' + token } : {};
@@ -727,10 +736,12 @@ const stitchHtml = `
     }
 
     function applyReviewGate() {
-      const canReview = !!state.requestId;
-      const canOperationalise = !!state.resultText && !!state.requestId && !!els.review.checked;
+      const activeRequestId = getActiveRequestId();
+      const canReview = !!activeRequestId;
+      const canOperationalise = !!state.resultText && !!activeRequestId && !!els.review.checked;
       els.draftBtn.disabled = !canReview;
       els.openReceiptBtn.disabled = !canReview;
+      els.receiptDraftBtn.disabled = !canReview;
       els.exportBtn.disabled = !canOperationalise;
       els.copyBtn.disabled = !canOperationalise;
       els.receiptHumanReview.textContent = els.review.checked ? 'Yes' : 'No';
@@ -738,6 +749,7 @@ const stitchHtml = `
       els.copyBtn.style.opacity = canOperationalise ? '1' : '0.55';
       els.openReceiptBtn.style.opacity = canReview ? '1' : '0.55';
       els.draftBtn.style.opacity = canReview ? '1' : '0.55';
+      els.receiptDraftBtn.style.opacity = canReview ? '1' : '0.55';
     }
 
     function resetWorkspace() {
@@ -944,25 +956,51 @@ const stitchHtml = `
     }
 
     async function exportMetadata() {
-      if (!state.requestId || !els.review.checked) return;
-      const receipt = state.receipt || (await fetchReceipt(state.requestId));
-      const blob = new Blob([JSON.stringify({ receipt }, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'anchor-receipt-' + state.requestId + '.json';
-      a.click();
-      URL.revokeObjectURL(url);
+      const activeRequestId = getActiveRequestId();
+      if (!activeRequestId) {
+        setReceiptActionMessage('Export metadata becomes available after a governed run creates a receipt.');
+        return;
+      }
+      if (!els.review.checked) {
+        setReceiptActionMessage('Confirm human review before exporting receipt metadata.');
+        return;
+      }
+      try {
+        const receipt = state.receipt || (await fetchReceipt(activeRequestId));
+        state.receipt = receipt;
+        const blob = new Blob([JSON.stringify({ receipt }, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'anchor-receipt-' + activeRequestId + '.json';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+        setReceiptActionMessage('Receipt metadata exported for this governed run.');
+      } catch (error) {
+        console.error(error);
+        setReceiptActionMessage('Metadata export could not be completed right now.');
+      }
     }
 
     function openReceipt() {
-      if (!state.requestId) return;
-      navigateParent('/receipts?request_id=' + encodeURIComponent(state.requestId));
+      const activeRequestId = getActiveRequestId();
+      if (!activeRequestId) {
+        setReceiptActionMessage('Open receipt becomes available after a governed run creates a receipt.');
+        return;
+      }
+      navigateParent('/receipts?request_id=' + encodeURIComponent(activeRequestId));
     }
 
     function draftReceipt() {
-      if (!state.requestId) return;
-      navigateParent('/receipts?request_id=' + encodeURIComponent(state.requestId));
+      const activeRequestId = getActiveRequestId();
+      if (!activeRequestId) {
+        setReceiptActionMessage('Draft Receipt becomes available after a governed run creates a receipt.');
+        return;
+      }
+      navigateParent('/receipts?request_id=' + encodeURIComponent(activeRequestId));
     }
 
     function signOut() {
@@ -970,12 +1008,42 @@ const stitchHtml = `
     }
 
     async function copyResult() {
-      if (!state.resultText || !els.review.checked) return;
-      await navigator.clipboard.writeText(state.resultText);
-      els.copyBtn.textContent = 'Copied governed result';
-      setTimeout(() => {
-        els.copyBtn.innerHTML = '<span class="material-symbols-outlined text-sm">content_copy</span>Copy governed result';
-      }, 1200);
+      if (!state.resultText) {
+        setReceiptActionMessage('Copy governed result becomes available after ANCHOR produces governed output.');
+        return;
+      }
+      if (!els.review.checked) {
+        setReceiptActionMessage('Confirm human review before copying governed output.');
+        return;
+      }
+
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(state.resultText);
+        } else {
+          const copyField = document.createElement('textarea');
+          copyField.value = state.resultText;
+          copyField.setAttribute('readonly', 'true');
+          copyField.style.position = 'fixed';
+          copyField.style.opacity = '0';
+          document.body.appendChild(copyField);
+          copyField.select();
+          const copied = document.execCommand('copy');
+          document.body.removeChild(copyField);
+          if (!copied) {
+            throw new Error('Clipboard copy was rejected');
+          }
+        }
+
+        els.copyBtn.innerHTML = '<span class="material-symbols-outlined text-sm">check</span>Copied governed result';
+        setReceiptActionMessage('Governed result copied to clipboard.');
+        setTimeout(() => {
+          els.copyBtn.innerHTML = '<span class="material-symbols-outlined text-sm">content_copy</span>Copy governed result';
+        }, 1200);
+      } catch (error) {
+        console.error(error);
+        setReceiptActionMessage('Copy governed result could not access the clipboard in this browser context.');
+      }
     }
 
     document.querySelectorAll('a[data-anchor-route]').forEach(function (link) {
@@ -992,8 +1060,8 @@ const stitchHtml = `
     els.openReceiptBtn.addEventListener('click', openReceipt);
     els.draftBtn.addEventListener('click', draftReceipt);
     els.receiptDraftBtn.addEventListener('click', draftReceipt);
-    els.exportBtn.addEventListener('click', () => exportMetadata().catch(console.error));
-    els.copyBtn.addEventListener('click', () => copyResult().catch(console.error));
+    els.exportBtn.addEventListener('click', exportMetadata);
+    els.copyBtn.addEventListener('click', copyResult);
 
     els.roleBtn.addEventListener('click', function (event) {
       event.stopPropagation();
@@ -1152,7 +1220,7 @@ export default function WorkspaceStitchPage() {
         title="Workspace Stitch"
         srcDoc={html}
         className="h-full w-full border-0"
-        sandbox="allow-scripts allow-same-origin"
+        sandbox="allow-scripts allow-same-origin allow-downloads"
       />
     </div>
   );
