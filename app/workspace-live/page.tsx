@@ -290,9 +290,9 @@ const stitchHtml = `
                 <div class="flex-1">
                   <p class="text-sm font-semibold mb-1">Review boundaries</p>
                   <div class="flex flex-wrap gap-2">
-                    <span class="px-3 py-1.5 bg-primary/10 text-primary text-[11px] font-bold rounded-full">Standard Privacy</span>
-                    <span class="px-3 py-1.5 bg-tertiary/10 text-tertiary text-[11px] font-bold rounded-full">Receipt-backed traceability</span>
-                    <span class="px-3 py-1.5 bg-surface-container text-on-surface-variant text-[11px] font-bold rounded-full">Metadata-only accountability</span>
+                    <span class="inline-flex items-center rounded-full border border-primary/12 bg-primary/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-primary">Standard Privacy</span>
+                    <span class="inline-flex items-center rounded-full border border-tertiary/15 bg-tertiary/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-tertiary">Receipt-backed traceability</span>
+                    <span class="inline-flex items-center rounded-full border border-outline-variant/12 bg-surface-container px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-on-surface-variant">Metadata-only accountability</span>
                   </div>
                 </div>
               </div>
@@ -306,7 +306,7 @@ const stitchHtml = `
                   <h3 class="font-manrope font-bold text-lg">Governed result</h3>
                   <p class="text-xs text-on-surface-variant mt-1">Governed output will appear here after a completed run.</p>
                 </div>
-                <span id="run-badge" class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-[11px] font-bold">
+                <span id="run-badge" class="inline-flex items-center gap-1 rounded-full border border-primary/12 bg-primary/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-primary">
                   <span class="material-symbols-outlined text-sm">verified</span>
                   <span id="run-badge-text">Awaiting run</span>
                 </span>
@@ -386,7 +386,7 @@ const stitchHtml = `
                   <p class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-1">Session status</p>
                   <p id="session-status-text" class="font-semibold text-on-surface">Ready for governed workflow</p>
                 </div>
-                <span id="session-status-badge" class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-tertiary/10 text-tertiary text-[11px] font-bold">Ready</span>
+                <span id="session-status-badge" class="inline-flex items-center gap-1 rounded-full border border-tertiary/15 bg-tertiary/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-tertiary">Ready</span>
               </div>
             </div>
           </div>

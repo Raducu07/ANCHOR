@@ -231,14 +231,14 @@ const stitchHtml = `
         </p>
 
         <div class="flex flex-wrap gap-2 mt-6">
-          <span class="inline-flex items-center rounded-full bg-surface-container-high px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">
+          <span class="inline-flex items-center rounded-full border border-outline-variant/12 bg-surface-container-high px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-on-surface-variant">
             <span class="mr-1.5 h-1.5 w-1.5 rounded-full bg-on-surface-variant"></span>
             TRUST STATE (<span id="hero-trust-letter">A</span>)
           </span>
-          <span class="inline-flex items-center rounded-full bg-surface-container-high px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">
+          <span class="inline-flex items-center rounded-full border border-outline-variant/12 bg-surface-container-high px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-on-surface-variant">
             MODE: CLINIC-SCOPED
           </span>
-          <span class="inline-flex items-center rounded-full bg-surface-container-high px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">
+          <span class="inline-flex items-center rounded-full border border-outline-variant/12 bg-surface-container-high px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-on-surface-variant">
             EVENTS 24H (<span id="hero-events">0</span>)
           </span>
         </div>
@@ -262,8 +262,8 @@ const stitchHtml = `
                 <h3 class="font-manrope font-bold text-xl tracking-tight">24-hour governance activity</h3>
               </div>
               <div class="flex gap-2">
-                <span class="rounded bg-surface-container px-2 py-0.5 text-[10px] font-bold uppercase text-on-surface-variant">CLINIC-SCOPED</span>
-                <span class="rounded bg-tertiary/10 px-2 py-0.5 text-[10px] font-bold uppercase text-tertiary">LIVE SURFACE</span>
+                <span class="inline-flex items-center rounded-full border border-outline-variant/12 bg-surface-container px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">CLINIC-SCOPED</span>
+                <span class="inline-flex items-center rounded-full border border-tertiary/15 bg-tertiary/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-tertiary">LIVE SURFACE</span>
               </div>
             </div>
 
@@ -381,7 +381,7 @@ const stitchHtml = `
               <div>
                 <div class="mb-6 flex justify-between items-start">
                   <h4 class="text-[10px] font-bold uppercase tracking-widest text-slate-400">RECOMMENDED NEXT ACTION</h4>
-                  <span id="next-action-priority" class="rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-amber-500 text-white">MEDIUM PRIORITY</span>
+                  <span id="next-action-priority" class="inline-flex items-center rounded-full border border-amber-400/30 bg-amber-500 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-white">MEDIUM PRIORITY</span>
                 </div>
                 <p id="next-action-text" class="mb-8 text-[13px] font-medium leading-relaxed text-slate-300">
                   Review the most relevant recent receipt.
@@ -428,7 +428,7 @@ const stitchHtml = `
           <div class="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/15 shadow-soft soft-ring">
             <div class="mb-6 flex justify-between items-start">
               <h4 class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">INTELLIGENCE SNAPSHOT</h4>
-              <span id="intelligence-severity" class="rounded px-2 py-0.5 text-[10px] font-bold uppercase bg-tertiary/10 text-tertiary">LOW</span>
+              <span id="intelligence-severity" class="inline-flex items-center rounded-full border border-tertiary/15 bg-tertiary/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-tertiary">LOW</span>
             </div>
 
             <div class="mb-8">
