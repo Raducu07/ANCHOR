@@ -2,119 +2,125 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import {
+  Anchor,
+  BadgeCheck,
+  BrainCircuit,
+  Briefcase,
+  Download,
+  GraduationCap,
+  HelpCircle,
+  LayoutDashboard,
+  Plus,
+  ReceiptText,
+  Scale,
+  ScrollText,
+  Settings,
+  ShieldCheck,
+} from "lucide-react";
 
-const items = [
-  {
-    href: "/dashboard",
-    label: "Dashboard",
-    helper: "Trust-oriented clinic overview",
-  },
-  {
-    href: "/receipts",
-    label: "Receipts",
-    helper: "Inspect governance receipts",
-  },
-  {
-    href: "/governance-events",
-    label: "Governance Events",
-    helper: "Review clinic-scoped activity",
-  },
-  {
-    href: "/exports",
-    label: "Exports",
-    helper: "Generate metadata-only CSVs",
-  },
-  {
-    href: "/privacy-policy",
-    label: "Privacy & Policy",
-    helper: "Review platform posture",
-  },
-  {
-    href: "/learn",
-    label: "Learn",
-    helper: "Build safe AI-use literacy",
-  },
+const primaryItems = [
+  { href: "/workspace-live", label: "Workspace", icon: Briefcase },
+  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/receipts", label: "Receipts", icon: ReceiptText },
+  { href: "/governance-events", label: "Governance Events", icon: Scale },
+  { href: "/learn", label: "Learn", icon: GraduationCap },
+  { href: "/trust/profile", label: "Trust", icon: BadgeCheck },
+  { href: "/intelligence", label: "Intelligence", icon: BrainCircuit },
+  { href: "/privacy-policy", label: "Privacy / Policy", icon: ShieldCheck },
+  { href: "/exports", label: "Exports", icon: Download },
 ];
+
+const secondaryItems = [
+  { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/support", label: "Support", icon: HelpCircle },
+];
+
+function isActive(pathname: string, href: string) {
+  if (pathname === href) return true;
+  if (href === "/workspace-live" && pathname.startsWith("/workspace")) return true;
+  if (href === "/learn" && pathname.startsWith("/learn")) return true;
+  if (href === "/trust/profile" && pathname.startsWith("/trust")) return true;
+  if (href === "/intelligence" && pathname.startsWith("/intelligence")) return true;
+  if (href === "/settings" && pathname.startsWith("/settings")) return true;
+  if (href === "/support" && pathname.startsWith("/support")) return true;
+  return false;
+}
 
 export function SideNav() {
   const pathname = usePathname();
 
   return (
-    <aside className="border-b border-slate-200/80 bg-white/75 backdrop-blur lg:min-h-screen lg:border-b-0 lg:border-r">
-      <div className="flex h-full flex-col">
-        <div className="px-5 pb-5 pt-6 lg:px-6 lg:pb-6 lg:pt-7">
-          <div className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-700 shadow-sm">
-            ANCHOR
-          </div>
-
-          <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50/80 p-5">
-            <p className="text-sm font-semibold text-slate-900">
-              Governance, trust, and learning infrastructure
-            </p>
-            <p className="mt-2 text-sm leading-6 text-slate-600">
-              Safe AI-use oversight for veterinary clinics, with metadata-only accountability and clinic-scoped review.
+    <aside className="fixed left-0 top-0 z-40 flex h-screen w-64 shrink-0 flex-col border-r border-slate-200/50 bg-slate-50 py-6 font-headline text-sm font-medium">
+      <div className="mb-8 px-6">
+        <div className="flex items-center gap-2">
+          <Anchor className="h-5 w-5 text-[#565e74]" />
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-slate-900">ANCHOR</h1>
+            <p className="text-[10px] font-bold uppercase tracking-widest leading-none text-slate-500">
+              Veterinary Governance
             </p>
           </div>
         </div>
+      </div>
 
-        <div className="px-4 lg:px-5">
-          <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-            Workspace
-          </p>
+      <nav className="flex-1 space-y-1 overflow-y-auto">
+        {primaryItems.map((item) => {
+          const Icon = item.icon;
+          const active = isActive(pathname, item.href);
 
-          <nav className="mt-3">
-            <ul className="space-y-2">
-              {items.map((item) => {
-                const active =
-                  pathname === item.href || (item.href === "/learn" && pathname.startsWith("/learn"));
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={[
+                "flex items-center px-6 py-2.5 transition-colors",
+                active
+                  ? "border-r-2 border-slate-900 bg-slate-200/50 font-bold text-slate-900"
+                  : "text-slate-500 hover:bg-slate-200/50 hover:text-slate-700",
+              ].join(" ")}
+            >
+              <div className="mr-3 flex w-5 items-center justify-center">
+                <Icon className="h-5 w-5" />
+              </div>
+              <span>{item.label}</span>
+            </Link>
+          );
+        })}
+      </nav>
 
-                return (
-                  <li key={item.href}>
-                    <Link
-                      href={item.href}
-                      className={[
-                        "group block rounded-2xl border px-4 py-3 transition",
-                        active
-                          ? "border-slate-900 bg-slate-900 text-white shadow-sm"
-                          : "border-transparent text-slate-700 hover:border-slate-200 hover:bg-white hover:text-slate-900",
-                      ].join(" ")}
-                    >
-                      <div className="flex items-start gap-3">
-                        <span
-                          className={[
-                            "mt-1 h-2.5 w-2.5 rounded-full transition",
-                            active ? "bg-white" : "bg-slate-300 group-hover:bg-slate-500",
-                          ].join(" ")}
-                        />
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold">{item.label}</p>
-                          <p
-                            className={[
-                              "mt-1 text-xs leading-5",
-                              active ? "text-slate-200" : "text-slate-500 group-hover:text-slate-600",
-                            ].join(" ")}
-                          >
-                            {item.helper}
-                          </p>
-                        </div>
-                      </div>
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-          </nav>
-        </div>
+      <div className="mt-auto px-4">
+        <Link
+          href="/workspace-live"
+          className="flex w-full items-center justify-center gap-2 rounded-md bg-gradient-to-r from-[#565e74] to-[#4a5268] px-4 py-2.5 text-center text-sm font-bold leading-tight text-white shadow-sm transition-all hover:opacity-90"
+        >
+          <Plus className="h-4 w-4" />
+          New governed session
+        </Link>
 
-        <div className="mt-6 px-5 pb-6 lg:mt-auto lg:px-6 lg:pb-7">
-          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-              Current posture
-            </p>
-            <p className="mt-2 text-sm leading-6 text-slate-600">
-              Metadata-only accountability, clinic-scoped exports, policy traceability, and safe-use learning now form the core operating model.
-            </p>
-          </div>
+        <div className="mt-6 space-y-1">
+          {secondaryItems.map((item) => {
+            const Icon = item.icon;
+            const active = isActive(pathname, item.href);
+
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={[
+                  "flex items-center px-2 py-2 transition-colors",
+                  active
+                    ? "font-semibold text-slate-900"
+                    : "text-slate-500 hover:text-slate-700",
+                ].join(" ")}
+              >
+                <div className="mr-3 flex w-5 items-center justify-center">
+                  <Icon className="h-5 w-5" />
+                </div>
+                <span>{item.label}</span>
+              </Link>
+            );
+          })}
         </div>
       </div>
     </aside>

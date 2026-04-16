@@ -1,41 +1,18 @@
 "use client";
 
-import { useMemo } from "react";
-import { usePathname, useRouter } from "next/navigation";
-import { Button } from "@/components/ui/Button";
+import { useRouter } from "next/navigation";
+import { Bell, Search, Settings } from "lucide-react";
 import { clearAuthState } from "@/lib/auth";
 import type { SessionUser } from "@/lib/types";
 
-const pageMeta: Record<string, { eyebrow: string; title: string; helper: string }> = {
-  "/dashboard": {
-    eyebrow: "Clinic workspace",
-    title: "Operational governance overview",
-    helper: "A calm surface for trust posture, receipts, events, and bounded exports.",
-  },
-  "/receipts": {
-    eyebrow: "Clinic workspace",
-    title: "Governance receipt review",
-    helper: "Inspect request-level metadata without exposing raw prompt or output content.",
-  },
-  "/governance-events": {
-    eyebrow: "Clinic workspace",
-    title: "Governance activity review",
-    helper: "Review recent clinic-scoped events and move directly into receipts.",
-  },
-  "/exports": {
-    eyebrow: "Clinic workspace",
-    title: "Metadata-only exports",
-    helper: "Generate bounded clinic-scoped CSV exports for operational review.",
-  },
-  "/privacy-policy": {
-    eyebrow: "Clinic workspace",
-    title: "Privacy and policy posture",
-    helper: "Summarize governance boundaries and platform administration direction.",
-  },
-};
+function roleLabel(role: string) {
+  return role
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
 
 export function TopBar({ user }: { user: SessionUser }) {
-  const pathname = usePathname();
   const router = useRouter();
 
   function handleSignOut() {
@@ -43,48 +20,50 @@ export function TopBar({ user }: { user: SessionUser }) {
     router.replace("/login");
   }
 
-  const meta = useMemo(() => {
-    return (
-      pageMeta[pathname] ?? {
-        eyebrow: "Clinic workspace",
-        title: "ANCHOR portal",
-        helper: "Clinic-scoped governance, trust, and learning infrastructure.",
-      }
-    );
-  }, [pathname]);
-
   return (
-    <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/80 backdrop-blur">
-      <div className="px-4 py-4 sm:px-6 lg:px-8">
-        <div className="mx-auto flex max-w-[1240px] flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-              {meta.eyebrow}
+    <header className="sticky top-0 z-50 flex h-16 w-full items-center justify-between border-b border-slate-100 bg-white/80 px-8 font-headline text-base shadow-sm backdrop-blur-md">
+      <div className="flex flex-1 items-center">
+        <div className="relative w-full max-w-xl">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-500" />
+          <input
+            type="text"
+            placeholder="Search governance logs, audits, or metadata..."
+            className="w-full rounded-lg border-none bg-[#f0f4f7] py-1.5 pl-10 pr-4 text-sm text-[#2a3439] transition-all placeholder:text-slate-500 focus:ring-1 focus:ring-[#565e74]"
+          />
+        </div>
+      </div>
+
+      <div className="ml-6 flex items-center gap-6">
+        <button className="text-slate-500 transition-transform hover:text-slate-700 active:scale-95">
+          <Bell className="h-5 w-5" />
+        </button>
+
+        <button className="text-slate-500 transition-transform hover:text-slate-700 active:scale-95">
+          <Settings className="h-5 w-5" />
+        </button>
+
+        <div className="h-6 w-px bg-slate-300/40" />
+
+        <div className="flex items-center gap-3">
+          <div className="text-right">
+            <p className="text-xs font-bold leading-none text-slate-900">
+              {user.email.split("@")[0]}
             </p>
-            <h2 className="mt-1 text-xl font-semibold tracking-tight text-slate-900">
-              {meta.title}
-            </h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-              {meta.helper}
-            </p>
+            <p className="text-[10px] text-slate-500">{roleLabel(user.role)}</p>
           </div>
 
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                Clinic workspace
-              </p>
-              <p className="mt-1 text-sm font-semibold text-slate-900">{user.clinicSlug}</p>
-              <p className="mt-1 text-sm text-slate-500">
-                {user.email} · {user.role}
-              </p>
-            </div>
-
-            <Button variant="secondary" onClick={handleSignOut}>
-              Sign out
-            </Button>
+          <div className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300/20 bg-slate-200 text-[10px] font-bold text-slate-700">
+            {user.email.charAt(0).toUpperCase()}
           </div>
         </div>
+
+        <button
+          type="button"
+          onClick={handleSignOut}
+          className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#565e74] transition-colors hover:text-[#4a5268]"
+        >
+          Sign Out
+        </button>
       </div>
     </header>
   );

@@ -25,22 +25,30 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [router]);
 
   if (!ready || !user) {
-    return <div className="min-h-screen bg-slate-50" />;
+    return <div className="min-h-screen bg-[#f7f9fb]" />;
   }
 
   return (
-    <div className="min-h-screen">
-      <div className="mx-auto grid min-h-screen max-w-[1680px] grid-cols-1 lg:grid-cols-[292px_minmax(0,1fr)]">
-        <div className="lg:sticky lg:top-0 lg:h-screen">
-          <SideNav />
-        </div>
+    <div className="min-h-screen bg-[#f7f9fb] text-[#191c1e]">
+      <SideNav />
 
-        <div className="min-w-0">
-          <TopBar user={user} />
-          <main className="px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
-            <div className="mx-auto max-w-[1240px]">{children}</div>
-          </main>
-        </div>
+      <div className="pl-64">
+        <TopBar user={user} />
+
+        <main className="min-h-[calc(100vh-4rem)] bg-[#f7f9fb] px-8 py-8">
+          {children}
+        </main>
+      </div>
+
+      <div className="pointer-events-none fixed inset-0 z-[-1] opacity-[0.02]">
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage:
+              "radial-gradient(#2a3439 0.5px, transparent 0.5px)",
+            backgroundSize: "32px 32px",
+          }}
+        />
       </div>
     </div>
   );

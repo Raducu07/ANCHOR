@@ -4,8 +4,18 @@
 
 :root {
   color-scheme: light;
+
   --background: #f8fafc;
   --foreground: #0f172a;
+
+  --anchor-ink: #0d1b4d;
+  --anchor-violet: #7c63c9;
+  --anchor-soft-violet: #e8e0ff;
+  --anchor-canvas: #f6f4ee;
+  --anchor-paper: #fbfaf6;
+  --anchor-card: #efe9dd;
+  --anchor-line: #d8cfbf;
+  --anchor-slate: #5f667b;
 }
 
 html,
@@ -14,14 +24,14 @@ body {
 }
 
 html {
-  background: var(--background);
+  background: var(--anchor-canvas);
 }
 
 body {
   background:
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.92), transparent 36%),
-    linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-  color: var(--foreground);
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.88), transparent 36%),
+    linear-gradient(180deg, var(--anchor-canvas) 0%, #f2eee4 100%);
+  color: var(--anchor-ink);
 }
 
 * {
@@ -29,7 +39,7 @@ body {
 }
 
 ::selection {
-  background: rgba(148, 163, 184, 0.25);
+  background: rgba(124, 99, 201, 0.18);
 }
 
 a {
@@ -48,7 +58,7 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 a:focus-visible {
-  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.35);
+  box-shadow: 0 0 0 3px rgba(124, 99, 201, 0.28);
   border-radius: 0.75rem;
 }
 
