@@ -189,16 +189,16 @@ const stitchHtml = `
     <header class="flex justify-between items-center w-full px-8 h-16 sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-100 font-manrope text-base shadow-sm">
       <div class="flex items-center flex-1 max-w-xl">
         <div class="relative w-full">
-          <span aria-hidden="true" class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-xl">search</span>
-          <input class="w-full pl-10 pr-4 py-1.5 bg-surface-container-low border-none focus:ring-1 focus:ring-primary rounded-lg text-sm text-on-surface transition-all" placeholder="Search governance logs, audits, or metadata..." type="text"/>
+          <span aria-hidden="true" class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xl">search</span>
+          <input class="w-full rounded-lg border border-slate-300/70 bg-[#f0f4f7] py-1.5 pl-10 pr-4 text-sm text-[#2a3439] outline-none transition-all placeholder:text-slate-500 focus:border-[#7c63c9] focus:outline-none focus:ring-2 focus:ring-[rgba(124,99,201,0.18)] focus-visible:border-[#7c63c9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(124,99,201,0.18)]" placeholder="Search governance logs, audits, or metadata..." type="text"/>
         </div>
       </div>
 
       <div class="flex items-center gap-6">
-        <button class="text-on-surface-variant hover:text-on-surface transition-transform active:scale-95">
+        <button data-anchor-route="/notifications" class="text-on-surface-variant hover:text-on-surface transition-transform active:scale-95">
           <span aria-hidden="true" class="material-symbols-outlined">notifications</span>
         </button>
-        <button class="text-on-surface-variant hover:text-on-surface transition-transform active:scale-95">
+        <button data-anchor-route="/settings" class="text-on-surface-variant hover:text-on-surface transition-transform active:scale-95">
           <span aria-hidden="true" class="material-symbols-outlined">settings</span>
         </button>
         <div class="h-6 w-[1px] bg-outline-variant/30"></div>
@@ -371,7 +371,7 @@ const stitchHtml = `
                   </div>
                   <div>
                     <div class="text-sm font-bold text-on-surface">Navigating the Receipt Ledger</div>
-                    <div class="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">OPEN EXPLAINER • 3M VIDEO</div>
+                    <div class="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">OPEN EXPLAINER</div>
                   </div>
                 </a>
               </div>

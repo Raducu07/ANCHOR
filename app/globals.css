@@ -60,6 +60,12 @@ a:focus-visible {
   border-radius: 0.75rem;
 }
 
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  box-shadow: none;
+}
+
 @layer base {
   h1,
   h2,

@@ -65,25 +65,33 @@ export function TopBar({ user }: { user: SessionUser }) {
 
   return (
     <header className="sticky top-0 z-50 flex h-16 w-full items-center justify-between border-b border-slate-100 bg-white/80 px-8 font-headline text-base shadow-sm backdrop-blur-md">
-      <div className="flex flex-1 items-center">
-        <div className="relative w-full max-w-xl">
+      <div className="flex max-w-xl flex-1 items-center">
+        <div className="relative w-full">
           <span className="material-symbols-outlined pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xl text-slate-500">
             search
           </span>
           <input
             type="text"
             placeholder="Search governance logs, audits, or metadata..."
-            className="w-full rounded-lg border-none bg-[#f0f4f7] py-1.5 pl-10 pr-4 text-sm text-[#2a3439] transition-all placeholder:text-slate-500 focus:ring-1 focus:ring-[#565e74]"
+            className="w-full rounded-lg border border-slate-300/70 bg-[#f0f4f7] py-1.5 pl-10 pr-4 text-sm text-[#2a3439] outline-none transition-all placeholder:text-slate-500 focus:border-[#7c63c9] focus:outline-none focus:ring-2 focus:ring-[rgba(124,99,201,0.18)] focus-visible:border-[#7c63c9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(124,99,201,0.18)]"
           />
         </div>
       </div>
 
       <div className="ml-6 flex items-center gap-6">
-        <button className="text-slate-500 transition-transform hover:text-slate-700 active:scale-95">
+        <button
+          type="button"
+          onClick={() => router.push("/notifications")}
+          className="text-slate-500 transition-transform hover:text-slate-700 active:scale-95"
+        >
           <span className="material-symbols-outlined">notifications</span>
         </button>
 
-        <button className="text-slate-500 transition-transform hover:text-slate-700 active:scale-95">
+        <button
+          type="button"
+          onClick={() => router.push("/settings")}
+          className="text-slate-500 transition-transform hover:text-slate-700 active:scale-95"
+        >
           <span className="material-symbols-outlined">settings</span>
         </button>
 

@@ -205,16 +205,16 @@ function buildHtml(apiBase: string, initialRequestId: string) {
     <header class="flex justify-between items-center w-full px-8 h-16 sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-100 font-manrope text-base shadow-sm">
       <div class="flex items-center flex-1 max-w-xl">
         <div class="relative w-full">
-          <span aria-hidden="true" class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-xl">search</span>
-          <input class="w-full pl-10 pr-4 py-1.5 bg-surface-container-low border-none focus:ring-1 focus:ring-primary rounded-lg text-sm text-on-surface transition-all" placeholder="Search request ID, mode, or metadata..." type="text"/>
+          <span aria-hidden="true" class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xl">search</span>
+          <input class="w-full rounded-lg border border-slate-300/70 bg-[#f0f4f7] py-1.5 pl-10 pr-4 text-sm text-[#2a3439] outline-none transition-all placeholder:text-slate-500 focus:border-[#7c63c9] focus:outline-none focus:ring-2 focus:ring-[rgba(124,99,201,0.18)] focus-visible:border-[#7c63c9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(124,99,201,0.18)]" placeholder="Search request ID, mode, or metadata..." type="text"/>
         </div>
       </div>
 
       <div class="flex items-center gap-6">
-        <button class="text-on-surface-variant hover:text-on-surface transition-transform active:scale-95">
+        <button data-anchor-route="/notifications" class="text-on-surface-variant hover:text-on-surface transition-transform active:scale-95">
           <span aria-hidden="true" class="material-symbols-outlined">notifications</span>
         </button>
-        <button class="text-on-surface-variant hover:text-on-surface transition-transform active:scale-95">
+        <button data-anchor-route="/settings" class="text-on-surface-variant hover:text-on-surface transition-transform active:scale-95">
           <span aria-hidden="true" class="material-symbols-outlined">settings</span>
         </button>
         <div class="h-6 w-[1px] bg-outline-variant/30"></div>
@@ -431,27 +431,32 @@ function buildHtml(apiBase: string, initialRequestId: string) {
             </p>
           </section>
 
-          <section class="space-y-6">
-            <div class="flex items-center justify-between">
-              <h4 class="text-lg font-bold font-manrope text-on-surface">Recent receipts ledger</h4>
-              <button id="open-exports-button" data-anchor-route="/exports" class="text-xs font-bold text-primary hover:underline">
+          <section class="bg-surface-container-lowest rounded-xl border border-outline-variant/10 shadow-soft soft-ring p-6">
+            <div class="flex flex-col gap-2 border-b border-outline-variant/10 pb-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h4 class="text-base font-semibold text-on-surface">Recent receipt ledger</h4>
+                <p class="mt-1 text-sm leading-6 text-on-surface-variant">
+                  This table is metadata-only. Use request IDs to move directly into governance receipts without exposing raw prompt or output content.
+                </p>
+              </div>
+              <button id="open-exports-button" data-anchor-route="/exports" class="mt-1 text-xs text-on-surface-variant sm:mt-0">
                 Open exports
               </button>
             </div>
 
-            <div class="bg-surface-container-lowest rounded-xl overflow-hidden shadow-soft soft-ring border border-outline-variant/10">
-              <table class="w-full text-left border-collapse">
+            <div class="mt-4 overflow-x-auto">
+              <table class="min-w-full divide-y divide-outline-variant/12 text-sm">
                 <thead>
-                  <tr class="bg-surface-container-low text-[10px] font-extrabold uppercase tracking-[0.15em] text-on-surface-variant">
-                    <th class="px-6 py-4">Request ID</th>
-                    <th class="px-6 py-4">Mode</th>
-                    <th class="px-6 py-4">Decision</th>
-                    <th class="px-6 py-4">PII</th>
-                    <th class="px-6 py-4">Time</th>
-                    <th class="px-6 py-4 text-right">Action</th>
+                  <tr class="text-left text-on-surface-variant">
+                    <th class="px-6 py-3 pr-4 font-medium">Request ID</th>
+                    <th class="px-6 py-3 pr-4 font-medium">Mode</th>
+                    <th class="px-6 py-3 pr-4 font-medium">Decision</th>
+                    <th class="px-6 py-3 pr-4 font-medium">PII</th>
+                    <th class="px-6 py-3 pr-4 font-medium">Time</th>
+                    <th class="px-6 py-3 pr-0 text-right font-medium">Action</th>
                   </tr>
                 </thead>
-                <tbody id="recent-receipts-body" class="divide-y divide-surface-container">
+                <tbody id="recent-receipts-body" class="divide-y divide-outline-variant/10">
                   <tr>
                     <td colspan="6" class="px-6 py-8 text-sm text-on-surface-variant">Loading recent receipts…</td>
                   </tr>
@@ -886,13 +891,13 @@ function buildHtml(apiBase: string, initialRequestId: string) {
       const requestId = safeText(item.request_id, "");
       const decision = safeText(item.decision, "—");
       const piiDetected = !!item.pii_detected;
-      return '<tr class="hover:bg-surface-container/30 transition-colors">' +
-        '<td class="px-6 py-5 text-xs font-mono font-bold text-primary">' + escapeHtml(requestId || "—") + "</td>" +
-        '<td class="px-6 py-5 text-xs text-on-surface">' + escapeHtml(prettyMode(item.mode)) + "</td>" +
-        '<td class="px-6 py-5"><span class="inline-flex text-[10px] font-bold px-2 py-0.5 rounded border ' + decisionTone(decision) + '">' + escapeHtml(formatDecision(decision).toUpperCase()) + "</span></td>" +
-        '<td class="px-6 py-5 text-[11px] ' + (piiDetected ? "text-error font-semibold uppercase" : "text-on-surface-variant italic") + '">' + (piiDetected ? "Detected" : "Not detected") + "</td>" +
-        '<td class="px-6 py-5 text-[11px] text-on-surface-variant">' + escapeHtml(formatTimestamp(item.created_at_utc || item.created_at)) + "</td>" +
-        '<td class="px-6 py-5 text-right"><button class="text-[11px] font-bold text-primary hover:text-primary-dim view-receipt-btn" data-request-id="' + escapeHtml(requestId) + '">View</button></td>' +
+      return '<tr class="align-top hover:bg-surface-container/20 transition-colors">' +
+        '<td class="px-6 py-4 pr-4 text-xs font-mono font-bold text-primary">' + escapeHtml(requestId || "—") + "</td>" +
+        '<td class="px-6 py-4 pr-4 text-xs text-on-surface">' + escapeHtml(prettyMode(item.mode)) + "</td>" +
+        '<td class="px-6 py-4 pr-4"><span class="inline-flex text-[10px] font-bold px-2 py-0.5 rounded border ' + decisionTone(decision) + '">' + escapeHtml(formatDecision(decision).toUpperCase()) + "</span></td>" +
+        '<td class="px-6 py-4 pr-4 text-[11px] ' + (piiDetected ? "text-error font-semibold uppercase" : "text-on-surface-variant italic") + '">' + (piiDetected ? "Detected" : "Not detected") + "</td>" +
+        '<td class="px-6 py-4 pr-4 text-[11px] text-on-surface-variant">' + escapeHtml(formatTimestamp(item.created_at_utc || item.created_at)) + "</td>" +
+        '<td class="px-6 py-4 pr-0 text-right"><button class="text-sm font-medium text-on-surface underline underline-offset-4 view-receipt-btn" data-request-id="' + escapeHtml(requestId) + '">Open receipt</button></td>' +
       "</tr>";
     }).join("");
 
@@ -1259,3 +1264,4 @@ export default function ReceiptsPage() {
     </div>
   );
 }
+
