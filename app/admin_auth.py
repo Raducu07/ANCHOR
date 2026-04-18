@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import secrets
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from typing import Any, Dict, Optional
 from fastapi import Header, HTTPException, Request
 from sqlalchemy import text
 
+from app.anchor_logging import get_hash_salt, sha256_hex
 from app.db import SessionLocal
 from app.rate_limit import enforce_admin_token
 
@@ -23,18 +25,9 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _sha256_hex(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-
 def _hash_with_salt(value: str, salt: str) -> str:
     # metadata hashing only (ip/ua); not a secret
-    return _sha256_hex(f"{salt}:{value}")
-
-
-def _get_hash_salt() -> str:
-    # Used only for hashing IP/UA for audit metadata
-    return (os.getenv("ANCHOR_HASH_SALT") or os.getenv("ANCHOR_LOG_SALT") or "anchor-default-salt").strip()
+    return sha256_hex(f"{salt}:{value}")
 
 
 def _get_admin_pepper() -> str:
@@ -116,10 +109,10 @@ def write_admin_audit_event(
             db.execute(
                 text(
                     """
-                    INSERT INTO admin_audit_events
+                    INSERT INTO platform_admin_audit_events
                       (action, method, route, status_code, admin_token_id, request_id, ip_hash, ua_hash, meta)
                     VALUES
-                      (:action, :method, :route, :status_code, :admin_token_id, :request_id, :ip_hash, :ua_hash, :meta::jsonb)
+                      (:action, :method, :route, :status_code, :admin_token_id, :request_id, :ip_hash, :ua_hash, CAST(:meta AS jsonb))
                     """
                 ),
                 {
@@ -131,7 +124,7 @@ def write_admin_audit_event(
                     "request_id": request_id,
                     "ip_hash": ip_hash,
                     "ua_hash": ua_hash,
-                    "meta": meta,
+                    "meta": json.dumps(meta, separators=(",", ":"), ensure_ascii=False),
                 },
             )
             db.commit()
@@ -146,7 +139,7 @@ def write_admin_audit_event(
 
 def hash_admin_token(token_plaintext: str) -> str:
     pepper = _get_admin_pepper()
-    return _sha256_hex(f"{pepper}:{token_plaintext}")
+    return sha256_hex(f"{pepper}:{token_plaintext}")
 
 
 def generate_admin_token_plaintext() -> str:
@@ -232,7 +225,7 @@ def require_admin(
     token = _extract_admin_token(x_anchor_admin_token, authorization)
 
     # Hash IP/UA for metadata-only audit
-    salt = _get_hash_salt()
+    salt = get_hash_salt()
     ip = (request.client.host if request.client else "") or ""
     ua = (request.headers.get("user-agent") or "")[:512]
     ip_hash = _hash_with_salt(ip, salt) if ip else None

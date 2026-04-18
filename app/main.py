@@ -1,15 +1,12 @@
 # app/main.py
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
 import uuid
-import hashlib
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -20,6 +17,12 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from sqlalchemy import text
 
+from app.anchor_logging import ensure_logging_configured, get_app_env, hash_with_salt, log_event, utc_iso
+from app.admin_audit import router as admin_audit_router
+from app.admin_intake import router as admin_intake_router
+from app.admin_ops import router as admin_ops_router
+from app.admin_tokens import router as admin_tokens_router
+from app.public_intake import router as public_intake_router
 from app.db import db_ping, SessionLocal
 from app.migrate import run_migrations
 from app.rate_limit import enforce_rate_limit
@@ -43,87 +46,7 @@ from app.portal_me import router as portal_me_router
 from app.portal_assist import router as portal_assist_router
 from app.portal_intelligence import router as portal_intelligence_router
 
-from app.admin_tokens import router as admin_tokens_router
-from app.admin_audit import router as admin_audit_router
-from app.admin_ops import router as admin_ops_router
-
-
-# ============================================================
-# Structured JSON logging (metadata-only)
-# ============================================================
-
-logger = logging.getLogger("anchor")
-logger.propagate = False
-
-
-def _coerce_log_level(value: str) -> int:
-    v = (value or "INFO").strip()
-    if v.isdigit():
-        return int(v)
-    lvl = getattr(logging, v.upper(), None)
-    return int(lvl) if isinstance(lvl, int) else logging.INFO
-
-
-def _json_dumps(obj: Dict[str, Any]) -> str:
-    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
-
-
-def _utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def get_app_env() -> str:
-    return (os.getenv("APP_ENV") or os.getenv("ENV") or "dev").strip().lower() or "dev"
-
-
-def _get_service_name() -> str:
-    return (os.getenv("SERVICE_NAME") or os.getenv("APP_NAME") or "anchor").strip() or "anchor"
-
-
-def _get_app_version() -> Optional[str]:
-    v = (os.getenv("APP_VERSION") or os.getenv("GIT_SHA") or os.getenv("BUILD_ID") or "").strip()
-    return v or None
-
-
-def _get_hash_salt() -> str:
-    # Used for hashing IP/UA in logs. Not a secret, but should be stable.
-    return (os.getenv("ANCHOR_HASH_SALT") or os.getenv("ANCHOR_LOG_SALT") or "anchor-default-salt").strip()
-
-
-def _sha256_hex(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-
-def _hash_with_salt(value: Optional[str]) -> Optional[str]:
-    if not value:
-        return None
-    salt = _get_hash_salt()
-    return _sha256_hex(f"{salt}:{value}")
-
-
-def log_event(level: int, event: str, **fields: Any) -> None:
-    payload: Dict[str, Any] = {
-        "ts_utc": _utc_iso(),
-        "service": _get_service_name(),
-        "env": get_app_env(),
-        "version": _get_app_version(),
-        "event": event,
-        **fields,
-    }
-    try:
-        logger.log(level, _json_dumps(payload))
-    except Exception:
-        # Never fail request flow due to logging
-        pass
-
-
-if not logger.handlers:
-    level = _coerce_log_level(os.getenv("LOG_LEVEL", "INFO"))
-    handler = logging.StreamHandler()
-    handler.setLevel(level)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    logger.addHandler(handler)
-    logger.setLevel(level)
+ensure_logging_configured()
 
 
 # ============================================================
@@ -255,10 +178,13 @@ app.include_router(portal_dashboard_router)
 app.include_router(portal_me_router)
 app.include_router(portal_assist_router)
 app.include_router(portal_intelligence_router)
+app.include_router(public_intake_router)
 
 # Routers (platform admin)
 app.include_router(admin_tokens_router)
 app.include_router(admin_audit_router)
+app.include_router(admin_ops_router)
+app.include_router(admin_intake_router)
 
 
 # ============================================================
@@ -324,8 +250,8 @@ async def request_logging_middleware(request: Request, call_next):
         ua = None
 
     # Hash once, store on request.state for consistent reuse
-    ip_hash = _hash_with_salt(ip)
-    ua_hash = _hash_with_salt(ua)
+    ip_hash = hash_with_salt(ip)
+    ua_hash = hash_with_salt(ua)
     request.state.ip_hash = ip_hash
     request.state.ua_hash = ua_hash
 
@@ -489,7 +415,7 @@ def version():
         "env": get_app_env(),
         "git_sha": os.getenv("GIT_SHA", None),
         "build": os.getenv("BUILD_ID", None),
-        "now_utc": _utc_iso(),
+        "now_utc": utc_iso(),
     }
 
 
