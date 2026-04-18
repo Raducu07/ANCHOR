@@ -84,6 +84,72 @@ def _chat_events_query(category: Optional[str], limit: int) -> tuple[str, Dict[s
     )
 
 
+def _requests_query(intake_type: Literal["demo", "start", "all"], status: Optional[str], limit: int) -> tuple[str, Dict[str, Any]]:
+    normalized_status = (status or "").strip() or None
+    params: Dict[str, Any] = {"limit": limit}
+
+    if intake_type == "demo":
+        base_sql = """
+            SELECT
+              'demo' AS kind,
+              id, created_at, status, clinic_name, full_name, work_email, role,
+              current_ai_use, primary_interest, biggest_concern, clinic_size, phone,
+              message, consent, source_page, utm_source, utm_medium, utm_campaign, notes
+            FROM demo_requests
+        """
+    elif intake_type == "start":
+        base_sql = """
+            SELECT
+              'start' AS kind,
+              id, created_at, status, clinic_name, full_name, work_email, role,
+              current_ai_use, preferred_plan, rollout_timing, clinic_size, site_count,
+              phone, message, consent, source_page, utm_source, utm_medium, utm_campaign, notes
+            FROM start_requests
+        """
+    else:
+        base_sql = """
+            SELECT *
+            FROM (
+              SELECT
+                'demo' AS kind,
+                id, created_at, status, clinic_name, full_name, work_email, role,
+                current_ai_use, primary_interest AS interest_or_plan, biggest_concern AS concern_or_timing,
+                clinic_size, NULL::integer AS site_count, phone, message, consent,
+                source_page, utm_source, utm_medium, utm_campaign, notes
+              FROM demo_requests
+              UNION ALL
+              SELECT
+                'start' AS kind,
+                id, created_at, status, clinic_name, full_name, work_email, role,
+                current_ai_use, preferred_plan AS interest_or_plan, rollout_timing AS concern_or_timing,
+                clinic_size, site_count, phone, message, consent,
+                source_page, utm_source, utm_medium, utm_campaign, notes
+              FROM start_requests
+            ) items
+        """
+
+    if normalized_status is not None:
+        params["status"] = normalized_status
+        return (
+            base_sql
+            + """
+            WHERE status = :status
+            ORDER BY created_at DESC
+            LIMIT :limit
+            """,
+            params,
+        )
+
+    return (
+        base_sql
+        + """
+        ORDER BY created_at DESC
+        LIMIT :limit
+        """,
+        params,
+    )
+
+
 @router.get("/summary")
 def admin_intake_summary(
     request: Request,
@@ -173,77 +239,19 @@ def admin_list_intake_requests(
     limit: int = Query(default=50, ge=1, le=200),
     ctx: AdminContext = Depends(require_admin),
 ) -> Dict[str, Any]:
+    sql_text, params = _requests_query(intake_type, status, limit)
+
     try:
         with SessionLocal() as db:
-            if intake_type == "demo":
-                rows = db.execute(
-                    text(
-                        """
-                        SELECT
-                          'demo' AS kind,
-                          id, created_at, status, clinic_name, full_name, work_email, role,
-                          current_ai_use, primary_interest, biggest_concern, clinic_size, phone,
-                          message, consent, source_page, utm_source, utm_medium, utm_campaign, notes
-                        FROM demo_requests
-                        WHERE (:status IS NULL OR status = :status)
-                        ORDER BY created_at DESC
-                        LIMIT :limit
-                        """
-                    ),
-                    {"status": status, "limit": limit},
-                ).mappings().all()
-            elif intake_type == "start":
-                rows = db.execute(
-                    text(
-                        """
-                        SELECT
-                          'start' AS kind,
-                          id, created_at, status, clinic_name, full_name, work_email, role,
-                          current_ai_use, preferred_plan, rollout_timing, clinic_size, site_count,
-                          phone, message, consent, source_page, utm_source, utm_medium, utm_campaign, notes
-                        FROM start_requests
-                        WHERE (:status IS NULL OR status = :status)
-                        ORDER BY created_at DESC
-                        LIMIT :limit
-                        """
-                    ),
-                    {"status": status, "limit": limit},
-                ).mappings().all()
-            else:
-                rows = db.execute(
-                    text(
-                        """
-                        SELECT *
-                        FROM (
-                          SELECT
-                            'demo' AS kind,
-                            id, created_at, status, clinic_name, full_name, work_email, role,
-                            current_ai_use, primary_interest AS interest_or_plan, biggest_concern AS concern_or_timing,
-                            clinic_size, NULL::integer AS site_count, phone, message, consent,
-                            source_page, utm_source, utm_medium, utm_campaign, notes
-                          FROM demo_requests
-                          UNION ALL
-                          SELECT
-                            'start' AS kind,
-                            id, created_at, status, clinic_name, full_name, work_email, role,
-                            current_ai_use, preferred_plan AS interest_or_plan, rollout_timing AS concern_or_timing,
-                            clinic_size, site_count, phone, message, consent,
-                            source_page, utm_source, utm_medium, utm_campaign, notes
-                          FROM start_requests
-                        ) items
-                        WHERE (:status IS NULL OR status = :status)
-                        ORDER BY created_at DESC
-                        LIMIT :limit
-                        """
-                    ),
-                    {"status": status, "limit": limit},
-                ).mappings().all()
+            rows = db.execute(text(sql_text), params).mappings().all()
     except Exception as exc:
         log_event(
             logging.ERROR,
             "admin.intake.requests_failed",
             request_id=ctx.request_id,
             intake_type=intake_type,
+            status=((status or "").strip() or None),
+            sql_variant=("filtered" if params.get("status") is not None else "unfiltered"),
             error_type=type(exc).__name__,
             error=str(exc)[:240],
         )
