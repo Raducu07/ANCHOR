@@ -49,6 +49,41 @@ def _validate_status(kind: str, status: str) -> None:
         raise HTTPException(status_code=422, detail=f"invalid_status_for_{kind}")
 
 
+def _chat_events_query(category: Optional[str], limit: int) -> tuple[str, Dict[str, Any]]:
+    base_sql = """
+        SELECT
+          id AS event_id, created_at, session_id, question_text, question_text_redacted,
+          question_category, matched_topic, answer_confidence, suggested_cta,
+          source_page, utm_source, utm_medium, utm_campaign,
+          contains_email, contains_phone
+        FROM public_site_chat_events
+    """
+
+    normalized_category = (category or "").strip() or None
+    params: Dict[str, Any] = {"limit": limit}
+
+    if normalized_category is not None:
+        params["category"] = normalized_category
+        return (
+            base_sql
+            + """
+        WHERE question_category = :category
+        ORDER BY created_at DESC
+        LIMIT :limit
+        """,
+            params,
+        )
+
+    return (
+        base_sql
+        + """
+        ORDER BY created_at DESC
+        LIMIT :limit
+        """,
+        params,
+    )
+
+
 @router.get("/summary")
 def admin_intake_summary(
     request: Request,
@@ -248,29 +283,19 @@ def admin_list_chat_events(
     category: Optional[str] = Query(default=None),
     ctx: AdminContext = Depends(require_admin),
 ) -> Dict[str, Any]:
+    sql_text, params = _chat_events_query(category, limit)
+
     try:
         with SessionLocal() as db:
-            rows = db.execute(
-                text(
-                    """
-                    SELECT
-                      id AS event_id, created_at, session_id, question_text, question_text_redacted,
-                      question_category, matched_topic, answer_confidence, suggested_cta,
-                      source_page, utm_source, utm_medium, utm_campaign,
-                      contains_email, contains_phone
-                    FROM public_site_chat_events
-                    WHERE (:category IS NULL OR question_category = :category)
-                    ORDER BY created_at DESC
-                    LIMIT :limit
-                    """
-                ),
-                {"limit": limit, "category": category},
-            ).mappings().all()
+            rows = db.execute(text(sql_text), params).mappings().all()
     except Exception as exc:
         log_event(
             logging.ERROR,
             "admin.intake.chat_events_failed",
             request_id=ctx.request_id,
+            limit=limit,
+            category=((category or "").strip() or None),
+            sql_variant=("filtered" if params.get("category") is not None else "unfiltered"),
             error_type=type(exc).__name__,
             error=str(exc)[:240],
         )
