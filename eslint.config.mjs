@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Nested Claude worktrees include their own Next.js builds and source trees.
+    // Lint each worktree from inside its own directory; never let a parent-repo
+    // lint pass crawl into them.
+    ".claude/**",
   ]),
 ]);
 

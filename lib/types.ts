@@ -43,6 +43,7 @@ export type DashboardResponse = {
     risk_grade?: string;
     reason_code?: string;
     pii_detected?: boolean;
+    created_at?: string;
     created_at_utc?: string;
   }>;
   latest_receipt?: {
@@ -83,7 +84,9 @@ export type GovernanceEventSummary = {
   risk_grade?: string;
   reason_code?: string;
   created_at?: string;
+  created_at_utc?: string;
   pii_detected?: boolean;
+  pii_action?: string;
 };
 
 export type GovernanceEventListEnvelope = {
@@ -98,6 +101,8 @@ export type ReceiptPayload = {
   decision?: string;
   risk_grade?: string;
   reason_code?: string;
+  created_at?: string;
+  created_at_utc?: string;
   governance_score?: number;
   policy_version?: number;
   neutrality_version?: string;
