@@ -56,13 +56,31 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
 
   let response: Response;
   try {
+    const requestHeaders = new Headers({
+      "Content-Type": "application/json",
+    });
+
+    if (auth) {
+      for (const [key, value] of Object.entries(getAuthHeaders())) {
+        requestHeaders.set(key, value);
+      }
+    }
+
+    if (headers instanceof Headers) {
+      headers.forEach((value, key) => requestHeaders.set(key, value));
+    } else if (Array.isArray(headers)) {
+      headers.forEach(([key, value]) => requestHeaders.set(key, value));
+    } else if (headers) {
+      for (const [key, value] of Object.entries(headers)) {
+        if (typeof value !== "undefined") {
+          requestHeaders.set(key, String(value));
+        }
+      }
+    }
+
     response = await fetch(buildApiUrl(path), {
       ...rest,
-      headers: {
-        "Content-Type": "application/json",
-        ...(auth ? getAuthHeaders() : {}),
-        ...(headers ?? {}),
-      },
+      headers: requestHeaders,
     });
   } catch {
     throw new ApiError(

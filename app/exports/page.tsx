@@ -37,13 +37,17 @@ export default function ExportsPage() {
         from: new Date(from).toISOString(),
         to: new Date(to).toISOString(),
       });
+      const headers = new Headers({
+        Accept: "text/csv",
+      });
+
+      for (const [key, value] of Object.entries(getAuthHeaders())) {
+        headers.set(key, value);
+      }
 
       const response = await fetch(buildApiUrl(`/v1/portal/export.csv?${query.toString()}`), {
         method: "GET",
-        headers: {
-          ...getAuthHeaders(),
-          Accept: "text/csv",
-        },
+        headers,
       });
 
       if (!response.ok) {
