@@ -1,5 +1,10 @@
-import { redirect } from "next/navigation";
+import { AppShell } from "@/components/shell/AppShell";
+import { WorkspaceSurface } from "@/components/workspace/WorkspaceSurface";
 
-export default function WorkspaceRedirectPage() {
-  redirect("/workspace-live");
+export default function WorkspacePage() {
+  return (
+    <AppShell>
+      <WorkspaceSurface />
+    </AppShell>
+  );
 }
