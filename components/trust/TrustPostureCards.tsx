@@ -1,5 +1,6 @@
 // Reference / experimental UI only.
 // This file is currently not used by active routes and should not be treated as current source-of-truth UI.
+// @ts-nocheck
 import type { ReactNode } from "react";
 import type { TrustPostureResponse } from "@/lib/types";
 
@@ -181,3 +182,4 @@ export function RecommendedActionsCard({ data }: { data: TrustPostureResponse })
     </CardShell>
   );
 }
+

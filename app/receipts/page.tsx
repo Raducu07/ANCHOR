@@ -1,9 +1,16 @@
 import { AppShell } from "@/components/shell/AppShell";
 import { ReceiptsPage } from "@/components/receipts/ReceiptsPage";
 
-export default async function ReceiptsRoute(props: PageProps<"/receipts">) {
-  const searchParams = await props.searchParams;
-  const requestId = typeof searchParams.request_id === "string" ? searchParams.request_id : "";
+type ReceiptsRouteProps = {
+  searchParams: Promise<{
+    request_id?: string | string[];
+  }>;
+};
+
+export default async function ReceiptsRoute({ searchParams }: ReceiptsRouteProps) {
+  const params = await searchParams;
+  const requestIdParam = params.request_id;
+  const requestId = typeof requestIdParam === "string" ? requestIdParam : "";
 
   return (
     <AppShell>
