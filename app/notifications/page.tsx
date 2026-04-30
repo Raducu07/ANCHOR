@@ -39,7 +39,7 @@ export default function NotificationsPage() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Current notification posture"
               description="What users can realistically expect right now."
@@ -55,7 +55,7 @@ export default function NotificationsPage() {
             </div>
           </Card>
 
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Why this page exists"
               description="A truthful placeholder is better than a dead control."
@@ -73,7 +73,7 @@ export default function NotificationsPage() {
           </Card>
         </div>
 
-        <Card>
+        <Card variant="native">
           <SectionTitle
             title="Where to check instead"
             description="The most useful current destinations when you are looking for recent activity or follow-up work."

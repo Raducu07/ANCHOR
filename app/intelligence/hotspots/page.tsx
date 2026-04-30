@@ -111,17 +111,17 @@ export default function IntelligenceHotspotsPage() {
         {loading ? (
           <div className="grid gap-4">
             {Array.from({ length: 4 }).map((_, index) => (
-              <Card key={index} className="h-40 animate-pulse bg-slate-100" />
+              <Card variant="native" key={index} className="h-40 animate-pulse bg-slate-100" />
             ))}
           </div>
         ) : error ? (
-          <Card>
+          <Card variant="native">
             <p className="text-sm font-medium text-rose-700">Hotspot analysis unavailable</p>
             <p className="mt-2 text-sm leading-6 text-slate-600">{error}</p>
           </Card>
         ) : (
           <>
-            <Card>
+            <Card variant="native">
               <SectionTitle
                 title="Current filter view"
                 description="A quick readout of the active analysis scope."
@@ -137,7 +137,7 @@ export default function IntelligenceHotspotsPage() {
             <div className="space-y-4">
               {data?.items.length ? (
                 data.items.map((item, index) => (
-                  <Card key={`${item.dimension}-${item.key}-${index}`}>
+                  <Card variant="native" key={`${item.dimension}-${item.key}-${index}`}>
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-3">
@@ -189,7 +189,7 @@ export default function IntelligenceHotspotsPage() {
                   </Card>
                 ))
               ) : (
-                <Card>
+                <Card variant="native">
                   <p className="text-sm font-medium text-slate-900">No hotspots were returned</p>
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
                     This can happen when there is not yet enough clinic activity, or when no

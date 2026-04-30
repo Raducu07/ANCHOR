@@ -88,7 +88,7 @@ export default function LearnCardsPage() {
 
         <div className="grid gap-4 xl:grid-cols-2">
           {cards.map((card) => (
-            <Card key={card.title}>
+            <Card variant="native" key={card.title}>
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-base font-semibold text-slate-900">{card.title}</h2>
                 <StatusBadge value={card.category} />

@@ -22,12 +22,12 @@ export default async function LearnCardPage({ params }: PageProps) {
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">{card.summary}</p>
         </div>
 
-        <Card>
+        <Card variant="native">
           <h2 className="text-lg font-semibold text-slate-900">Why this matters</h2>
           <p className="mt-3 text-sm leading-6 text-slate-600">{card.whyThisMatters}</p>
         </Card>
 
-        <Card>
+        <Card variant="native">
           <h2 className="text-lg font-semibold text-slate-900">Recommended reinforcement</h2>
           <ul className="mt-4 space-y-3 text-sm leading-6 text-slate-600">
             {card.actions.map((item) => (
@@ -39,7 +39,7 @@ export default async function LearnCardPage({ params }: PageProps) {
         </Card>
 
         <div className="grid gap-4 md:grid-cols-2">
-          <Card>
+          <Card variant="native">
             <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">
               Governance-first note
             </h3>
@@ -49,7 +49,7 @@ export default async function LearnCardPage({ params }: PageProps) {
             </p>
           </Card>
 
-          <Card>
+          <Card variant="native">
             <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">Next navigation</h3>
             <div className="mt-4 flex flex-col gap-3">
               <Link

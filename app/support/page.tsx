@@ -49,7 +49,7 @@ export default function SupportPage() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="What ANCHOR supports today"
               description="The strongest current product surfaces for real clinic use."
@@ -62,7 +62,7 @@ export default function SupportPage() {
             </ul>
           </Card>
 
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="What ANCHOR is not for"
               description="Clear boundaries help this support page stay truthful and commercially credible."
@@ -76,7 +76,7 @@ export default function SupportPage() {
           </Card>
         </div>
 
-        <Card>
+        <Card variant="native">
           <SectionTitle
             title="Get help from the right surface"
             description="Use the product area that best matches the question or task in front of you."
@@ -94,7 +94,7 @@ export default function SupportPage() {
         </Card>
 
         <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="How to get unstuck"
               description="Truthful guidance for the current product state."
@@ -117,7 +117,7 @@ export default function SupportPage() {
             </div>
           </Card>
 
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Support posture"
               description="What this page can honestly offer right now."
