@@ -39,7 +39,7 @@ export default function SettingsPage() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Account summary"
               description="The current signed-in session and role context for this workspace."
@@ -51,7 +51,7 @@ export default function SettingsPage() {
             </dl>
           </Card>
 
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Workspace context"
               description="Clinic-scoped access remains central to ANCHOR’s operating model."
@@ -65,7 +65,7 @@ export default function SettingsPage() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Related admin surfaces"
               description="Go directly to the adjacent product areas that matter most from Settings today."
@@ -84,7 +84,7 @@ export default function SettingsPage() {
             </div>
           </Card>
 
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Current settings scope"
               description="What this page can truthfully represent in the current product."
@@ -109,7 +109,7 @@ export default function SettingsPage() {
           </Card>
         </div>
 
-        <Card>
+        <Card variant="native">
           <SectionTitle
             title="Future preferences"
             description="Intentionally labeled as future-facing so this surface stays honest."

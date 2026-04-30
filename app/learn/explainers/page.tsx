@@ -66,7 +66,7 @@ export default function LearnExplainersPage() {
 
         <div className="grid gap-4 xl:grid-cols-2">
           {explainers.map((item) => (
-            <Card key={item.title}>
+            <Card variant="native" key={item.title}>
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-base font-semibold text-slate-900">{item.title}</h2>
                 <StatusBadge value={item.label} />
@@ -88,7 +88,7 @@ export default function LearnExplainersPage() {
           ))}
         </div>
 
-        <Card>
+        <Card variant="native">
           <div>
             <h2 className="text-base font-semibold text-slate-900">Why this matters</h2>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">

@@ -94,7 +94,7 @@ export default function PrivacyPolicyPage() {
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {postureItems.map((item) => (
-            <Card key={item.label}>
+            <Card variant="native" key={item.label}>
               <div className="flex items-start justify-between gap-3">
                 <p className="text-sm font-medium text-slate-500">{item.label}</p>
                 <StatusBadge value={item.value} />
@@ -105,7 +105,7 @@ export default function PrivacyPolicyPage() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Current platform posture"
               description="What this clinic-facing page should communicate clearly today."
@@ -134,7 +134,7 @@ export default function PrivacyPolicyPage() {
             </dl>
           </Card>
 
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Quick links"
               description="Jump directly into the strongest current evidence surfaces."
@@ -165,7 +165,7 @@ export default function PrivacyPolicyPage() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-2">
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Operational guarantees"
               description="The core promises this surface should reinforce for clinic users and leadership."
@@ -180,7 +180,7 @@ export default function PrivacyPolicyPage() {
             </div>
           </Card>
 
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Admin surface readiness"
             description="What is available now versus what may be added in a future update."
@@ -204,7 +204,7 @@ export default function PrivacyPolicyPage() {
           </Card>
         </div>
 
-        <Card>
+        <Card variant="native">
           <SectionTitle
             title="Implementation note"
             description="Why this page is intentionally restrained in the current pass."

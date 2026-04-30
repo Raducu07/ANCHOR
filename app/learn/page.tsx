@@ -50,7 +50,7 @@ export default function LearnHomePage() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Why Learn exists"
               description="The role of Learn inside the ANCHOR product model."
@@ -67,7 +67,7 @@ export default function LearnHomePage() {
             </div>
           </Card>
 
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Quick links"
               description="Move into the first Learn surfaces."
@@ -89,7 +89,7 @@ export default function LearnHomePage() {
 
         <div className="grid gap-4 xl:grid-cols-3">
           {featuredCards.map((item) => (
-            <Card key={item.title}>
+            <Card variant="native" key={item.title}>
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-base font-semibold text-slate-900">{item.title}</h2>
                 <StatusBadge value={item.tag} />
@@ -108,7 +108,7 @@ export default function LearnHomePage() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="What Learn should help staff understand"
               description="Core learning outcomes for safer day-to-day AI use."
@@ -122,7 +122,7 @@ export default function LearnHomePage() {
             </ul>
           </Card>
 
-          <Card>
+          <Card variant="native">
             <SectionTitle
               title="Explainer themes"
               description="The first common governance questions Learn should answer clearly."
@@ -135,7 +135,7 @@ export default function LearnHomePage() {
           </Card>
         </div>
 
-        <Card>
+        <Card variant="native">
           <SectionTitle
             title="Why Learn is intentionally focused"
             description="Why this Learn surface is intentionally disciplined."

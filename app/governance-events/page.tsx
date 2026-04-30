@@ -148,7 +148,7 @@ export default function GovernanceEventsPage() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
-          <Card>
+          <Card variant="native">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <h2 className="text-base font-semibold text-slate-900">Current intelligence context</h2>
@@ -217,7 +217,7 @@ export default function GovernanceEventsPage() {
             )}
           </Card>
 
-          <Card>
+          <Card variant="native">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <h2 className="text-base font-semibold text-slate-900">Recommended next action</h2>
@@ -268,7 +268,7 @@ export default function GovernanceEventsPage() {
           </Card>
         </div>
 
-        <Card>
+        <Card variant="native">
           <div className="flex flex-col gap-2 border-b border-slate-100 pb-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h2 className="text-base font-semibold text-slate-900">Operational review queue</h2>
@@ -405,7 +405,7 @@ export default function GovernanceEventsPage() {
           )}
         </Card>
 
-        <Card>
+        <Card variant="native">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h2 className="text-base font-semibold text-slate-900">Learning tie-in</h2>
@@ -438,7 +438,7 @@ function MetricCard({
   helper: string;
 }) {
   return (
-    <Card>
+    <Card variant="native">
       <p className="text-sm font-medium text-slate-500">{label}</p>
       <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">{value}</p>
       <p className="mt-2 text-sm leading-6 text-slate-600">{helper}</p>

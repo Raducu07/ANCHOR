@@ -129,11 +129,11 @@ export default function IntelligencePage() {
         {loading ? (
           <div className="grid gap-4 xl:grid-cols-3">
             {Array.from({ length: 3 }).map((_, index) => (
-              <Card key={index} className="h-44 animate-pulse bg-slate-100" />
+              <Card variant="native" key={index} className="h-44 animate-pulse bg-slate-100" />
             ))}
           </div>
         ) : error ? (
-          <Card>
+          <Card variant="native">
             <p className="text-sm font-medium text-rose-700">Intelligence unavailable</p>
             <p className="mt-2 text-sm leading-6 text-slate-600">{error}</p>
           </Card>
@@ -163,7 +163,7 @@ export default function IntelligencePage() {
             </div>
 
             <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-              <Card>
+              <Card variant="native">
                 <SectionTitle
                   title="Headline hotspot"
                   description="The strongest currently surfaced governance concentration signal."
@@ -204,7 +204,7 @@ export default function IntelligencePage() {
                 )}
               </Card>
 
-              <Card>
+              <Card variant="native">
                 <SectionTitle
                   title="Recommended next action"
                   description="A deterministic action derived from the current hotspot profile."
@@ -249,7 +249,7 @@ export default function IntelligencePage() {
             </div>
 
             <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
-              <Card>
+              <Card variant="native">
                 <SectionTitle
                   title="Signal summary"
                   description="A concise readout of current intelligence-level concentration indicators."
@@ -262,7 +262,7 @@ export default function IntelligencePage() {
                 </dl>
               </Card>
 
-              <Card>
+              <Card variant="native">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <SectionTitle
@@ -371,7 +371,7 @@ function MetricCard({
   helper: string;
 }) {
   return (
-    <Card>
+    <Card variant="native">
       <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
       <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">{value}</p>
       <p className="mt-2 text-sm leading-6 text-slate-600">{helper}</p>

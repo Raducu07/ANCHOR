@@ -84,7 +84,7 @@ export default function ExportsPage() {
           </p>
         </div>
 
-        <Card>
+        <Card variant="native">
           <div className="grid gap-4 md:grid-cols-2">
             <Input label="From" type="datetime-local" value={from} onChange={(event) => setFrom(event.target.value)} />
             <Input label="To" type="datetime-local" value={to} onChange={(event) => setTo(event.target.value)} />
