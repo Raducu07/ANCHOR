@@ -5,6 +5,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/shell/AppShell";
 import { getTrustProfile } from "@/lib/trust";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRecord = Record<string, any>;
 
 function sanitizeClinicName(value: unknown, fallback = "Your clinic") {
@@ -113,8 +114,8 @@ export default function TrustProfilePage() {
       setError(null);
       const response = await getTrustProfile();
       setData((response as AnyRecord) ?? null);
-    } catch (err: any) {
-      setError(err?.message || "Failed to load trust profile.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load trust profile.");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -618,13 +619,13 @@ export default function TrustProfilePage() {
                 {artifactCards.map((card) => (
                   <div
                     key={card.title}
-                    className="print-surface print-avoid-break rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+                    className="print-surface print-avoid-break rounded-2xl border border-slate-200 bg-white p-6 shadow-sm flex h-full flex-col"
                   >
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="space-y-1.5">
                       <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
                         {card.subtitle}
                       </div>
-                      <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-700">
+                      <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-700 whitespace-nowrap">
                         {card.audience}
                       </span>
                     </div>
@@ -636,7 +637,7 @@ export default function TrustProfilePage() {
                       {card.body}
                     </p>
 
-                    <div className="no-print mt-5">
+                    <div className="no-print mt-auto pt-5">
                       {card.primary ? (
                         <span className="inline-flex rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-500">
                           {card.cta}
@@ -675,13 +676,13 @@ export default function TrustProfilePage() {
                   {bundleCards.map((bundle) => (
                     <div
                       key={bundle.title}
-                      className="rounded-2xl border border-slate-200 bg-slate-50 p-6"
+                      className="rounded-2xl border border-slate-200 bg-slate-50 p-6 flex h-full flex-col"
                     >
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="space-y-1.5">
                         <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
                           Bundle
                         </p>
-                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700">
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 whitespace-nowrap">
                           {bundle.audience}
                         </span>
                       </div>
@@ -690,36 +691,38 @@ export default function TrustProfilePage() {
                         {bundle.title}
                       </h3>
 
-                      <p className="mt-3 text-sm leading-6 text-slate-700">
-                        {bundle.body}
-                      </p>
-
-                      <div className="mt-4">
-                        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                          Included artifacts
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {bundle.artifacts.map((artifact) => (
-                            <span
-                              key={artifact}
-                              className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700"
-                            >
-                              {artifact}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="mt-4">
-                        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                          When to use
-                        </div>
-                        <p className="mt-2 text-sm leading-6 text-slate-700">
-                          {bundle.whenToUse}
+                      <div className="mt-3 flex flex-1 flex-col gap-4">
+                        <p className="text-sm leading-6 text-slate-700">
+                          {bundle.body}
                         </p>
+
+                        <div>
+                          <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                            Included artifacts
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {bundle.artifacts.map((artifact) => (
+                              <span
+                                key={artifact}
+                                className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700"
+                              >
+                                {artifact}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                            When to use
+                          </div>
+                          <p className="mt-2 text-sm leading-6 text-slate-700">
+                            {bundle.whenToUse}
+                          </p>
+                        </div>
                       </div>
 
-                      <div className="no-print mt-5 flex flex-wrap gap-3">
+                      <div className="no-print mt-auto pt-6 flex flex-col items-start gap-3">
                         {bundle.actions.map((action) =>
                           action.primary ? (
                             <Link
@@ -893,3 +896,7 @@ export default function TrustProfilePage() {
     </AppShell>
   );
 }
+
+
+
+

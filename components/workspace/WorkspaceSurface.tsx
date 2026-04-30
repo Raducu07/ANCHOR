@@ -51,12 +51,10 @@ const DEFAULT_WORKFLOW_ORIGIN: WorkspaceWorkflowOrigin = "direct";
 const DEFAULT_ROLE = WORKSPACE_ROLE_OPTIONS[0];
 const DEFAULT_MODE: WorkspaceMode = "Internal governance review";
 const DEFAULT_INSTRUCTION = WORKSPACE_INSTRUCTION_PRESETS[DEFAULT_MODE];
-const WORKSPACE_PRIMARY_CTA_CLASS =
-  "font-semibold shadow-[0_26px_54px_rgba(15,23,42,0.2)] hover:shadow-[0_30px_60px_rgba(15,23,42,0.24)]";
 const WORKSPACE_SECONDARY_ACTION_CLASS =
   "border-slate-400 bg-white text-slate-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] hover:border-slate-500 hover:bg-slate-50";
 const WORKSPACE_ACTIVE_STEP_CLASS =
-  "border-slate-700 bg-slate-800 text-white shadow-[0_12px_24px_rgba(15,23,42,0.08)]";
+  "border-slate-400 bg-slate-100 text-slate-900";
 const DEFAULT_ACTION_MESSAGE =
   "Complete setup, then run through ANCHOR to create the governed result, receipt linkage, and human-review path.";
 const RERUN_REQUIRED_ACTION_MESSAGE =
@@ -1142,12 +1140,12 @@ export function WorkspaceSurface() {
                               : "border-slate-200 bg-white text-slate-500",
                         ].join(" ")}
                       >
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-col gap-1.5">
                           <span
                             className={[
                               "flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold",
                               isCurrent
-                                ? "bg-white/15 text-white"
+                                ? "bg-white text-slate-900"
                                 : isComplete
                                   ? "bg-emerald-100 text-emerald-700"
                                   : "bg-slate-50 text-slate-500",
@@ -1155,7 +1153,7 @@ export function WorkspaceSurface() {
                           >
                             {String(index + 1).padStart(2, "0")}
                           </span>
-                          <span className="font-medium">{step.label}</span>
+                          <span className="font-medium leading-snug">{step.label}</span>
                         </div>
                       </div>
                     );
@@ -1182,7 +1180,7 @@ export function WorkspaceSurface() {
                     onClick={() => void handleRun()}
                     loading={running}
                     disabled={running || (!sourceBundleText && !draftText.trim())}
-                    className={["rounded-md px-6 py-2.5", WORKSPACE_PRIMARY_CTA_CLASS].join(" ")}
+                    className="disabled:opacity-80"
                   >
                     Run through ANCHOR
                   </Button>
