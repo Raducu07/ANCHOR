@@ -12,7 +12,7 @@ import {
 
 export function PublicWebsite() {
   return (
-    <MarketingShell primaryCtaHref="/#workflow" primaryCtaLabel="See the workflow">
+    <MarketingShell primaryCtaHref="/demo" primaryCtaLabel="Request a walkthrough">
       <section className="relative overflow-hidden px-4 pb-24 pt-32 sm:px-6 lg:px-8">
         <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:16px_16px] opacity-30" />
         <div className="relative z-10 mx-auto max-w-7xl">
@@ -25,11 +25,11 @@ export function PublicWebsite() {
             </p>
 
             <div className="mt-10 flex flex-col justify-center gap-4 sm:flex-row">
-              <Link href="/#workflow" className={marketingPrimaryButtonClass("px-8 py-3.5 text-base")}>
-                See the governed workflow
+              <Link href="/demo" className={marketingPrimaryButtonClass("px-8 py-3.5 text-base")}>
+                Request a walkthrough
               </Link>
-              <Link href="/#platform" className={marketingSecondaryButtonClass("px-8 py-3.5 text-base")}>
-                View platform
+              <Link href="/start" className={marketingSecondaryButtonClass("px-8 py-3.5 text-base")}>
+                Start with ANCHOR
               </Link>
             </div>
           </div>
