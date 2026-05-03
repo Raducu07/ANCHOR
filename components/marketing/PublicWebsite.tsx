@@ -32,6 +32,15 @@ export function PublicWebsite() {
                 Start with ANCHOR
               </Link>
             </div>
+
+            <div className="mt-6">
+              <Link
+                href="/plans"
+                className="text-sm font-medium text-slate-600 underline underline-offset-4 transition-colors hover:text-slate-900"
+              >
+                Compare plans
+              </Link>
+            </div>
           </div>
 
           <BrowserFrame

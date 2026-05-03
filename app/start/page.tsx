@@ -55,6 +55,9 @@ export default function StartPage() {
                 <Link href="/demo" className={marketingSecondaryButtonClass("px-6 py-3 text-sm")}>
                   Request a walkthrough
                 </Link>
+                <Link href="/plans" className={marketingSecondaryButtonClass("px-6 py-3 text-sm")}>
+                  Compare plans
+                </Link>
               </div>
             </Card>
           </div>
