@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { AnchorAssistant } from "@/components/marketing/AnchorAssistant";
 
 export function MarketingShell({
   children,
@@ -51,6 +52,8 @@ export function MarketingShell({
           <div className="text-xl font-bold tracking-tight text-slate-950">ANCHOR</div>
           <div className="text-sm text-slate-500">Copyright 2026 ANCHOR Veterinary Governance. All rights reserved.</div></div>
       </footer>
+
+      <AnchorAssistant />
     </main>
   );
 }
