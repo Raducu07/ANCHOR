@@ -134,7 +134,7 @@ export async function POST(request: Request) {
 
     if (!isJsonRequest) {
       const redirectResponse = NextResponse.redirect(
-        new URL("/ops/admin-login?verified=1", request.url),
+        new URL("/ops/intake", request.url),
         { status: 303 }
       );
       for (const cookie of response.cookies.getAll()) {
