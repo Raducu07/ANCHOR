@@ -42,7 +42,7 @@ export default function StartPage() {
             <Card className="rounded-[2rem] p-8">
               <h2 className="text-2xl font-semibold text-slate-900">Assisted onboarding path</h2>
               <p className="mt-4 text-sm leading-6 text-slate-600">
-                This is a production-minded onboarding entry point rather than a fake live checkout. Clinic details, admin creation,
+                This is a production-minded onboarding entry point rather than an automated checkout. Clinic details, admin creation,
                 plan selection, billing, confirmation, and first-use setup are framed here so the flow can later connect cleanly into
                 billing and activation tooling.
               </p>
