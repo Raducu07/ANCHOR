@@ -4,7 +4,7 @@ import { Card } from "@/components/ui/Card";
 
 const helpBlocks = [
   {
-    href: "/workspace-live",
+    href: "/workspace",
     title: "Workspace",
     description:
       "Use the Workspace when you need governed drafting flow, review settings, and receipt preview in one place.",

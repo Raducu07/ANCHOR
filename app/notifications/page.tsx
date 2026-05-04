@@ -19,7 +19,7 @@ const quickLinks = [
     description: "Check the current trust posture and adjacent clinic-facing trust surfaces.",
   },
   {
-    href: "/workspace-live",
+    href: "/workspace",
     title: "Workspace",
     description: "Return to governed drafting and receipt-aware workflow activity.",
   },
