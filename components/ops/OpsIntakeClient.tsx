@@ -32,7 +32,6 @@ type IntakeRecord = {
   utm_medium?: string | null;
   utm_campaign?: string | null;
   message?: string | null;
-  notes?: string | null;
   status?: string;
 };
 
@@ -47,6 +46,19 @@ type RequestFilters = {
   type: "all" | "demo" | "start";
   status: string;
 };
+
+const ALLOWED_DEMO_STATUSES = ["new", "contacted", "booked", "closed"] as const;
+const ALLOWED_START_STATUSES = ["new", "contacted", "qualified", "onboarding", "closed"] as const;
+
+function getAllowedStatusesForKind(kind: "demo" | "start"): readonly string[] {
+  return kind === "start" ? ALLOWED_START_STATUSES : ALLOWED_DEMO_STATUSES;
+}
+
+function buildStatusOptions(kind: "demo" | "start", currentStatus: string): readonly string[] {
+  const allowed = getAllowedStatusesForKind(kind);
+  if (allowed.includes(currentStatus)) return allowed;
+  return [currentStatus, ...allowed];
+}
 
 function formatDate(value: string | undefined) {
   if (!value) return "-";
@@ -136,8 +148,8 @@ function extractErrorMessage(payload: unknown) {
   return null;
 }
 
-async function fetchOps<T>(path: string) {
-  const response = await fetch(path, { method: "GET" });
+async function fetchOps<T>(path: string, init: RequestInit = { method: "GET" }) {
+  const response = await fetch(path, init);
 
   const payload = (await response.json().catch(() => null)) as T | null;
   if (!response.ok) {
@@ -186,6 +198,9 @@ export function OpsIntakeClient() {
   const [requests, setRequests] = useState<IntakeRecord[]>([]);
   const [loggingOut, setLoggingOut] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [statusDrafts, setStatusDrafts] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [filters, setFilters] = useState<RequestFilters>({
     type: "all",
     status: "all",
@@ -262,6 +277,71 @@ export function OpsIntakeClient() {
     }
   }
 
+  async function saveStatus(record: IntakeRecord) {
+    const kind = getRecordKind(record);
+    const draft = (statusDrafts[record.id] ?? getRecordStatus(record)).trim();
+
+    if (draft.length < 2 || draft.length > 32) {
+      setError({ message: "Status must be between 2 and 32 characters." });
+      return;
+    }
+
+    if (draft === getRecordStatus(record)) {
+      setNotice("Status unchanged.");
+      return;
+    }
+
+    try {
+      setSavingId(record.id);
+      setError(null);
+      setNotice(null);
+
+      await fetchOps(`/api/ops/intake/request/${kind}/${encodeURIComponent(record.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: draft }),
+      });
+
+      setRequests((current) =>
+        current.map((row) => (row.id === record.id ? { ...row, status: draft } : row))
+      );
+      setStatusDrafts((current) => {
+        const next = { ...current };
+        delete next[record.id];
+        return next;
+      });
+      setNotice("Status updated.");
+    } catch (nextError) {
+      const opsError: OpsError =
+        nextError && typeof nextError === "object" && "message" in nextError
+          ? (nextError as OpsError)
+          : { message: "Unable to update the intake request status." };
+
+      if (opsError.unauthorized) {
+        router.replace("/ops/admin-login");
+        return;
+      }
+
+      const lowerMessage = opsError.message?.toLowerCase() ?? "";
+      const friendlyMessage =
+        lowerMessage.includes("invalid_status_for_start") ||
+        lowerMessage.includes("invalid_status_for_demo") ||
+        lowerMessage.includes("invalid status")
+          ? "That status is not valid for this request type."
+          : opsError.message || "Unable to update the intake request status.";
+
+      setStatusDrafts((current) => {
+        const next = { ...current };
+        delete next[record.id];
+        return next;
+      });
+
+      setError({ ...opsError, message: friendlyMessage });
+    } finally {
+      setSavingId(null);
+    }
+  }
+
   const summaryValues = {
     newDemo:
       getSummaryNumber(summary, [
@@ -298,10 +378,11 @@ export function OpsIntakeClient() {
           <div>
             <p className="text-sm font-bold uppercase tracking-[0.18em] text-slate-500">Internal operations</p>
             <h1 className="mt-2 text-4xl font-bold tracking-tight text-slate-950">
-              Ops intake <span className="text-slate-500">(read-only)</span>
+              Ops intake
             </h1>
             <p className="mt-3 max-w-3xl text-lg leading-8 text-slate-600">
-              Internal-only review of public demo and onboarding intake requests. This view is read-only.
+              Internal-only review of public demo and onboarding intake requests. Status updates only —
+              notes editing and assistant telemetry are not part of this view.
             </p>
           </div>
           <div className="flex gap-3">
@@ -318,6 +399,12 @@ export function OpsIntakeClient() {
           Internal operations view. Do not copy confidential clinical, client-identifiable, or
           patient-identifiable content into external systems.
         </Card>
+
+        {notice ? (
+          <Card className="rounded-[2rem] border-emerald-200 bg-emerald-50/80 p-4 text-sm text-emerald-800">
+            {notice}
+          </Card>
+        ) : null}
 
         {error ? (
           <Card className="rounded-[2rem] border-rose-200 bg-rose-50/80 p-6 text-sm text-rose-700">
@@ -346,8 +433,8 @@ export function OpsIntakeClient() {
             <div>
               <h2 className="text-2xl font-semibold text-slate-900">Recent intake requests</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">
-                Read-only review of recent demo and onboarding requests. Status updates and notes
-                editing are not part of this view.
+                Review recent demo and onboarding requests and update their status. Notes editing and
+                chatbot event panels are not part of this view.
               </p>
             </div>
 
@@ -449,7 +536,7 @@ export function OpsIntakeClient() {
                       </div>
                     </div>
 
-                    <div>
+                    <div className="flex flex-wrap items-end gap-3 border-t border-slate-200 pt-4">
                       <button
                         type="button"
                         onClick={() => setExpandedId((current) => (current === record.id ? null : record.id))}
@@ -457,6 +544,38 @@ export function OpsIntakeClient() {
                       >
                         {isExpanded ? "Hide details" : "View details"}
                       </button>
+
+                      <label className="flex flex-col gap-1 text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+                        <span>Status</span>
+                        <select
+                          value={statusDrafts[record.id] ?? currentStatus}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setStatusDrafts((current) => ({ ...current, [record.id]: value }));
+                          }}
+                          disabled={savingId === record.id}
+                          className="rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium normal-case tracking-normal text-slate-900 shadow-sm disabled:opacity-60"
+                        >
+                          {buildStatusOptions(kind, currentStatus).map((value) => (
+                            <option key={value} value={value}>
+                              {value}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        loading={savingId === record.id}
+                        disabled={
+                          savingId === record.id ||
+                          (statusDrafts[record.id] ?? currentStatus) === currentStatus
+                        }
+                        onClick={() => void saveStatus(record)}
+                      >
+                        Save status
+                      </Button>
                     </div>
                   </div>
 

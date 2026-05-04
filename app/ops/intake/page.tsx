@@ -4,7 +4,7 @@ import { getOpsAdminSessionToken, verifyOpsAdminToken } from "@/lib/opsIntake";
 import { OpsIntakeClient } from "@/components/ops/OpsIntakeClient";
 
 export const metadata: Metadata = {
-  title: "ANCHOR | Ops intake (read-only)",
+  title: "ANCHOR | Ops intake",
   robots: { index: false, follow: false },
 };
 
