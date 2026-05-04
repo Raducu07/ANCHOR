@@ -69,7 +69,7 @@ export default async function OpsAdminLoginPage({
               {[
                 "Verify your internal ANCHOR admin session.",
                 "Sign in once to establish a short-lived, server-only admin cookie.",
-                "Open the read-only ops intake viewer once your session is verified.",
+                "Open the ops intake viewer once your session is verified.",
               ].map((item) => (
                 <div key={item} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-sm font-medium text-slate-700">
                   {item}
@@ -82,7 +82,7 @@ export default async function OpsAdminLoginPage({
             <Card className="rounded-[2rem] p-8">
               <h2 className="text-xl font-semibold text-emerald-700">Session verified</h2>
               <p className="mt-3 text-sm leading-6 text-slate-700">
-                Admin session is active. You can open the read-only intake viewer.
+                Admin session is active. You can open the ops intake viewer.
               </p>
               <a
                 href="/ops/intake"
