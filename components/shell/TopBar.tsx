@@ -191,18 +191,14 @@ export function TopBar({ user }: { user: SessionUser }) {
     <>
       <header className="sticky top-0 z-50 flex h-16 w-full items-center justify-between border-b border-slate-100 bg-white/80 px-8 font-headline text-base shadow-sm backdrop-blur-md">
         <div className="flex max-w-xl flex-1 items-center">
-          <div className="relative w-full">
-            <span className="material-symbols-outlined pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xl text-slate-500">
-              search
-            </span>
-            <input
-              type="text"
-              readOnly
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-600">
+            <span
               aria-hidden="true"
-              tabIndex={-1}
-              placeholder="Search governance logs, audits, or metadata..."
-              className="w-full cursor-default rounded-lg border border-slate-300/70 bg-[#f0f4f7] py-1.5 pl-10 pr-4 text-sm text-[#2a3439] outline-none transition-all placeholder:text-slate-500"
-            />
+              className="material-symbols-outlined text-base text-slate-500"
+            >
+              shield_with_heart
+            </span>
+            <span>Clinic-scoped governance workspace</span>
           </div>
         </div>
 

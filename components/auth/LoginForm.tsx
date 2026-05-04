@@ -19,7 +19,7 @@ export function LoginForm() {
 
   useEffect(() => {
     if (getAccessToken()) {
-      router.replace("/workspace-live");
+      router.replace("/workspace");
     }
   }, [router]);
 
@@ -46,7 +46,7 @@ export function LoginForm() {
       );
 
       saveAuthState(session.token, session.user);
-      router.replace("/workspace-live");
+      router.replace("/workspace");
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.message);
