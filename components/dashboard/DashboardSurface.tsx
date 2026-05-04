@@ -12,7 +12,7 @@ import type {
 } from "@/lib/types";
 
 const quickActions = [
-  { href: "/workspace-live", icon: "clinical_notes", label: "Open Workspace" },
+  { href: "/workspace", icon: "clinical_notes", label: "Open Workspace" },
   { href: "/receipts", icon: "receipt_long", label: "Open receipt viewer" },
   { href: "/intelligence", icon: "psychology", label: "Open Intelligence" },
   { href: "/learn", icon: "school", label: "Open Learn" },
@@ -145,7 +145,7 @@ export function DashboardSurface() {
             Refresh dashboard
           </Button>
           <Link
-            href="/workspace-live"
+            href="/workspace"
             className={[getButtonChromeClasses("primary"), "rounded-md px-6 py-2.5"].join(" ")}
           >
             Open Workspace
