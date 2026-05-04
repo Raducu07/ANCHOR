@@ -600,7 +600,7 @@ export function ReceiptsPage({ initialRequestId = "" }: { initialRequestId?: str
             <SectionEyebrow>Platform quick actions</SectionEyebrow>
             <div className="mt-4 grid grid-cols-2 gap-3">
               <QuickTile href="/dashboard" icon="dashboard" label="Dashboard" />
-              <QuickTile href="/workspace-live" icon="clinical_notes" label="Workspace" />
+              <QuickTile href="/workspace" icon="clinical_notes" label="Workspace" />
               <QuickTile href="/intelligence" icon="psychology" label="Intelligence" />
               <QuickTile href="/trust/profile" icon="shield" label="Trust" />
             </div>
