@@ -16,7 +16,7 @@ export default async function OpsIntakePage() {
   }
 
   const verification = await verifyOpsAdminToken(token);
-  if (!verification.ok && verification.reason === "invalid") {
+  if (!verification.ok) {
     redirect("/ops/admin-login");
   }
 
