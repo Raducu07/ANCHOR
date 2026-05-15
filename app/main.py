@@ -45,6 +45,7 @@ from app.portal_dashboard import router as portal_dashboard_router
 from app.portal_me import router as portal_me_router
 from app.portal_assist import router as portal_assist_router
 from app.portal_intelligence import router as portal_intelligence_router
+from app.assistant import router as assistant_router
 
 ensure_logging_configured()
 
@@ -178,6 +179,7 @@ app.include_router(portal_dashboard_router)
 app.include_router(portal_me_router)
 app.include_router(portal_assist_router)
 app.include_router(portal_intelligence_router)
+app.include_router(assistant_router)
 app.include_router(public_intake_router)
 
 # Routers (platform admin)
