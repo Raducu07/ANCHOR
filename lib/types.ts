@@ -1,4 +1,4 @@
-export type SessionUser = {
+﻿export type SessionUser = {
   clinicId: string;
   clinicUserId: string;
   clinicSlug: string;
@@ -313,4 +313,47 @@ export type IntelligenceRecommendationsResponse = {
   generated_at: string;
   window: "7d" | "30d";
   items: IntelligenceRecommendation[];
+};
+// Assistant types â€” M6.1 Assistant Foundation
+export type AssistantContractResponse = {
+  contract_id?: string;
+  contract_version?: string;
+  version?: string;
+  status?: string;
+  storage_policy?: string;
+  storage_decision?: string;
+  no_raw_content?: boolean;
+  metadata_only?: boolean;
+  policy_version?: number;
+  boundaries?: string[];
+  allowed_uses?: string[];
+  prohibited_uses?: string[];
+  issued_at?: string;
+  created_at?: string;
+  [key: string]: unknown;
+};
+
+export type AssistantRunRecord = {
+  run_id?: string;
+  request_id?: string;
+  contract_version?: string;
+  contract_id?: string;
+  status?: string;
+  storage_decision?: string;
+  no_raw_content_stored?: boolean;
+  no_content_stored?: boolean;
+  policy_version?: number;
+  policy_decision?: string;
+  risk_grade?: string;
+  reason_code?: string;
+  mode?: string;
+  created_at?: string;
+  created_at_utc?: string;
+  [key: string]: unknown;
+};
+
+export type AssistantRunEnvelope = {
+  run?: AssistantRunRecord;
+  record?: AssistantRunRecord;
+  [key: string]: unknown;
 };
