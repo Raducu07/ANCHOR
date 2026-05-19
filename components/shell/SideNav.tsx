@@ -1,10 +1,11 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const primaryItems = [
   { href: "/workspace", label: "Workspace", icon: "clinical_notes" },
+  { href: "/assistant", label: "Assistant", icon: "smart_toy" },
   { href: "/dashboard", label: "Dashboard", icon: "dashboard" },
   { href: "/receipts", label: "Receipts", icon: "receipt_long" },
   { href: "/governance-events", label: "Governance Events", icon: "verified_user" },
@@ -23,6 +24,7 @@ const secondaryItems = [
 function isActive(pathname: string, href: string) {
   if (pathname === href) return true;
   if (href === "/workspace" && pathname.startsWith("/workspace")) return true;
+  if (href === "/assistant" && pathname.startsWith("/assistant")) return true;
   if (href === "/learn" && pathname.startsWith("/learn")) return true;
   if (href === "/trust/profile" && pathname.startsWith("/trust")) return true;
   if (href === "/intelligence" && pathname.startsWith("/intelligence")) return true;
@@ -97,3 +99,4 @@ export function SideNav() {
       </aside>
   );
 }
+
