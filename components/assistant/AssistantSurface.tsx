@@ -103,7 +103,7 @@ export function AssistantSurface() {
     setIntentSummary("");
   }
 
-  const contractVersion = contract?.contract_version ?? contract?.version ?? "â€”";
+  const contractVersion = contract?.contract_version ?? contract?.version ?? "-";
   const storagePolicy = contract?.storage_policy ?? "Metadata-only by default";
   const metadataOnly = contract?.metadata_only ?? contract?.no_raw_content ?? true;
 
@@ -132,7 +132,7 @@ export function AssistantSurface() {
         <div className="flex items-start gap-3">
           <span className="material-symbols-outlined mt-0.5 text-[18px] text-amber-600">policy</span>
           <div>
-            <p className="text-sm font-semibold text-amber-900">Storage policy â€” metadata-only by default</p>
+            <p className="text-sm font-semibold text-amber-900">Storage policy - metadata-only by default</p>
             <p className="mt-1 text-sm leading-6 text-amber-800">
               No raw prompts, outputs, transcripts, or clinical content are stored by this assistant.
               Governance receipts and run records capture accountability metadata only. Human review
@@ -219,7 +219,7 @@ export function AssistantSurface() {
         </NativeCard>
 
         <NativeCard>
-          <SectionTitle title="Prohibited use cases â€” hard refusals" />
+          <SectionTitle title="Prohibited use cases - hard refusals" />
           <p className="mt-1 text-sm leading-5 text-slate-500">
             Outside ANCHOR doctrine. These will never be supported.
           </p>
@@ -275,7 +275,7 @@ export function AssistantSurface() {
             />
             <p className="mt-1.5 text-xs text-slate-500">
               Do not include patient names, clinical case specifics, or identifiable information.
-              Intent text is not stored â€” only governance metadata from the run record is retained.
+              Intent text is not stored - only governance metadata from the run record is retained.
             </p>
           </div>
 
@@ -378,12 +378,12 @@ function RunRecordCard({ record }: { record: AssistantRunRecord }) {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCell label="Run ID" value={runId ? `${String(runId).slice(0, 12)}â€¦` : "â€”"} />
+        <MetricCell label="Run ID" value={runId ? `${String(runId).slice(0, 12)}â€¦` : "-"} />
         <MetricCell label="Status" value={record.status ?? "recorded"} tone="success" />
         <MetricCell label="Storage decision" value={record.storage_decision ?? "metadata-only"} />
         <MetricCell
           label="Policy version"
-          value={record.policy_version ? `v${String(record.policy_version)}` : "â€”"}
+          value={record.policy_version ? `v${String(record.policy_version)}` : "-"}
         />
       </div>
 
@@ -553,7 +553,7 @@ function NavCard({
 }
 
 function formatDateTime(value?: string | null) {
-  if (!value) return "â€”";
+  if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en-GB", {
@@ -561,3 +561,4 @@ function formatDateTime(value?: string | null) {
     timeStyle: "short",
   }).format(date);
 }
+
