@@ -6,6 +6,7 @@ and `get_db` (to capture the insert without needing Postgres).
 """
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -46,13 +47,21 @@ class FakeDB:
         self.calls.append((sql, dict(params or {})))
 
         if "INSERT INTO assistant_runs" in sql and params:
+            # JSONB-bound params arrive as JSON strings (CAST(... AS jsonb)).
+            # Postgres returns jsonb as already-decoded Python objects via
+            # psycopg, so we mirror that decoding here for the fake row.
+            def _decode_jsonb(value: Any) -> Any:
+                if isinstance(value, str):
+                    return json.loads(value)
+                return value
+
             row = {
                 "run_id": params["run_id"],
                 "mode": params["mode"],
                 "contract_version": params["contract_version"],
                 "pii_detected": bool(params["pii_detected"]),
-                "pii_types": list(params["pii_types"]),
-                "input_field_keys": list(params["input_field_keys"]),
+                "pii_types": list(_decode_jsonb(params["pii_types"])),
+                "input_field_keys": list(_decode_jsonb(params["input_field_keys"])),
                 "review_status": params["review_status"],
                 "output_sha256": None,
                 "model_provider": None,

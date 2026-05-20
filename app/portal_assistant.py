@@ -281,10 +281,11 @@ def create_assistant_run(
                       CAST(:clinic_user_id AS uuid),
                       :mode, :contract_version, :workflow_origin,
                       :input_sha256, NULL,
-                      CAST(:input_field_keys AS text[]),
+                      CAST(:input_field_keys AS jsonb),
                       :pii_detected,
-                      CAST(:pii_types AS text[]),
-                      ARRAY[]::text[], ARRAY[]::text[],
+                      CAST(:pii_types AS jsonb),
+                      CAST(:safety_flags AS jsonb),
+                      CAST(:refusal_reason_codes AS jsonb),
                       :review_status,
                       NULL, NULL,
                       NULL, NULL
@@ -304,9 +305,15 @@ def create_assistant_run(
                     "contract_version": ASSISTANT_CONTRACT_VERSION,
                     "workflow_origin": WORKFLOW_ORIGIN,
                     "input_sha256": input_sha256,
-                    "input_field_keys": input_field_keys,
+                    # JSONB columns require JSON-serialised strings + an
+                    # explicit CAST(... AS jsonb) in the VALUES clause.
+                    # Passing a Python list directly fails under
+                    # psycopg/SQLAlchemy (sqlalche.me/e/20/f405).
+                    "input_field_keys": json.dumps(input_field_keys),
                     "pii_detected": pii_detected,
-                    "pii_types": pii_types,
+                    "pii_types": json.dumps(pii_types),
+                    "safety_flags": json.dumps([]),
+                    "refusal_reason_codes": json.dumps([]),
                     "review_status": "not_reviewed",
                 },
             )

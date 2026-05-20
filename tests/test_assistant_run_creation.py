@@ -1,8 +1,9 @@
 ﻿"""Tests for POST /v1/assistant/runs â€” metadata-only creation, PR 2A."""
 from __future__ import annotations
 
+import json
 import re
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pytest
 
@@ -16,6 +17,13 @@ from tests._assistant_test_helpers import (
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _jsonb_list(value: Any) -> List[Any]:
+    """JSONB-bound params are JSON-serialised strings. Decode for assertion."""
+    if isinstance(value, str):
+        return list(json.loads(value))
+    return list(value or [])
 
 
 def _valid_input() -> Dict[str, Any]:
@@ -76,7 +84,7 @@ def test_input_field_keys_are_keys_only_not_values() -> None:
     _, db = _post_run({"mode": "client_communication", "input": payload_input})
 
     _, params = db.insert_call
-    keys = params["input_field_keys"]
+    keys = _jsonb_list(params["input_field_keys"])
 
     assert set(keys) == {"communication_goal", "clinician_confirmed_facts"}
     # Critically: none of the actual values appear in the stored keys list.
@@ -200,7 +208,7 @@ def test_pii_detected_for_each_category(value: str, expected_tag: str) -> None:
 
     _, params = db.insert_call
     assert params["pii_detected"] is True
-    assert expected_tag in params["pii_types"]
+    assert expected_tag in _jsonb_list(params["pii_types"])
 
     run = resp.json()["run"]
     assert run["pii_detected"] is True
@@ -219,7 +227,7 @@ def test_clean_input_has_no_pii_flags() -> None:
     assert resp.status_code == 201
     _, params = db.insert_call
     assert params["pii_detected"] is False
-    assert params["pii_types"] == []
+    assert _jsonb_list(params["pii_types"]) == []
 
 
 # ---------------------------------------------------------------------
