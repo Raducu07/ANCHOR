@@ -38,7 +38,8 @@ export function normalizeApiErrorMessage(status: number, rawText: string) {
     }
   }
 
-  const detail = typeof parsed?.detail === "string" ? parsed.detail : undefined;
+  const rawDetail = parsed?.detail;
+  const detail = typeof rawDetail === "string" ? rawDetail : undefined;
 
   if (status === 0) {
     return "Unable to reach the ANCHOR API. Check network access, CORS settings, and API base configuration.";
@@ -48,6 +49,31 @@ export function normalizeApiErrorMessage(status: number, rawText: string) {
   if (status === 404) return detail ?? "The requested record could not be found in this clinic workspace.";
   if (status === 429) return detail ?? "Too many requests. Please wait a moment and try again.";
   if (status >= 500) return "ANCHOR is temporarily unavailable. Please try again.";
+
+  // 400/422 — FastAPI may return `detail` as a string (preferred) or an
+  // array of validation error objects. Render the array as a short summary
+  // rather than a raw JSON wall.
+  if (Array.isArray(rawDetail)) {
+    const messages = rawDetail
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const entry = item as Record<string, unknown>;
+        const msg = typeof entry.msg === "string" ? entry.msg : null;
+        const loc = Array.isArray(entry.loc)
+          ? entry.loc
+              .filter((p) => typeof p === "string" || typeof p === "number")
+              .slice(1) // drop the leading "body"/"query" segment
+              .join(".")
+          : "";
+        if (!msg) return null;
+        return loc ? `${loc}: ${msg}` : msg;
+      })
+      .filter((m): m is string => Boolean(m));
+    if (messages.length) {
+      return messages.length === 1 ? messages[0] : messages.join("; ");
+    }
+  }
+
   return detail ?? text ?? "Request failed.";
 }
 

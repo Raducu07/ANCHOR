@@ -2,20 +2,27 @@
 
 import Link from "next/link";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { getAssistantContract, submitAssistantRun } from "@/lib/assistant";
+import {
+  ASSISTANT_MODE_CLIENT_COMMUNICATION,
+  getAssistantContract,
+  submitAssistantRun,
+} from "@/lib/assistant";
 import { ApiError } from "@/lib/api";
 import type { AssistantContractResponse, AssistantRunRecord } from "@/lib/types";
 
+// PR 2A: only client_communication is callable. Other use cases are
+// listed as forthcoming so the page still communicates scope.
 const SAFE_USE_CASES = [
-  { value: "explain_governance_receipt", label: "Explain a governance receipt" },
-  { value: "explain_why_flagged", label: "Explain why something was flagged" },
   {
-    value: "help_rewrite_client_communication",
+    value: ASSISTANT_MODE_CLIENT_COMMUNICATION,
     label: "Help rewrite client communication (human review required)",
+    active: true,
   },
-  { value: "help_prepare_internal_summary", label: "Help prepare an internal summary" },
-  { value: "explain_clinic_ai_policy", label: "Explain clinic AI policy" },
-  { value: "suggest_learn_guidance", label: "Suggest relevant Learn guidance" },
+  { value: "explain_governance_receipt", label: "Explain a governance receipt", active: false },
+  { value: "explain_why_flagged", label: "Explain why something was flagged", active: false },
+  { value: "help_prepare_internal_summary", label: "Help prepare an internal summary", active: false },
+  { value: "explain_clinic_ai_policy", label: "Explain clinic AI policy", active: false },
+  { value: "suggest_learn_guidance", label: "Suggest relevant Learn guidance", active: false },
 ] as const;
 
 const PROHIBITED_USE_CASES = [
@@ -39,9 +46,11 @@ export function AssistantSurface() {
   const [contractError, setContractError] = useState<string | null>(null);
   const [contractUnavailable, setContractUnavailable] = useState(false);
 
-  const [useCase, setUseCase] = useState<string>(SAFE_USE_CASES[0].value);
-  const [intentSummary, setIntentSummary] = useState("");
+  const [communicationGoal, setCommunicationGoal] = useState("");
+  const [clinicianFacts, setClinicianFacts] = useState("");
   const [runState, setRunState] = useState<RunState>({ kind: "idle" });
+
+  const canSubmit = communicationGoal.trim().length > 0 && clinicianFacts.trim().length > 0;
 
   async function loadContract(isRefresh = false) {
     try {
@@ -72,13 +81,18 @@ export function AssistantSurface() {
 
   async function handleRunSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!intentSummary.trim()) return;
+    const goal = communicationGoal.trim();
+    const facts = clinicianFacts.trim();
+    if (!goal || !facts) return;
 
     setRunState({ kind: "submitting" });
     try {
       const record = await submitAssistantRun({
-        use_case: useCase,
-        intent_summary: intentSummary.trim(),
+        mode: ASSISTANT_MODE_CLIENT_COMMUNICATION,
+        input: {
+          communication_goal: goal,
+          clinician_confirmed_facts: facts,
+        },
       });
       setRunState({ kind: "record", data: record });
     } catch (err) {
@@ -100,7 +114,8 @@ export function AssistantSurface() {
 
   function handleClear() {
     setRunState({ kind: "idle" });
-    setIntentSummary("");
+    setCommunicationGoal("");
+    setClinicianFacts("");
   }
 
   const contractVersion = contract?.contract_version ?? contract?.version ?? "-";
@@ -206,13 +221,33 @@ export function AssistantSurface() {
       <div className="grid gap-4 xl:grid-cols-2">
         <NativeCard>
           <SectionTitle title="Permitted use cases" />
+          <p className="mt-1 text-sm leading-5 text-slate-500">
+            Only client communication is callable in this release. Other use cases are
+            contract-defined and not yet active.
+          </p>
           <ul className="mt-4 space-y-2">
             {SAFE_USE_CASES.map((item) => (
               <li key={item.value} className="flex items-start gap-3">
-                <span className="material-symbols-outlined mt-0.5 shrink-0 text-[18px] text-emerald-500">
-                  check_circle
+                <span
+                  className={[
+                    "material-symbols-outlined mt-0.5 shrink-0 text-[18px]",
+                    item.active ? "text-emerald-500" : "text-slate-300",
+                  ].join(" ")}
+                >
+                  {item.active ? "check_circle" : "schedule"}
                 </span>
-                <span className="text-sm leading-6 text-slate-700">{item.label}</span>
+                <span className="text-sm leading-6 text-slate-700">
+                  {item.label}
+                  {item.active ? (
+                    <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-emerald-700">
+                      Active
+                    </span>
+                  ) : (
+                    <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">
+                      Not yet active
+                    </span>
+                  )}
+                </span>
               </li>
             ))}
           </ul>
@@ -239,50 +274,68 @@ export function AssistantSurface() {
       <NativeCard>
         <SectionTitle
           title="Submit a governed run record"
-          description="Select a permitted use case and describe your intent. A metadata-only governance run record will be created if the endpoint is available. No LLM call is made at this stage. Human review is required before operational use."
+          description="Client communication is the only active assistant mode in this release. A metadata-only governance run record is created. No LLM call is made and no generated output is returned. Human review is required before operational use."
         />
 
         <form onSubmit={(e) => void handleRunSubmit(e)} className="mt-6 space-y-4">
           <div>
             <label className="block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-              Use case
+              Mode
             </label>
-            <select
-              value={useCase}
-              onChange={(e) => setUseCase(e.target.value)}
-              disabled={runState.kind === "submitting"}
-              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none disabled:opacity-60"
+            <div
+              aria-readonly="true"
+              className="mt-2 flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900"
             >
-              {SAFE_USE_CASES.map((item) => (
-                <option key={item.value} value={item.value}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
+              <span className="font-medium">Client communication</span>
+              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-emerald-700">
+                Active
+              </span>
+            </div>
+            <p className="mt-1.5 text-xs text-slate-500">
+              Other assistant modes are contract-defined but not yet callable.
+            </p>
           </div>
 
           <div>
             <label className="block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-              Intent summary
+              Communication goal
             </label>
             <textarea
-              value={intentSummary}
-              onChange={(e) => setIntentSummary(e.target.value)}
+              value={communicationGoal}
+              onChange={(e) => setCommunicationGoal(e.target.value)}
               disabled={runState.kind === "submitting"}
-              placeholder="Briefly describe what you need, without including clinical case details or patient information."
+              placeholder="e.g. Reassure an owner about post-op recovery and next steps."
+              rows={2}
+              className="mt-2 w-full resize-none rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-slate-400 focus:outline-none disabled:opacity-60"
+            />
+            <p className="mt-1.5 text-xs text-slate-500">
+              What you want the communication to achieve. Required.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+              Clinician-confirmed facts
+            </label>
+            <textarea
+              value={clinicianFacts}
+              onChange={(e) => setClinicianFacts(e.target.value)}
+              disabled={runState.kind === "submitting"}
+              placeholder="The facts you have personally confirmed and are willing to stand behind."
               rows={4}
               className="mt-2 w-full resize-none rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-slate-400 focus:outline-none disabled:opacity-60"
             />
             <p className="mt-1.5 text-xs text-slate-500">
-              Do not include patient names, clinical case specifics, or identifiable information.
-              Intent text is not stored - only governance metadata from the run record is retained.
+              Required. Do not include patient names, identifiers, or anything you have not
+              personally confirmed. Field values are not stored — only governance metadata
+              (hash + field keys + PII flags) is retained.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-4">
             <button
               type="submit"
-              disabled={runState.kind === "submitting" || !intentSummary.trim()}
+              disabled={runState.kind === "submitting" || !canSubmit}
               className="inline-flex items-center rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {runState.kind === "submitting" ? "Submitting..." : "Submit run record"}
@@ -301,9 +354,9 @@ export function AssistantSurface() {
           <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
             <p className="text-xs leading-5 text-slate-600">
               <strong>Human review required.</strong> Run records are metadata-only governance
-              records. Any output associated with a run must be reviewed by a qualified
-              veterinary professional before operational use. ANCHOR does not make clinical
-              decisions.
+              records. No assistant output is generated in this release. Any output produced
+              in future releases must be reviewed by a qualified veterinary professional
+              before operational use. ANCHOR does not make clinical decisions.
             </p>
           </div>
         </form>
@@ -362,6 +415,11 @@ export function AssistantSurface() {
 function RunRecordCard({ record }: { record: AssistantRunRecord }) {
   const runId = record.run_id ?? record.request_id;
   const noRawContent = record.no_raw_content_stored ?? record.no_content_stored ?? true;
+  const piiDetected = record.pii_detected === true;
+  const piiTypes = record.pii_types ?? [];
+  const fieldKeys = record.input_field_keys ?? [];
+  const reviewStatus = record.review_status ?? record.status ?? "not_reviewed";
+  const generationEnabled = record.generation_enabled === true;
 
   return (
     <NativeCard>
@@ -378,12 +436,16 @@ function RunRecordCard({ record }: { record: AssistantRunRecord }) {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCell label="Run ID" value={runId ? `${String(runId).slice(0, 12)}â€¦` : "-"} />
-        <MetricCell label="Status" value={record.status ?? "recorded"} tone="success" />
-        <MetricCell label="Storage decision" value={record.storage_decision ?? "metadata-only"} />
+        <MetricCell label="Run ID" value={runId ? `${String(runId).slice(0, 12)}…` : "-"} />
+        <MetricCell label="Review status" value={reviewStatus} tone="success" />
         <MetricCell
-          label="Policy version"
-          value={record.policy_version ? `v${String(record.policy_version)}` : "-"}
+          label="PII detected"
+          value={piiDetected ? "Yes" : "No"}
+          tone={piiDetected ? "default" : "success"}
+        />
+        <MetricCell
+          label="Generation"
+          value={generationEnabled ? "Enabled" : "Not enabled"}
         />
       </div>
 
@@ -394,14 +456,21 @@ function RunRecordCard({ record }: { record: AssistantRunRecord }) {
             value={String(record.contract_version ?? record.contract_id)}
           />
         ) : null}
-        {record.risk_grade ? <DetailRow label="Risk grade" value={record.risk_grade} /> : null}
-        {record.reason_code ? (
-          <DetailRow label="Reason code" value={record.reason_code} />
-        ) : null}
-        {record.policy_decision ? (
-          <DetailRow label="Policy decision" value={record.policy_decision} />
-        ) : null}
         {record.mode ? <DetailRow label="Mode" value={record.mode} /> : null}
+        {fieldKeys.length ? (
+          <DetailRow label="Input fields" value={fieldKeys.join(", ")} />
+        ) : null}
+        {piiTypes.length ? (
+          <DetailRow label="PII types" value={piiTypes.join(", ")} />
+        ) : null}
+        <DetailRow
+          label="Output stored"
+          value={record.output_sha256 ? "Hash recorded" : "None"}
+        />
+        <DetailRow
+          label="Model"
+          value={record.model_provider || record.model_name ? `${record.model_provider ?? "-"} / ${record.model_name ?? "-"}` : "Not invoked"}
+        />
         {record.created_at_utc ?? record.created_at ? (
           <DetailRow
             label="Created at"
@@ -409,6 +478,12 @@ function RunRecordCard({ record }: { record: AssistantRunRecord }) {
           />
         ) : null}
       </div>
+
+      {record.governance_note ? (
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+          <p className="text-xs leading-5 text-slate-700">{record.governance_note}</p>
+        </div>
+      ) : null}
 
       <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
         <p className="text-xs leading-5 text-amber-800">

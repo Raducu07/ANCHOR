@@ -349,6 +349,16 @@ export type AssistantRunRecord = {
   mode?: string;
   created_at?: string;
   created_at_utc?: string;
+  // PR 2A metadata-only fields
+  pii_detected?: boolean;
+  pii_types?: string[];
+  input_field_keys?: string[];
+  review_status?: string;
+  output_sha256?: string | null;
+  model_provider?: string | null;
+  model_name?: string | null;
+  generation_enabled?: boolean;
+  governance_note?: string;
   [key: string]: unknown;
 };
 
