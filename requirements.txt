@@ -10,3 +10,7 @@ argon2-cffi
 
 # Test dependency: required by fastapi.testclient (Starlette TestClient).
 httpx
+
+# Governed Vet Assistant — model provider (PR 2B). API key supplied via
+# ANTHROPIC_API_KEY at runtime; missing key returns a safe 503.
+anthropic

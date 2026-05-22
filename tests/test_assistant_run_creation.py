@@ -8,6 +8,9 @@ from typing import Any, Dict, List
 import pytest
 
 from tests._assistant_test_helpers import (
+    DEFAULT_DRAFT_TEXT,
+    DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
     TEST_CLINIC_ID,
     TEST_USER_ID,
     auth_headers,
@@ -46,6 +49,9 @@ def _post_run(payload: Dict[str, Any]):
 # ---------------------------------------------------------------------
 
 def test_valid_request_creates_metadata_run() -> None:
+    """With the default success stub installed by build_app(), a safe
+    request reaches generation_succeeded. Metadata-only persistence is
+    still required."""
     resp, db = _post_run({"mode": "client_communication", "input": _valid_input()})
 
     assert resp.status_code == 201, resp.text
@@ -56,13 +62,17 @@ def test_valid_request_creates_metadata_run() -> None:
     assert run["mode"] == "client_communication"
     assert run["contract_version"] == "assistant_contract_v1"
     assert run["review_status"] == "not_reviewed"
-    assert run["output_sha256"] is None
-    assert run["model_provider"] is None
-    assert run["model_name"] is None
-    assert run["generation_enabled"] is False
+    assert run["run_status"] == "generation_succeeded"
+    assert run["refused"] is False
+    assert run["draft"] == DEFAULT_DRAFT_TEXT
+    # output_sha256 is now the hash of the transient draft.
+    assert SHA256_RE.match(run["output_sha256"]) is not None
+    assert run["model_provider"] == DEFAULT_PROVIDER
+    assert run["model_name"] == DEFAULT_MODEL
+    assert run["generation_enabled"] is True
     assert "governance_note" in run and run["governance_note"]
 
-    # Insert was executed under the right tenant.
+    # Insert was executed under the right tenant — run_status='created'.
     sql, params = db.insert_call
     assert "INSERT INTO assistant_runs" in sql
     assert params["clinic_id"] == TEST_CLINIC_ID
@@ -71,6 +81,7 @@ def test_valid_request_creates_metadata_run() -> None:
     assert params["contract_version"] == "assistant_contract_v1"
     assert params["workflow_origin"] == "anchor_assistant"
     assert params["review_status"] == "not_reviewed"
+    assert params["run_status"] == "created"
 
 
 def test_input_sha256_is_64_char_lowercase_hex() -> None:
@@ -109,18 +120,25 @@ def test_raw_input_values_never_appear_in_inserted_params() -> None:
         assert v not in blob, f"raw input value leaked into insert params: {v!r}"
 
 
-def test_response_does_not_include_raw_input_or_draft() -> None:
+def test_response_does_not_include_raw_input() -> None:
+    """The transient draft is allowed in the response (PR 2B), but the
+    raw input values must never appear in the response body or in any of
+    the PR 2A metadata fields."""
     payload_input = _valid_input()
     resp, _ = _post_run({"mode": "client_communication", "input": payload_input})
-    body_text = resp.text
 
-    for v in payload_input.values():
-        assert v not in body_text, f"raw input leaked into response: {v!r}"
-
-    # No draft / generated-output fields should be present.
+    # Strip the transient draft before scanning for raw input — the canned
+    # stub draft doesn't contain user inputs, so this is belt-and-braces.
     body = resp.json()
     run = body["run"]
-    forbidden_keys = {"draft", "generated_text", "output", "output_text", "prompt"}
+    scrubbed_run = {k: v for k, v in run.items() if k != "draft"}
+
+    blob = repr(scrubbed_run)
+    for v in payload_input.values():
+        assert v not in blob, f"raw input leaked into response metadata: {v!r}"
+
+    # No raw prompt / system-prompt / user-message fields are exposed.
+    forbidden_keys = {"prompt", "system_prompt", "user_message", "output_text"}
     assert not (forbidden_keys & set(run.keys()))
 
 
