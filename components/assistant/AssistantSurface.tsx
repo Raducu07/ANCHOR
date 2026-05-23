@@ -10,8 +10,9 @@ import {
 import { ApiError } from "@/lib/api";
 import type { AssistantContractResponse, AssistantRunRecord } from "@/lib/types";
 
-// PR 2A: only client_communication is callable. Other use cases are
-// listed as forthcoming so the page still communicates scope.
+// PR 2B: client_communication is the only active assistant mode. Safe
+// requests may return a transient draft for review; unsafe clinical
+// requests are refused before any model call.
 const SAFE_USE_CASES = [
   {
     value: ASSISTANT_MODE_CLIENT_COMMUNICATION,
@@ -129,8 +130,9 @@ export function AssistantSurface() {
           <p className="text-sm font-medium text-slate-500">Assistant</p>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Governed Assistant</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            A contract-bound, metadata-only assistant layer operating under explicit governance
-            rules, storage policy, and safety boundaries. Not a clinical decision-making system.
+            Client communication is the only active assistant mode in this release. Safe
+            requests may return a transient draft. Raw input and draft output are not stored.
+            ANCHOR stores hashes, field keys, safety flags, and governance metadata only.
             Human review is required before operational use.
           </p>
         </div>
@@ -149,10 +151,11 @@ export function AssistantSurface() {
           <div>
             <p className="text-sm font-semibold text-amber-900">Storage policy - metadata-only by default</p>
             <p className="mt-1 text-sm leading-6 text-amber-800">
-              No raw prompts, outputs, transcripts, or clinical content are stored by this assistant.
-              Governance receipts and run records capture accountability metadata only. Human review
-              is required before any result is used operationally. ANCHOR is not a clinical
-              decision-making system.
+              No raw prompts, inputs, drafts, transcripts, or clinical content are stored by this
+              assistant. A draft may be returned transiently for review; only hashes, field keys,
+              PII flags, safety flags, and run status are retained. Human review is required
+              before any result is used operationally. ANCHOR is not a clinical decision-making
+              system.
             </p>
           </div>
         </div>
@@ -273,8 +276,8 @@ export function AssistantSurface() {
 
       <NativeCard>
         <SectionTitle
-          title="Submit a governed run record"
-          description="Client communication is the only active assistant mode in this release. A metadata-only governance run record is created. No LLM call is made and no generated output is returned. Human review is required before operational use."
+          title="Submit a governed assistant run"
+          description="Client communication is the only active assistant mode in this release. Safe requests may return a transient draft. Raw input and draft output are not stored. ANCHOR stores hashes, field keys, safety flags, and governance metadata only. Human review is required before operational use."
         />
 
         <form onSubmit={(e) => void handleRunSubmit(e)} className="mt-6 space-y-4">
@@ -327,8 +330,9 @@ export function AssistantSurface() {
             />
             <p className="mt-1.5 text-xs text-slate-500">
               Required. Do not include patient names, identifiers, or anything you have not
-              personally confirmed. Field values are not stored — only governance metadata
-              (hash + field keys + PII flags) is retained.
+              personally confirmed. Field values are used transiently to generate the draft and
+              are not stored. ANCHOR retains metadata only: hashes, field keys, PII flags,
+              safety flags, and run status.
             </p>
           </div>
 
@@ -338,7 +342,7 @@ export function AssistantSurface() {
               disabled={runState.kind === "submitting" || !canSubmit}
               className="inline-flex items-center rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {runState.kind === "submitting" ? "Submitting..." : "Submit run record"}
+              {runState.kind === "submitting" ? "Submitting..." : "Submit assistant run"}
             </button>
             {runState.kind !== "idle" ? (
               <button
@@ -353,10 +357,9 @@ export function AssistantSurface() {
 
           <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
             <p className="text-xs leading-5 text-slate-600">
-              <strong>Human review required.</strong> Run records are metadata-only governance
-              records. No assistant output is generated in this release. Any output produced
-              in future releases must be reviewed by a qualified veterinary professional
-              before operational use. ANCHOR does not make clinical decisions.
+              <strong>Human review required.</strong> Any draft returned by ANCHOR must be
+              checked against the clinical record before use. ANCHOR does not make clinical
+              decisions.
             </p>
           </div>
         </form>
@@ -412,6 +415,35 @@ export function AssistantSurface() {
   );
 }
 
+// PR 2B run_status labels. Backward compatible: if run_status is missing
+// (PR 2A-style response), fall back to "Created".
+function runStatusLabel(runStatus: string | undefined): string {
+  switch (runStatus) {
+    case "generation_succeeded":
+      return "Draft generated";
+    case "generation_refused":
+      return "Refused before model call";
+    case "generation_failed":
+      return "Generation failed";
+    case "created":
+    case undefined:
+    case "":
+      return "Created";
+    default:
+      return runStatus;
+  }
+}
+
+function runStatusTone(runStatus: string | undefined): "default" | "success" {
+  return runStatus === "generation_succeeded" ? "success" : "default";
+}
+
+function truncateHash(hash: string | null | undefined): string {
+  if (!hash) return "None";
+  if (hash.length <= 16) return hash;
+  return `${hash.slice(0, 10)}…${hash.slice(-6)}`;
+}
+
 function RunRecordCard({ record }: { record: AssistantRunRecord }) {
   const runId = record.run_id ?? record.request_id;
   const noRawContent = record.no_raw_content_stored ?? record.no_content_stored ?? true;
@@ -420,13 +452,21 @@ function RunRecordCard({ record }: { record: AssistantRunRecord }) {
   const fieldKeys = record.input_field_keys ?? [];
   const reviewStatus = record.review_status ?? record.status ?? "not_reviewed";
   const generationEnabled = record.generation_enabled === true;
+  const runStatus = typeof record.run_status === "string" ? record.run_status : undefined;
+  const refused = record.refused === true || runStatus === "generation_refused";
+  const refusalCodes = record.refusal_reason_codes ?? [];
+  const safetyFlags = record.safety_flags ?? [];
+  const draft = typeof record.draft === "string" ? record.draft : null;
+  const showDraftPanel = runStatus === "generation_succeeded" && !!draft && !refused;
+  const showRefusalPanel = refused;
+  const showFailurePanel = runStatus === "generation_failed";
 
   return (
     <NativeCard>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
         <SectionTitle
-          title="Governed run record"
-          description="This is a governance metadata record only. No output content is stored. Human review is required before operational use."
+          title="Assistant run"
+          description="ANCHOR retains governance metadata only. Any returned draft is transient and is not stored. Human review is required before operational use."
         />
         {noRawContent ? (
           <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-emerald-700">
@@ -445,9 +485,16 @@ function RunRecordCard({ record }: { record: AssistantRunRecord }) {
         />
         <MetricCell
           label="Generation"
-          value={generationEnabled ? "Enabled" : "Not enabled"}
+          value={runStatusLabel(runStatus)}
+          tone={runStatusTone(runStatus)}
         />
       </div>
+
+      {showDraftPanel ? <TransientDraftPanel draft={draft as string} /> : null}
+      {showRefusalPanel ? (
+        <RefusalPanel reasonCodes={refusalCodes} safetyFlags={safetyFlags} />
+      ) : null}
+      {showFailurePanel ? <FailurePanel /> : null}
 
       <div className="mt-4 space-y-2">
         {record.contract_version ?? record.contract_id ? (
@@ -457,20 +504,34 @@ function RunRecordCard({ record }: { record: AssistantRunRecord }) {
           />
         ) : null}
         {record.mode ? <DetailRow label="Mode" value={record.mode} /> : null}
+        <DetailRow label="Run status" value={runStatusLabel(runStatus)} />
+        <DetailRow label="Refused" value={refused ? "Yes" : "No"} />
         {fieldKeys.length ? (
           <DetailRow label="Input fields" value={fieldKeys.join(", ")} />
         ) : null}
         {piiTypes.length ? (
           <DetailRow label="PII types" value={piiTypes.join(", ")} />
         ) : null}
+        {refusalCodes.length ? (
+          <DetailRow label="Refusal codes" value={refusalCodes.join(", ")} />
+        ) : null}
+        {safetyFlags.length ? (
+          <DetailRow label="Safety flags" value={safetyFlags.join(", ")} />
+        ) : null}
         <DetailRow
-          label="Output stored"
-          value={record.output_sha256 ? "Hash recorded" : "None"}
+          label="Output hash"
+          value={record.output_sha256 ? truncateHash(record.output_sha256) : "None"}
+          mono={!!record.output_sha256}
         />
         <DetailRow
           label="Model"
-          value={record.model_provider || record.model_name ? `${record.model_provider ?? "-"} / ${record.model_name ?? "-"}` : "Not invoked"}
+          value={
+            record.model_provider || record.model_name
+              ? `${record.model_provider ?? "-"} / ${record.model_name ?? "-"}`
+              : "Not invoked"
+          }
         />
+        <DetailRow label="Generation enabled" value={generationEnabled ? "Yes" : "No"} />
         {record.created_at_utc ?? record.created_at ? (
           <DetailRow
             label="Created at"
@@ -487,9 +548,8 @@ function RunRecordCard({ record }: { record: AssistantRunRecord }) {
 
       <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
         <p className="text-xs leading-5 text-amber-800">
-          <strong>Human review required.</strong> This run record confirms governance metadata was
-          captured. Any output associated with this run must be reviewed by a qualified veterinary
-          professional before use. ANCHOR does not make clinical decisions.
+          <strong>Human review required.</strong> Any draft returned by ANCHOR must be checked
+          against the clinical record before use. ANCHOR does not make clinical decisions.
         </p>
       </div>
 
@@ -502,6 +562,110 @@ function RunRecordCard({ record }: { record: AssistantRunRecord }) {
         </Link>
       </div>
     </NativeCard>
+  );
+}
+
+function TransientDraftPanel({ draft }: { draft: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(draft);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1800);
+      }
+    } catch {
+      // Best-effort: failure to copy is non-fatal. The draft is still
+      // visible on screen for manual copy.
+    }
+  }
+
+  return (
+    <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-emerald-900">Transient draft</p>
+          <p className="mt-1 text-xs leading-5 text-emerald-800">
+            This draft is returned for review only. It is not stored by ANCHOR.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void handleCopy()}
+          className="inline-flex shrink-0 items-center rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-900 shadow-sm transition hover:border-emerald-300"
+        >
+          {copied ? "Copied" : "Copy draft"}
+        </button>
+      </div>
+      <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg border border-emerald-100 bg-white p-4 text-sm leading-6 text-slate-900">
+        {draft}
+      </pre>
+    </div>
+  );
+}
+
+function RefusalPanel({
+  reasonCodes,
+  safetyFlags,
+}: {
+  reasonCodes: string[];
+  safetyFlags: string[];
+}) {
+  return (
+    <div className="mt-5 rounded-xl border border-rose-200 bg-rose-50 p-4">
+      <p className="text-sm font-semibold text-rose-800">Refused before model call</p>
+      <p className="mt-1 text-xs leading-5 text-rose-700">
+        ANCHOR does not provide clinical judgements. The model was not invoked. No output hash
+        is recorded.
+      </p>
+      {reasonCodes.length ? (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-rose-700">
+            Refusal reason codes
+          </p>
+          <ul className="mt-1 flex flex-wrap gap-1.5">
+            {reasonCodes.map((code) => (
+              <li
+                key={code}
+                className="rounded-full border border-rose-200 bg-white px-2 py-0.5 text-[11px] font-medium text-rose-700"
+              >
+                {code}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {safetyFlags.length ? (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-rose-700">
+            Safety flags
+          </p>
+          <ul className="mt-1 flex flex-wrap gap-1.5">
+            {safetyFlags.map((flag) => (
+              <li
+                key={flag}
+                className="rounded-full border border-rose-200 bg-white px-2 py-0.5 text-[11px] font-medium text-rose-700"
+              >
+                {flag}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FailurePanel() {
+  return (
+    <div className="mt-5 rounded-xl border border-slate-300 bg-slate-100 p-4">
+      <p className="text-sm font-semibold text-slate-800">Generation unavailable</p>
+      <p className="mt-1 text-xs leading-5 text-slate-700">
+        The assistant is temporarily unavailable. No draft was produced and no output hash is
+        recorded. Governance metadata for this run has been captured.
+      </p>
+    </div>
   );
 }
 

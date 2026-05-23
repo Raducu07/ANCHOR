@@ -359,6 +359,13 @@ export type AssistantRunRecord = {
   model_name?: string | null;
   generation_enabled?: boolean;
   governance_note?: string;
+  // PR 2B governed generation fields. Frontend must tolerate any missing
+  // field for backward compatibility with PR 2A-style responses.
+  run_status?: "created" | "generation_succeeded" | "generation_refused" | "generation_failed" | string;
+  draft?: string | null;
+  refused?: boolean;
+  refusal_reason_codes?: string[];
+  safety_flags?: string[];
   [key: string]: unknown;
 };
 
