@@ -1,5 +1,12 @@
 import { apiFetch } from "@/lib/api";
-import type { AssistantContractResponse, AssistantRunEnvelope, AssistantRunRecord } from "@/lib/types";
+import type {
+  AssistantContractResponse,
+  AssistantRunDetailResponse,
+  AssistantRunEnvelope,
+  AssistantRunListResponse,
+  AssistantRunRecord,
+  AssistantRunTraceItem,
+} from "@/lib/types";
 
 export function getAssistantContract() {
   return apiFetch<AssistantContractResponse>("/v1/assistant/contracts");
@@ -40,3 +47,42 @@ export async function submitAssistantRun(req: AssistantRunRequest): Promise<Assi
   const run = (envelope.run ?? envelope.record) as AssistantRunRecord | undefined;
   return run ?? (result as unknown as AssistantRunRecord);
 }
+
+// M6.3 — Assistant traceability / evidence surface (metadata only).
+//
+// GET /v1/assistant/runs        — recent metadata records for the clinic
+// GET /v1/assistant/runs/:id    — single metadata record by id
+//
+// Neither endpoint returns raw input, prompts, or draft output. The
+// detail response carries explicit storage_policy + draft_stored=false
+// assertions for governance evidence.
+
+export type ListAssistantRunsParams = {
+  limit?: number;
+  run_status?:
+    | "created"
+    | "generation_succeeded"
+    | "generation_refused"
+    | "generation_failed";
+  mode?: typeof ASSISTANT_MODE_CLIENT_COMMUNICATION;
+};
+
+export async function listAssistantRuns(
+  params: ListAssistantRunsParams = {},
+): Promise<AssistantRunListResponse> {
+  const query = new URLSearchParams();
+  if (typeof params.limit === "number") query.set("limit", String(params.limit));
+  if (params.run_status) query.set("run_status", params.run_status);
+  if (params.mode) query.set("mode", params.mode);
+  const qs = query.toString();
+  const url = qs ? `/v1/assistant/runs?${qs}` : "/v1/assistant/runs";
+  return apiFetch<AssistantRunListResponse>(url);
+}
+
+export async function getAssistantRun(runId: string): Promise<AssistantRunDetailResponse> {
+  return apiFetch<AssistantRunDetailResponse>(
+    `/v1/assistant/runs/${encodeURIComponent(runId)}`,
+  );
+}
+
+export type { AssistantRunTraceItem };

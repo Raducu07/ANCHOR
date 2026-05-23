@@ -5,10 +5,17 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   ASSISTANT_MODE_CLIENT_COMMUNICATION,
   getAssistantContract,
+  getAssistantRun,
+  listAssistantRuns,
   submitAssistantRun,
 } from "@/lib/assistant";
 import { ApiError } from "@/lib/api";
-import type { AssistantContractResponse, AssistantRunRecord } from "@/lib/types";
+import type {
+  AssistantContractResponse,
+  AssistantRunDetailResponse,
+  AssistantRunRecord,
+  AssistantRunTraceItem,
+} from "@/lib/types";
 
 // PR 2B: client_communication is the only active assistant mode. Safe
 // requests may return a transient draft for review; unsafe clinical
@@ -51,7 +58,52 @@ export function AssistantSurface() {
   const [clinicianFacts, setClinicianFacts] = useState("");
   const [runState, setRunState] = useState<RunState>({ kind: "idle" });
 
+  // M6.3 — evidence/traceability surface state.
+  const [evidenceRuns, setEvidenceRuns] = useState<AssistantRunTraceItem[] | null>(null);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedDetail, setSelectedDetail] = useState<AssistantRunDetailResponse | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
   const canSubmit = communicationGoal.trim().length > 0 && clinicianFacts.trim().length > 0;
+
+  async function loadEvidence() {
+    setEvidenceLoading(true);
+    setEvidenceError(null);
+    try {
+      const result = await listAssistantRuns({ limit: 25 });
+      setEvidenceRuns(result.runs ?? []);
+    } catch (err) {
+      setEvidenceRuns(null);
+      const message = err instanceof ApiError ? err.message : "Unable to load recent assistant runs.";
+      setEvidenceError(message);
+    } finally {
+      setEvidenceLoading(false);
+    }
+  }
+
+  async function selectRun(runId: string) {
+    setSelectedRunId(runId);
+    setSelectedDetail(null);
+    setDetailError(null);
+    setDetailLoading(true);
+    // Scroll the evidence section into view so the detail is visible.
+    if (typeof document !== "undefined") {
+      const el = document.getElementById("assistant-evidence");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    try {
+      const detail = await getAssistantRun(runId);
+      setSelectedDetail(detail);
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Unable to load assistant run detail.";
+      setDetailError(message);
+    } finally {
+      setDetailLoading(false);
+    }
+  }
 
   async function loadContract(isRefresh = false) {
     try {
@@ -366,7 +418,13 @@ export function AssistantSurface() {
       </NativeCard>
 
       {runState.kind === "record" ? (
-        <RunRecordCard record={runState.data} />
+        <RunRecordCard
+          record={runState.data}
+          onViewMetadata={(runId) => {
+            void loadEvidence();
+            void selectRun(runId);
+          }}
+        />
       ) : runState.kind === "unavailable" ? (
         <NativeCard>
           <UnavailableState title="Run endpoint unavailable" description={runState.reason} />
@@ -390,6 +448,19 @@ export function AssistantSurface() {
           <p className="mt-2 text-sm leading-6 text-rose-600">{runState.message}</p>
         </NativeCard>
       ) : null}
+
+      <EvidenceSection
+        id="assistant-evidence"
+        runs={evidenceRuns}
+        loading={evidenceLoading}
+        error={evidenceError}
+        onRefresh={() => void loadEvidence()}
+        selectedRunId={selectedRunId}
+        selectedDetail={selectedDetail}
+        detailLoading={detailLoading}
+        detailError={detailError}
+        onSelectRun={(runId) => void selectRun(runId)}
+      />
 
       <div className="grid gap-4 xl:grid-cols-3">
         <NavCard
@@ -444,7 +515,13 @@ function truncateHash(hash: string | null | undefined): string {
   return `${hash.slice(0, 10)}…${hash.slice(-6)}`;
 }
 
-function RunRecordCard({ record }: { record: AssistantRunRecord }) {
+function RunRecordCard({
+  record,
+  onViewMetadata,
+}: {
+  record: AssistantRunRecord;
+  onViewMetadata?: (runId: string) => void;
+}) {
   const runId = record.run_id ?? record.request_id;
   const noRawContent = record.no_raw_content_stored ?? record.no_content_stored ?? true;
   const piiDetected = record.pii_detected === true;
@@ -553,7 +630,16 @@ function RunRecordCard({ record }: { record: AssistantRunRecord }) {
         </p>
       </div>
 
-      <div className="mt-4">
+      <div className="mt-4 flex flex-wrap items-center gap-4">
+        {onViewMetadata && runId ? (
+          <button
+            type="button"
+            onClick={() => onViewMetadata(String(runId))}
+            className="text-sm font-medium text-slate-900 underline underline-offset-4"
+          >
+            View metadata record
+          </button>
+        ) : null}
         <Link
           href="/receipts"
           className="text-sm font-medium text-slate-900 underline underline-offset-4"
@@ -666,6 +752,274 @@ function FailurePanel() {
         recorded. Governance metadata for this run has been captured.
       </p>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// M6.3 — Evidence/traceability section
+// ---------------------------------------------------------------------
+//
+// Metadata-only governance evidence. This is NOT a chat history. It shows
+// the most recent assistant_runs metadata for the clinic and lets a user
+// open a single run's metadata detail. No draft text, no raw input, no
+// prompt is ever loaded from the backend on this surface.
+
+function EvidenceSection({
+  id,
+  runs,
+  loading,
+  error,
+  onRefresh,
+  selectedRunId,
+  selectedDetail,
+  detailLoading,
+  detailError,
+  onSelectRun,
+}: {
+  id: string;
+  runs: AssistantRunTraceItem[] | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  selectedRunId: string | null;
+  selectedDetail: AssistantRunDetailResponse | null;
+  detailLoading: boolean;
+  detailError: string | null;
+  onSelectRun: (runId: string) => void;
+}) {
+  return (
+    <NativeCard>
+      <div id={id} className="flex flex-wrap items-start justify-between gap-4">
+        <SectionTitle
+          title="Recent Assistant runs"
+          description="Metadata-only Assistant evidence. No raw input, prompt, or draft output is stored. This is not a chat history."
+        />
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="inline-flex shrink-0 items-center rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm transition hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loading ? "Loading…" : runs === null ? "View recent runs" : "Refresh runs"}
+        </button>
+      </div>
+
+      {runs === null && !loading && !error ? (
+        <p className="mt-3 text-sm leading-6 text-slate-600">
+          Click <span className="font-medium">View recent runs</span> to load metadata-only
+          Assistant evidence for this clinic.
+        </p>
+      ) : null}
+
+      {error ? (
+        <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+          <p className="text-sm font-semibold text-rose-700">Could not load Assistant runs</p>
+          <p className="mt-1 text-sm leading-6 text-rose-600">{error}</p>
+        </div>
+      ) : null}
+
+      {runs && runs.length === 0 && !loading ? (
+        <p className="mt-3 text-sm leading-6 text-slate-600">
+          No Assistant runs recorded yet for this clinic.
+        </p>
+      ) : null}
+
+      {runs && runs.length > 0 ? (
+        <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+          <table className="w-full table-fixed text-left text-sm">
+            <thead className="bg-slate-50">
+              <tr className="border-b border-slate-200 text-[11px] uppercase tracking-[0.1em] text-slate-500">
+                <th className="w-[12%] px-3 py-2 font-semibold">Run ID</th>
+                <th className="w-[14%] px-3 py-2 font-semibold">Created</th>
+                <th className="w-[12%] px-3 py-2 font-semibold">Status</th>
+                <th className="w-[12%] px-3 py-2 font-semibold">Review</th>
+                <th className="w-[8%] px-3 py-2 font-semibold">PII</th>
+                <th className="w-[8%] px-3 py-2 font-semibold">Refused</th>
+                <th className="w-[14%] px-3 py-2 font-semibold">Output hash</th>
+                <th className="w-[14%] px-3 py-2 font-semibold">Model</th>
+                <th className="w-[6%] px-3 py-2 font-semibold" />
+              </tr>
+            </thead>
+            <tbody>
+              {runs.map((r) => {
+                const isSelected = selectedRunId === r.run_id;
+                return (
+                  <tr
+                    key={r.run_id}
+                    className={[
+                      "border-b border-slate-100 last:border-b-0",
+                      isSelected ? "bg-slate-50" : "hover:bg-slate-50/50",
+                    ].join(" ")}
+                  >
+                    <td className="px-3 py-2 font-mono text-[12px] text-slate-700">
+                      {`${r.run_id.slice(0, 8)}…`}
+                    </td>
+                    <td className="px-3 py-2 text-slate-700">{formatDateTime(r.created_at)}</td>
+                    <td className="px-3 py-2 text-slate-700">{runStatusLabel(r.run_status)}</td>
+                    <td className="px-3 py-2 text-slate-700">{r.review_status}</td>
+                    <td className="px-3 py-2 text-slate-700">{r.pii_detected ? "Yes" : "No"}</td>
+                    <td className="px-3 py-2 text-slate-700">
+                      {r.refusal_reason_codes.length > 0 ? "Yes" : "No"}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-[12px] text-slate-700">
+                      {truncateHash(r.output_sha256)}
+                    </td>
+                    <td className="px-3 py-2 text-slate-700">
+                      {r.model_provider || r.model_name
+                        ? `${r.model_provider ?? "-"} / ${r.model_name ?? "-"}`
+                        : "Not invoked"}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => onSelectRun(r.run_id)}
+                        className="text-xs font-medium text-slate-900 underline underline-offset-4"
+                      >
+                        Open
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {selectedRunId ? (
+        <RunDetailPanel
+          runId={selectedRunId}
+          detail={selectedDetail}
+          loading={detailLoading}
+          error={detailError}
+        />
+      ) : null}
+
+      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <p className="text-xs leading-5 text-slate-600">
+          Output hash confirms a draft was produced without retaining the draft. Refused runs
+          show safety flags and refusal reason codes. ANCHOR stores hashes, field keys, PII
+          flags, safety flags, and run status only.
+        </p>
+      </div>
+    </NativeCard>
+  );
+}
+
+function RunDetailPanel({
+  runId,
+  detail,
+  loading,
+  error,
+}: {
+  runId: string;
+  detail: AssistantRunDetailResponse | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  return (
+    <section className="mt-5 rounded-xl border border-slate-200 bg-white p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-900">Run metadata</p>
+          <p className="mt-1 text-xs leading-5 text-slate-500 font-mono">{runId}</p>
+        </div>
+        {detail ? (
+          <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-emerald-700">
+            Metadata only
+          </span>
+        ) : null}
+      </div>
+
+      {loading ? (
+        <p className="mt-4 text-sm text-slate-500">Loading metadata…</p>
+      ) : null}
+
+      {error ? (
+        <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+          <p className="text-sm font-semibold text-rose-700">Could not load run metadata</p>
+          <p className="mt-1 text-sm leading-6 text-rose-600">{error}</p>
+        </div>
+      ) : null}
+
+      {detail ? <RunDetailBody detail={detail} /> : null}
+    </section>
+  );
+}
+
+function RunDetailBody({ detail }: { detail: AssistantRunDetailResponse }) {
+  const r = detail.run;
+  return (
+    <>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCell
+          label="Storage policy"
+          value={detail.storage_policy ?? "metadata_only_by_default"}
+          tone="success"
+        />
+        <MetricCell label="Raw input stored" value={detail.raw_content_stored ? "Yes" : "No"} tone="success" />
+        <MetricCell label="Prompt stored" value={detail.prompt_stored ? "Yes" : "No"} tone="success" />
+        <MetricCell label="Draft stored" value={detail.draft_stored ? "Yes" : "No"} tone="success" />
+      </div>
+
+      <div className="mt-4 space-y-2">
+        <DetailRow label="Run status" value={runStatusLabel(r.run_status)} />
+        <DetailRow label="Review status" value={r.review_status} />
+        <DetailRow label="Mode" value={r.mode} />
+        <DetailRow label="Contract" value={r.contract_version} />
+        <DetailRow label="Workflow origin" value={r.workflow_origin} />
+        <DetailRow
+          label="Input fields"
+          value={r.input_field_keys.length ? r.input_field_keys.join(", ") : "None"}
+        />
+        <DetailRow
+          label="PII detected"
+          value={r.pii_detected ? "Yes" : "No"}
+        />
+        <DetailRow
+          label="PII types"
+          value={r.pii_types.length ? r.pii_types.join(", ") : "None"}
+        />
+        <DetailRow
+          label="Safety flags"
+          value={r.safety_flags.length ? r.safety_flags.join(", ") : "None"}
+        />
+        <DetailRow
+          label="Refusal codes"
+          value={r.refusal_reason_codes.length ? r.refusal_reason_codes.join(", ") : "None"}
+        />
+        <DetailRow label="Input hash" value={r.input_sha256} mono />
+        <DetailRow
+          label="Output hash"
+          value={r.output_sha256 ? r.output_sha256 : "None"}
+          mono={!!r.output_sha256}
+        />
+        <DetailRow
+          label="Model"
+          value={
+            r.model_provider || r.model_name
+              ? `${r.model_provider ?? "-"} / ${r.model_name ?? "-"}`
+              : "Not invoked"
+          }
+        />
+        <DetailRow
+          label="Receipt"
+          value={r.receipt_id ? r.receipt_id : "Not linked yet"}
+          mono={!!r.receipt_id}
+        />
+        <DetailRow
+          label="Governance event"
+          value={r.governance_event_id ? r.governance_event_id : "Not linked yet"}
+          mono={!!r.governance_event_id}
+        />
+        <DetailRow label="Created at" value={formatDateTime(r.created_at)} />
+        <DetailRow label="Updated at" value={formatDateTime(r.updated_at)} />
+      </div>
+
+      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <p className="text-xs leading-5 text-slate-700">{detail.governance_note}</p>
+      </div>
+    </>
   );
 }
 

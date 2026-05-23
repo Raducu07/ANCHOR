@@ -374,3 +374,52 @@ export type AssistantRunEnvelope = {
   record?: AssistantRunRecord;
   [key: string]: unknown;
 };
+
+// M6.3 — Assistant traceability / evidence surface (metadata only).
+//
+// The trace item is what GET /v1/assistant/runs and GET /v1/assistant/runs/:id
+// return. It deliberately has NO `draft` / `input` / `prompt` field — those
+// are not stored by the backend and must not be implied by the wire type.
+
+export type AssistantRunTraceItem = {
+  run_id: string;
+  clinic_id: string;
+  clinic_user_id: string;
+  mode: string;
+  contract_version: string;
+  workflow_origin: string;
+  input_sha256: string;
+  output_sha256: string | null;
+  input_field_keys: string[];
+  pii_detected: boolean;
+  pii_types: string[];
+  safety_flags: string[];
+  refusal_reason_codes: string[];
+  review_status: string;
+  run_status:
+    | "created"
+    | "generation_succeeded"
+    | "generation_refused"
+    | "generation_failed"
+    | string;
+  receipt_id: string | null;
+  governance_event_id: string | null;
+  model_provider: string | null;
+  model_name: string | null;
+  created_at: string;
+  updated_at: string | null;
+};
+
+export type AssistantRunListResponse = {
+  runs: AssistantRunTraceItem[];
+  limit: number;
+};
+
+export type AssistantRunDetailResponse = {
+  run: AssistantRunTraceItem;
+  storage_policy: string;
+  raw_content_stored: boolean;
+  draft_stored: boolean;
+  prompt_stored: boolean;
+  governance_note: string;
+};
