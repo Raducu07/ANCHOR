@@ -68,10 +68,18 @@ class FakeDB:
         self.calls: List[Tuple[str, Dict[str, Any]]] = []
         self.committed = False
         self.rolled_back = False
+        # PR 2D: usage-limit count queries pop scalars from this queue in
+        # order (daily query first, then monthly). Empty queue => 0.
+        self.count_queue: List[int] = []
 
     def execute(self, statement: Any, params: Optional[Dict[str, Any]] = None) -> _FakeResult:
         sql = str(getattr(statement, "text", statement))
         self.calls.append((sql, dict(params or {})))
+
+        # PR 2D: count query for usage limits.
+        if "SELECT COUNT(*)" in sql and "assistant_runs" in sql:
+            value = self.count_queue.pop(0) if self.count_queue else 0
+            return _FakeResult({"c": value})
 
         if "INSERT INTO assistant_runs" in sql and params:
             row = {
@@ -133,6 +141,14 @@ class FakeDB:
 
     def has_update(self) -> bool:
         return bool(self.update_calls)
+
+    @property
+    def count_calls(self) -> List[Tuple[str, Dict[str, Any]]]:
+        return [
+            (sql, p)
+            for sql, p in self.calls
+            if "SELECT COUNT(*)" in sql and "assistant_runs" in sql
+        ]
 
 
 def build_app(

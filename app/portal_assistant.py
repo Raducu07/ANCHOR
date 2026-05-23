@@ -35,6 +35,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -50,6 +51,10 @@ from app.assistant_prompts import (
     FIXED_REFUSAL_MESSAGE,
     GOVERNANCE_NOTE,
     build_client_communication_user_message,
+)
+from app.assistant_usage_limits import (
+    AssistantUsageLimitExceeded,
+    enforce_assistant_run_limits,
 )
 from app.auth_and_rls import require_clinic_user
 from app.db import get_db
@@ -570,6 +575,42 @@ def create_assistant_run(
     if mode != MODE_CLIENT_COMMUNICATION:
         raise HTTPException(status_code=400, detail="unsupported_mode")
 
+    clinic_id_s = str(clinic_id)
+    clinic_user_id_s = str(clinic_user_id)
+
+    # PR 2D: cost-control guardrail.
+    # Check usage limits BEFORE any input hashing, assistant_runs insert,
+    # safety gate, or model call. An over-limit clinic must not be able to
+    # silently create uncontrolled records or Anthropic spend.
+    try:
+        enforce_assistant_run_limits(db, clinic_id=clinic_id_s)
+    except AssistantUsageLimitExceeded as exc:
+        code = (
+            "assistant_daily_run_limit_exceeded"
+            if exc.window == "day"
+            else "assistant_monthly_run_limit_exceeded"
+        )
+        # Safe metadata-only log. No input, prompt, or draft is involved
+        # because none of those have been computed yet.
+        logger.warning(
+            "assistant_run_limit_exceeded",
+            extra={
+                "route": getattr(request.url, "path", None),
+                "clinic_id": clinic_id_s,
+                "window": exc.window,
+                "limit": exc.limit,
+                "current_count": exc.current_count,
+            },
+        )
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": code,
+                "limit": exc.limit,
+                "window": exc.window,
+            },
+        )
+
     validated = _validate_client_communication(payload.input)
     validated_dict: Dict[str, Any] = validated.model_dump()
 
@@ -581,8 +622,6 @@ def create_assistant_run(
     pii_detected = len(pii_types) > 0
 
     run_id = uuid.uuid4()
-    clinic_id_s = str(clinic_id)
-    clinic_user_id_s = str(clinic_user_id)
 
     # Step 3: INSERT before any model call.
     row = _insert_assistant_run_created(
