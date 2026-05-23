@@ -34,7 +34,9 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -306,6 +308,70 @@ class AssistantRunCreateResponse(BaseModel):
     run: AssistantRunMetadata
 
 
+# ---------------------------------------------------------------------
+# M6.3 — Traceability / evidence response models
+# ---------------------------------------------------------------------
+#
+# These response models intentionally OMIT `draft`. The traceability surface
+# is metadata-only governance evidence — it must not include or imply any
+# stored raw content. `draft_stored=False` is asserted explicitly on the
+# detail response.
+
+_TRACEABILITY_GOVERNANCE_NOTE = (
+    "Assistant run records contain metadata only. Raw input, prompts, and "
+    "draft output are not stored."
+)
+
+
+class AssistantRunTraceItem(BaseModel):
+    """Metadata-only view of an assistant_runs row. Contains no draft, no
+    input text, no prompt text — only hashes, key lists, flags, and the
+    governance pointers."""
+
+    run_id: uuid.UUID
+    clinic_id: uuid.UUID
+    clinic_user_id: uuid.UUID
+    mode: str
+    contract_version: str
+    workflow_origin: str
+
+    input_sha256: str
+    output_sha256: Optional[str] = None
+
+    input_field_keys: List[str] = Field(default_factory=list)
+
+    pii_detected: bool
+    pii_types: List[str] = Field(default_factory=list)
+    safety_flags: List[str] = Field(default_factory=list)
+    refusal_reason_codes: List[str] = Field(default_factory=list)
+
+    review_status: str
+    run_status: str
+
+    receipt_id: Optional[uuid.UUID] = None
+    governance_event_id: Optional[uuid.UUID] = None
+
+    model_provider: Optional[str] = None
+    model_name: Optional[str] = None
+
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class AssistantRunListResponse(BaseModel):
+    runs: List[AssistantRunTraceItem]
+    limit: int
+
+
+class AssistantRunDetailResponse(BaseModel):
+    run: AssistantRunTraceItem
+    storage_policy: str = "metadata_only_by_default"
+    raw_content_stored: bool = False
+    draft_stored: bool = False
+    prompt_stored: bool = False
+    governance_note: str = _TRACEABILITY_GOVERNANCE_NOTE
+
+
 class AssistantContractItem(BaseModel):
     mode: str
     contract_version: str
@@ -344,6 +410,167 @@ def get_assistant_contracts() -> AssistantContractsResponse:
             ),
         ],
     )
+
+
+# ---------------------------------------------------------------------
+# M6.3 — Traceability endpoints
+# ---------------------------------------------------------------------
+
+_ALL_RUN_STATUSES = {
+    RUN_STATUS_CREATED,
+    RUN_STATUS_SUCCEEDED,
+    RUN_STATUS_REFUSED,
+    RUN_STATUS_FAILED,
+}
+
+
+def _row_to_trace_item(row: Dict[str, Any]) -> AssistantRunTraceItem:
+    """Map a SELECT row (dict-like Mapping) into the metadata-only
+    response model. psycopg returns jsonb as already-decoded Python
+    objects, so the list fields can pass through unchanged."""
+    return AssistantRunTraceItem(
+        run_id=row["run_id"],
+        clinic_id=row["clinic_id"],
+        clinic_user_id=row["clinic_user_id"],
+        mode=row["mode"],
+        contract_version=row["contract_version"],
+        workflow_origin=row["workflow_origin"],
+        input_sha256=row["input_sha256"],
+        output_sha256=row.get("output_sha256"),
+        input_field_keys=list(row.get("input_field_keys") or []),
+        pii_detected=bool(row.get("pii_detected") or False),
+        pii_types=list(row.get("pii_types") or []),
+        safety_flags=list(row.get("safety_flags") or []),
+        refusal_reason_codes=list(row.get("refusal_reason_codes") or []),
+        review_status=row["review_status"],
+        run_status=row.get("run_status") or RUN_STATUS_CREATED,
+        receipt_id=row.get("receipt_id"),
+        governance_event_id=row.get("governance_event_id"),
+        model_provider=row.get("model_provider"),
+        model_name=row.get("model_name"),
+        created_at=row["created_at"],
+        updated_at=row.get("updated_at"),
+    )
+
+
+_TRACE_SELECT_COLUMNS = """
+    id AS run_id,
+    clinic_id,
+    clinic_user_id,
+    mode,
+    contract_version,
+    workflow_origin,
+    input_sha256,
+    output_sha256,
+    input_field_keys,
+    pii_detected,
+    pii_types,
+    safety_flags,
+    refusal_reason_codes,
+    review_status,
+    run_status,
+    receipt_id,
+    governance_event_id,
+    model_provider,
+    model_name,
+    created_at,
+    updated_at
+"""
+
+
+@router.get("/runs", response_model=AssistantRunListResponse)
+def list_assistant_runs(
+    request: Request,
+    db: Session = Depends(get_db),
+    limit: int = Query(default=25, ge=1, le=100),
+    run_status: Optional[str] = Query(default=None),
+    mode: Optional[str] = Query(default=None),
+) -> AssistantRunListResponse:
+    """List recent Assistant run metadata for the authenticated clinic.
+
+    Metadata-only — never includes raw input, prompts, or draft output."""
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
+
+    if run_status is not None and run_status not in _ALL_RUN_STATUSES:
+        raise HTTPException(status_code=400, detail="invalid_run_status")
+
+    if mode is not None and mode not in _KNOWN_MODES:
+        raise HTTPException(status_code=400, detail="invalid_mode")
+
+    filters: List[str] = []
+    params: Dict[str, Any] = {"clinic_id": str(clinic_id), "limit": int(limit)}
+    if run_status is not None:
+        filters.append("run_status = :run_status")
+        params["run_status"] = run_status
+    if mode is not None:
+        filters.append("mode = :mode")
+        params["mode"] = mode
+
+    where_extra = ""
+    if filters:
+        where_extra = " AND " + " AND ".join(filters)
+
+    rows = (
+        db.execute(
+            text(
+                f"""
+                SELECT {_TRACE_SELECT_COLUMNS}
+                FROM assistant_runs
+                WHERE clinic_id = CAST(:clinic_id AS uuid)
+                {where_extra}
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            params,
+        )
+        .mappings()
+        .all()
+    )
+
+    items = [_row_to_trace_item(dict(r)) for r in rows]
+    return AssistantRunListResponse(runs=items, limit=int(limit))
+
+
+@router.get("/runs/{run_id}", response_model=AssistantRunDetailResponse)
+def get_assistant_run_detail(
+    run_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AssistantRunDetailResponse:
+    """Fetch one Assistant run metadata record by ID. RLS + explicit
+    clinic_id predicate ensure cross-clinic isolation; a non-matching ID
+    returns 404 with no information about whether the row exists for
+    another clinic."""
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
+
+    row = (
+        db.execute(
+            text(
+                f"""
+                SELECT {_TRACE_SELECT_COLUMNS}
+                FROM assistant_runs
+                WHERE clinic_id = CAST(:clinic_id AS uuid)
+                  AND id = CAST(:run_id AS uuid)
+                LIMIT 1
+                """
+            ),
+            {"clinic_id": str(clinic_id), "run_id": str(run_id)},
+        )
+        .mappings()
+        .first()
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="assistant_run_not_found")
+
+    return AssistantRunDetailResponse(run=_row_to_trace_item(dict(row)))
 
 
 def _validate_client_communication(input_obj: Dict[str, Any]) -> ClientCommunicationInput:

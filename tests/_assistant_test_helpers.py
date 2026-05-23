@@ -40,8 +40,13 @@ def default_success_stub(*, system_prompt: str, user_message: str) -> Tuple[str,
 
 
 class _FakeResult:
-    def __init__(self, row: Optional[Dict[str, Any]]):
+    def __init__(
+        self,
+        row: Optional[Dict[str, Any]] = None,
+        rows: Optional[List[Dict[str, Any]]] = None,
+    ):
         self._row = row
+        self._rows = rows
 
     def mappings(self) -> "_FakeResult":
         return self
@@ -51,6 +56,9 @@ class _FakeResult:
 
     def fetchone(self) -> Optional[Dict[str, Any]]:
         return self._row
+
+    def all(self) -> List[Dict[str, Any]]:
+        return list(self._rows or [])
 
 
 def _decode_jsonb(value: Any) -> Any:
@@ -71,6 +79,12 @@ class FakeDB:
         # PR 2D: usage-limit count queries pop scalars from this queue in
         # order (daily query first, then monthly). Empty queue => 0.
         self.count_queue: List[int] = []
+        # M6.3: traceability list/detail SELECTs return these rows.
+        # `select_list_rows` is returned for SELECTs with ORDER BY (the
+        # traceability list endpoint); `select_detail_row` is returned for
+        # SELECTs whose params include a `run_id` (the detail endpoint).
+        self.select_list_rows: List[Dict[str, Any]] = []
+        self.select_detail_row: Optional[Dict[str, Any]] = None
 
     def execute(self, statement: Any, params: Optional[Dict[str, Any]] = None) -> _FakeResult:
         sql = str(getattr(statement, "text", statement))
@@ -79,7 +93,30 @@ class FakeDB:
         # PR 2D: count query for usage limits.
         if "SELECT COUNT(*)" in sql and "assistant_runs" in sql:
             value = self.count_queue.pop(0) if self.count_queue else 0
-            return _FakeResult({"c": value})
+            return _FakeResult(row={"c": value})
+
+        # M6.3: traceability detail SELECT (params include run_id).
+        if (
+            "SELECT" in sql
+            and "FROM assistant_runs" in sql
+            and params is not None
+            and "run_id" in params
+            and "INSERT" not in sql
+            and "UPDATE" not in sql
+            and "COUNT(*)" not in sql
+        ):
+            return _FakeResult(row=self.select_detail_row)
+
+        # M6.3: traceability list SELECT (ORDER BY + LIMIT).
+        if (
+            "SELECT" in sql
+            and "FROM assistant_runs" in sql
+            and "ORDER BY" in sql
+            and "INSERT" not in sql
+            and "UPDATE" not in sql
+            and "COUNT(*)" not in sql
+        ):
+            return _FakeResult(rows=list(self.select_list_rows))
 
         if "INSERT INTO assistant_runs" in sql and params:
             row = {
