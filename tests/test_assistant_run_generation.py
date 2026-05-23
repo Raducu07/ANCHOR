@@ -519,3 +519,76 @@ def test_response_shape_has_all_required_metadata_fields() -> None:
     }
     missing = required - set(run.keys())
     assert not missing, f"missing response fields: {missing}"
+
+
+# ---------------------------------------------------------------------
+# PR 2C — prompt quality (client-facing draft only, no document scaffolding)
+# ---------------------------------------------------------------------
+
+def test_system_prompt_requires_client_facing_draft_only() -> None:
+    from app.assistant_prompts import CLIENT_COMMUNICATION_SYSTEM_PROMPT
+
+    prompt = CLIENT_COMMUNICATION_SYSTEM_PROMPT
+
+    # Explicit "return only the client-facing draft" instruction.
+    assert "Return ONLY the client-facing draft" in prompt
+
+    # Markdown / horizontal-rule prohibitions.
+    lower = prompt.lower()
+    assert "markdown heading" in lower
+    assert "horizontal rule" in lower
+
+    # No internal drafting notes / meta-commentary.
+    assert "Internal drafting notes" in prompt or "internal drafting notes" in lower
+    assert "notes for the clinical team" in lower
+
+    # Inline placeholder guidance is present.
+    assert "[CONFIRM: owner name — add before use]" in prompt
+    assert "[CONFIRM: patient name — add before use]" in prompt
+    assert "[CONFIRM: practice name — add before use]" in prompt
+    assert "[CONFIRM: not provided — add before use]" in prompt
+
+    # UK English / tone guidance preserved.
+    assert "UK" in prompt
+
+
+def test_system_prompt_preserves_hard_safety_rules() -> None:
+    """PR 2C tightens output formatting but must not weaken the safety
+    boundary established in PR 2B."""
+    from app.assistant_prompts import CLIENT_COMMUNICATION_SYSTEM_PROMPT
+
+    prompt = CLIENT_COMMUNICATION_SYSTEM_PROMPT
+
+    # Core clinical prohibitions.
+    for needle in [
+        "diagnosis",
+        "treatment plans",
+        "drug recommendations",
+        "drug doses",
+        "triage decisions",
+        "discharge decisions",
+        "clinical judgement",
+    ]:
+        assert needle in prompt, f"safety rule missing from prompt: {needle!r}"
+
+    # Drafting boundary: clinician-confirmed facts only.
+    assert "Draft ONLY from facts explicitly provided by the clinician" in prompt
+
+    # Mandatory review-required closing line is still required verbatim.
+    assert (
+        "⚠ REVIEW REQUIRED — check against the clinical record before use. "
+        "ANCHOR does not replace professional judgement."
+    ) in prompt
+
+
+def test_system_prompt_forbids_meta_introductions() -> None:
+    """The prompt should explicitly forbid 'Here is the draft:' style
+    intros, header blocks, and subject lines so the model returns a
+    ready-to-send message."""
+    from app.assistant_prompts import CLIENT_COMMUNICATION_SYSTEM_PROMPT
+
+    prompt = CLIENT_COMMUNICATION_SYSTEM_PROMPT
+    lower = prompt.lower()
+    assert "subject line" in lower
+    assert "signature block" in lower
+    assert "here is the draft" in lower
