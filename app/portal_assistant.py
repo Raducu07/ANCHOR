@@ -48,6 +48,10 @@ from app.assistant_anthropic_client import (
     generate_client_communication_draft,
     get_model_config,
 )
+from app.assistant_output_safety import (
+    OUTPUT_BLOCKED_MESSAGE,
+    validate_client_communication_output,
+)
 from app.assistant_prompts import (
     CLIENT_COMMUNICATION_SYSTEM_PROMPT,
     FIXED_REFUSAL_MESSAGE,
@@ -81,6 +85,9 @@ RUN_STATUS_CREATED = "created"
 RUN_STATUS_SUCCEEDED = "generation_succeeded"
 RUN_STATUS_FAILED = "generation_failed"
 RUN_STATUS_REFUSED = "generation_refused"
+# M6.6 — model returned a draft but ANCHOR's post-output safety
+# validator blocked it before the route returned the draft.
+RUN_STATUS_OUTPUT_BLOCKED = "output_blocked"
 
 
 # ---------------------------------------------------------------------
@@ -291,6 +298,11 @@ class AssistantRunMetadata(BaseModel):
     run_status: str
     draft: Optional[str] = None
     refused: bool = False
+    # M6.6 — true when the model produced a draft but ANCHOR's
+    # post-output safety validator blocked it. Distinct from `refused`,
+    # which still means "refused before model call".
+    blocked: bool = False
+    blocked_message: Optional[str] = None
     refusal_reason_codes: List[str] = Field(default_factory=list)
     safety_flags: List[str] = Field(default_factory=list)
     pii_detected: bool
@@ -1347,6 +1359,49 @@ def _update_assistant_run_failed(
     )
 
 
+def _update_assistant_run_output_blocked(
+    db: Session,
+    *,
+    run_id: uuid.UUID,
+    clinic_id: str,
+    output_sha256: str,
+    model_provider: str,
+    model_name: str,
+    safety_flags: List[str],
+    refusal_reason_codes: List[str],
+) -> None:
+    """M6.6 — model produced a draft but ANCHOR blocked it. The hash IS
+    persisted because a generated output existed (governance evidence)
+    but the raw draft is never stored. Model provider/name are kept
+    populated because the model was invoked."""
+    db.execute(
+        text(
+            """
+            UPDATE assistant_runs
+            SET run_status = :run_status,
+                output_sha256 = :output_sha256,
+                model_provider = :model_provider,
+                model_name = :model_name,
+                safety_flags = CAST(:safety_flags AS jsonb),
+                refusal_reason_codes = CAST(:refusal_reason_codes AS jsonb),
+                updated_at = now()
+            WHERE id = CAST(:run_id AS uuid)
+              AND clinic_id = CAST(:clinic_id AS uuid)
+            """
+        ),
+        {
+            "run_id": str(run_id),
+            "clinic_id": clinic_id,
+            "run_status": RUN_STATUS_OUTPUT_BLOCKED,
+            "output_sha256": output_sha256,
+            "model_provider": model_provider,
+            "model_name": model_name,
+            "safety_flags": json.dumps(safety_flags),
+            "refusal_reason_codes": json.dumps(refusal_reason_codes),
+        },
+    )
+
+
 # ---------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------
@@ -1523,8 +1578,66 @@ def create_assistant_run(
             detail="assistant_generation_unavailable",
         )
 
-    # Step 5b success: hash and record.
+    # Step 5b — model returned a draft. Hash it now so the same hash is
+    # recorded whether validation allows or blocks the draft (governance
+    # evidence that a generated output existed).
     output_sha256 = sha256_hex(draft)
+
+    # Step 5c (M6.6) — post-output safety validation. The validator
+    # operates on the transient draft string and returns only codes; the
+    # raw draft is never returned, logged, or persisted from this point.
+    safety_result = validate_client_communication_output(draft)
+
+    if not safety_result.allowed:
+        _update_assistant_run_output_blocked(
+            db,
+            run_id=run_id,
+            clinic_id=clinic_id_s,
+            output_sha256=output_sha256,
+            model_provider=provider,
+            model_name=model_name,
+            safety_flags=list(safety_result.safety_flags),
+            refusal_reason_codes=list(safety_result.refusal_reason_codes),
+        )
+        logger.warning(
+            "assistant_output_blocked",
+            extra={
+                "route": getattr(request.url, "path", None),
+                "clinic_id": clinic_id_s,
+                "clinic_user_id": clinic_user_id_s,
+                "run_id": str(run_id),
+                "safety_flags": list(safety_result.safety_flags),
+                "refusal_reason_codes": list(safety_result.refusal_reason_codes),
+                "model_provider": provider,
+                "model_name": model_name,
+            },
+        )
+        return AssistantRunCreateResponse(
+            run=AssistantRunMetadata(
+                run_id=run_id,
+                mode=MODE_CLIENT_COMMUNICATION,
+                contract_version=ASSISTANT_CONTRACT_VERSION,
+                run_status=RUN_STATUS_OUTPUT_BLOCKED,
+                # NEVER return the raw blocked draft.
+                draft=None,
+                refused=True,
+                blocked=True,
+                blocked_message=OUTPUT_BLOCKED_MESSAGE,
+                refusal_reason_codes=list(safety_result.refusal_reason_codes),
+                safety_flags=list(safety_result.safety_flags),
+                pii_detected=pii_detected,
+                pii_types=list(pii_types),
+                input_field_keys=list(input_field_keys),
+                review_status="not_reviewed",
+                output_sha256=output_sha256,
+                model_provider=provider,
+                model_name=model_name,
+                generation_enabled=True,
+                governance_note=GOVERNANCE_NOTE,
+            )
+        )
+
+    # Step 5b success: hash recorded above; persist + return the draft.
     _update_assistant_run_succeeded(
         db,
         run_id=run_id,
@@ -1542,6 +1655,7 @@ def create_assistant_run(
             run_status=RUN_STATUS_SUCCEEDED,
             draft=draft,
             refused=False,
+            blocked=False,
             refusal_reason_codes=[],
             safety_flags=[],
             pii_detected=pii_detected,
