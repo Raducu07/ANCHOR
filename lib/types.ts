@@ -406,9 +406,26 @@ export type AssistantRunTraceItem = {
   governance_event_id: string | null;
   model_provider: string | null;
   model_name: string | null;
+  // M6.4 — metadata-only human review evidence. Optional for backward
+  // compatibility with older deployments / stale clients.
+  review_decision?: string | null;
+  reviewed_at?: string | null;
+  reviewed_by_user_id?: string | null;
   created_at: string;
   updated_at: string | null;
 };
+
+// M6.4 — review-state PATCH wire types.
+export type AssistantReviewStatusInput =
+  | "reviewed_approved"
+  | "reviewed_rejected"
+  | "reviewed_needs_edit";
+
+export type AssistantRunReviewUpdateRequest = {
+  review_status: AssistantReviewStatusInput;
+};
+
+export type AssistantRunReviewUpdateResponse = AssistantRunDetailResponse;
 
 export type AssistantRunListResponse = {
   runs: AssistantRunTraceItem[];

@@ -8,10 +8,12 @@ import {
   getAssistantRun,
   listAssistantRuns,
   submitAssistantRun,
+  updateAssistantRunReview,
 } from "@/lib/assistant";
 import { ApiError } from "@/lib/api";
 import type {
   AssistantContractResponse,
+  AssistantReviewStatusInput,
   AssistantRunDetailResponse,
   AssistantRunRecord,
   AssistantRunTraceItem,
@@ -84,10 +86,34 @@ export function AssistantSurface() {
     }
   }
 
+  // M6.4 — review action state. `reviewSubmitting` is the runId being
+  // PATCHed (or null when idle); `reviewError` is the last error message.
+  const [reviewSubmitting, setReviewSubmitting] = useState<string | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+
+  async function updateReview(runId: string, reviewStatus: AssistantReviewStatusInput) {
+    setReviewSubmitting(runId);
+    setReviewError(null);
+    try {
+      const updated = await updateAssistantRunReview(runId, reviewStatus);
+      // Update the loaded detail in-place and refresh the recent-runs list
+      // so the new review state is visible without a manual reload.
+      setSelectedDetail(updated);
+      void loadEvidence();
+    } catch (err) {
+      const message =
+        err instanceof ApiError ? err.message : "Unable to record review outcome.";
+      setReviewError(message);
+    } finally {
+      setReviewSubmitting(null);
+    }
+  }
+
   async function selectRun(runId: string) {
     setSelectedRunId(runId);
     setSelectedDetail(null);
     setDetailError(null);
+    setReviewError(null);
     setDetailLoading(true);
     // Scroll the evidence section into view so the detail is visible.
     if (typeof document !== "undefined") {
@@ -460,6 +486,9 @@ export function AssistantSurface() {
         detailLoading={detailLoading}
         detailError={detailError}
         onSelectRun={(runId) => void selectRun(runId)}
+        onUpdateReview={(runId, status) => void updateReview(runId, status)}
+        reviewSubmitting={reviewSubmitting}
+        reviewError={reviewError}
       />
 
       <div className="grid gap-4 xl:grid-cols-3">
@@ -513,6 +542,37 @@ function truncateHash(hash: string | null | undefined): string {
   if (!hash) return "None";
   if (hash.length <= 16) return hash;
   return `${hash.slice(0, 10)}…${hash.slice(-6)}`;
+}
+
+function reviewStatusLabel(status: string | undefined | null): string {
+  switch (status) {
+    case "reviewed_approved":
+      return "Approved";
+    case "reviewed_rejected":
+      return "Rejected";
+    case "reviewed_needs_edit":
+      return "Needs edit";
+    case "not_reviewed":
+    case undefined:
+    case null:
+    case "":
+      return "Not reviewed";
+    default:
+      return String(status);
+  }
+}
+
+function reviewDecisionLabel(decision: string | undefined | null): string {
+  switch (decision) {
+    case "approved_for_use":
+      return "Approved for use";
+    case "rejected_not_safe":
+      return "Rejected — not safe";
+    case "needs_edit_before_use":
+      return "Needs edit before use";
+    default:
+      return decision ? String(decision) : "None";
+  }
 }
 
 function RunRecordCard({
@@ -775,6 +835,9 @@ function EvidenceSection({
   detailLoading,
   detailError,
   onSelectRun,
+  onUpdateReview,
+  reviewSubmitting,
+  reviewError,
 }: {
   id: string;
   runs: AssistantRunTraceItem[] | null;
@@ -786,6 +849,9 @@ function EvidenceSection({
   detailLoading: boolean;
   detailError: string | null;
   onSelectRun: (runId: string) => void;
+  onUpdateReview: (runId: string, reviewStatus: AssistantReviewStatusInput) => void;
+  reviewSubmitting: string | null;
+  reviewError: string | null;
 }) {
   return (
     <NativeCard>
@@ -856,7 +922,7 @@ function EvidenceSection({
                     </td>
                     <td className="px-3 py-2 text-slate-700">{formatDateTime(r.created_at)}</td>
                     <td className="px-3 py-2 text-slate-700">{runStatusLabel(r.run_status)}</td>
-                    <td className="px-3 py-2 text-slate-700">{r.review_status}</td>
+                    <td className="px-3 py-2 text-slate-700">{reviewStatusLabel(r.review_status)}</td>
                     <td className="px-3 py-2 text-slate-700">{r.pii_detected ? "Yes" : "No"}</td>
                     <td className="px-3 py-2 text-slate-700">
                       {r.refusal_reason_codes.length > 0 ? "Yes" : "No"}
@@ -892,6 +958,9 @@ function EvidenceSection({
           detail={selectedDetail}
           loading={detailLoading}
           error={detailError}
+          onUpdateReview={onUpdateReview}
+          reviewSubmitting={reviewSubmitting}
+          reviewError={reviewError}
         />
       ) : null}
 
@@ -911,11 +980,17 @@ function RunDetailPanel({
   detail,
   loading,
   error,
+  onUpdateReview,
+  reviewSubmitting,
+  reviewError,
 }: {
   runId: string;
   detail: AssistantRunDetailResponse | null;
   loading: boolean;
   error: string | null;
+  onUpdateReview: (runId: string, reviewStatus: AssistantReviewStatusInput) => void;
+  reviewSubmitting: string | null;
+  reviewError: string | null;
 }) {
   return (
     <section className="mt-5 rounded-xl border border-slate-200 bg-white p-5">
@@ -942,13 +1017,32 @@ function RunDetailPanel({
         </div>
       ) : null}
 
-      {detail ? <RunDetailBody detail={detail} /> : null}
+      {detail ? (
+        <RunDetailBody
+          detail={detail}
+          onUpdateReview={onUpdateReview}
+          reviewSubmitting={reviewSubmitting}
+          reviewError={reviewError}
+        />
+      ) : null}
     </section>
   );
 }
 
-function RunDetailBody({ detail }: { detail: AssistantRunDetailResponse }) {
+function RunDetailBody({
+  detail,
+  onUpdateReview,
+  reviewSubmitting,
+  reviewError,
+}: {
+  detail: AssistantRunDetailResponse;
+  onUpdateReview: (runId: string, reviewStatus: AssistantReviewStatusInput) => void;
+  reviewSubmitting: string | null;
+  reviewError: string | null;
+}) {
   const r = detail.run;
+  const isReviewed = r.review_status && r.review_status !== "not_reviewed";
+
   return (
     <>
       <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -962,9 +1056,34 @@ function RunDetailBody({ detail }: { detail: AssistantRunDetailResponse }) {
         <MetricCell label="Draft stored" value={detail.draft_stored ? "Yes" : "No"} tone="success" />
       </div>
 
+      {isReviewed ? (
+        <ReviewEvidenceCard
+          reviewStatus={r.review_status}
+          reviewDecision={r.review_decision ?? null}
+          reviewedAt={r.reviewed_at ?? null}
+          reviewedByUserId={r.reviewed_by_user_id ?? null}
+        />
+      ) : (
+        <ReviewActionArea
+          runId={r.run_id}
+          onUpdateReview={onUpdateReview}
+          submitting={reviewSubmitting === r.run_id}
+          error={reviewError}
+        />
+      )}
+
       <div className="mt-4 space-y-2">
         <DetailRow label="Run status" value={runStatusLabel(r.run_status)} />
-        <DetailRow label="Review status" value={r.review_status} />
+        <DetailRow label="Review status" value={reviewStatusLabel(r.review_status)} />
+        {r.review_decision ? (
+          <DetailRow label="Review decision" value={reviewDecisionLabel(r.review_decision)} />
+        ) : null}
+        {r.reviewed_at ? (
+          <DetailRow label="Reviewed at" value={formatDateTime(r.reviewed_at)} />
+        ) : null}
+        {r.reviewed_by_user_id ? (
+          <DetailRow label="Reviewed by" value={r.reviewed_by_user_id} mono />
+        ) : null}
         <DetailRow label="Mode" value={r.mode} />
         <DetailRow label="Contract" value={r.contract_version} />
         <DetailRow label="Workflow origin" value={r.workflow_origin} />
@@ -1020,6 +1139,111 @@ function RunDetailBody({ detail }: { detail: AssistantRunDetailResponse }) {
         <p className="text-xs leading-5 text-slate-700">{detail.governance_note}</p>
       </div>
     </>
+  );
+}
+
+function ReviewActionArea({
+  runId,
+  onUpdateReview,
+  submitting,
+  error,
+}: {
+  runId: string;
+  onUpdateReview: (runId: string, reviewStatus: AssistantReviewStatusInput) => void;
+  submitting: boolean;
+  error: string | null;
+}) {
+  return (
+    <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+      <p className="text-sm font-semibold text-amber-900">Record human review</p>
+      <p className="mt-1 text-xs leading-5 text-amber-800">
+        Record a metadata-only review outcome. Do not enter clinical notes here. ANCHOR does
+        not store draft text or clinical content. Human review is required before operational
+        use. This does not replace professional judgement.
+      </p>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => onUpdateReview(runId, "reviewed_approved")}
+          disabled={submitting}
+          className="inline-flex items-center rounded-lg border border-emerald-300 bg-white px-3 py-1.5 text-xs font-medium text-emerald-900 shadow-sm transition hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {submitting ? "Recording…" : "Mark approved"}
+        </button>
+        <button
+          type="button"
+          onClick={() => onUpdateReview(runId, "reviewed_needs_edit")}
+          disabled={submitting}
+          className="inline-flex items-center rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-900 shadow-sm transition hover:border-amber-400 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {submitting ? "Recording…" : "Mark needs edit"}
+        </button>
+        <button
+          type="button"
+          onClick={() => onUpdateReview(runId, "reviewed_rejected")}
+          disabled={submitting}
+          className="inline-flex items-center rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-medium text-rose-900 shadow-sm transition hover:border-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {submitting ? "Recording…" : "Mark rejected"}
+        </button>
+      </div>
+
+      {error ? (
+        <p className="mt-3 text-xs leading-5 text-rose-700">
+          Could not record review: {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ReviewEvidenceCard({
+  reviewStatus,
+  reviewDecision,
+  reviewedAt,
+  reviewedByUserId,
+}: {
+  reviewStatus: string;
+  reviewDecision: string | null;
+  reviewedAt: string | null;
+  reviewedByUserId: string | null;
+}) {
+  return (
+    <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-emerald-900">Review evidence</p>
+          <p className="mt-1 text-xs leading-5 text-emerald-800">
+            Metadata-only review evidence. Draft text is not stored. This does not replace
+            professional judgement.
+          </p>
+        </div>
+        <span className="shrink-0 rounded-full border border-emerald-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-emerald-700">
+          {reviewStatusLabel(reviewStatus)}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <div className="rounded-lg border border-emerald-100 bg-white px-3 py-2">
+          <p className="text-[11px] uppercase tracking-wide text-emerald-700">Decision</p>
+          <p className="mt-1 text-sm font-medium text-slate-900">
+            {reviewDecisionLabel(reviewDecision)}
+          </p>
+        </div>
+        <div className="rounded-lg border border-emerald-100 bg-white px-3 py-2">
+          <p className="text-[11px] uppercase tracking-wide text-emerald-700">Reviewed at</p>
+          <p className="mt-1 text-sm font-medium text-slate-900">
+            {reviewedAt ? formatDateTime(reviewedAt) : "—"}
+          </p>
+        </div>
+        <div className="rounded-lg border border-emerald-100 bg-white px-3 py-2 sm:col-span-2">
+          <p className="text-[11px] uppercase tracking-wide text-emerald-700">Reviewed by</p>
+          <p className="mt-1 font-mono text-xs text-slate-900">
+            {reviewedByUserId ?? "—"}
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 

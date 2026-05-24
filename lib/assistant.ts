@@ -1,10 +1,13 @@
 import { apiFetch } from "@/lib/api";
 import type {
   AssistantContractResponse,
+  AssistantReviewStatusInput,
   AssistantRunDetailResponse,
   AssistantRunEnvelope,
   AssistantRunListResponse,
   AssistantRunRecord,
+  AssistantRunReviewUpdateRequest,
+  AssistantRunReviewUpdateResponse,
   AssistantRunTraceItem,
 } from "@/lib/types";
 
@@ -86,3 +89,21 @@ export async function getAssistantRun(runId: string): Promise<AssistantRunDetail
 }
 
 export type { AssistantRunTraceItem };
+
+// M6.4 — record a metadata-only human review outcome for a single run.
+// Reviewer identity comes from the authenticated clinic_user context on
+// the backend; this function never sends notes, draft text, or reviewer
+// overrides.
+export async function updateAssistantRunReview(
+  runId: string,
+  reviewStatus: AssistantReviewStatusInput,
+): Promise<AssistantRunReviewUpdateResponse> {
+  const body: AssistantRunReviewUpdateRequest = { review_status: reviewStatus };
+  return apiFetch<AssistantRunReviewUpdateResponse>(
+    `/v1/assistant/runs/${encodeURIComponent(runId)}/review`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    },
+  );
+}
