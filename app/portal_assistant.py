@@ -334,6 +334,14 @@ class AssistantRunMetadata(BaseModel):
     model_name: Optional[str] = None
     generation_enabled: bool
     governance_note: str
+    # M6.7.1 — policy context surfaced on every Assistant run response.
+    # Null when the run was governed by the synthesised default policy
+    # (no persisted assistant_policy_settings row for the clinic).
+    # `assistant_validation_profile` reports the effective profile and
+    # therefore stays a non-null string ("standard" by default).
+    assistant_policy_id: Optional[uuid.UUID] = None
+    assistant_policy_version: Optional[int] = None
+    assistant_validation_profile: Optional[str] = None
 
 
 class AssistantRunCreateResponse(BaseModel):
@@ -399,6 +407,12 @@ class AssistantRunTraceItem(BaseModel):
     # populated by the GET-receipt endpoint that joins the receipts row.
     has_receipt: bool = False
     receipt_created_at: Optional[datetime] = None
+
+    # M6.7.1 — policy context for this run. Null when the run was
+    # governed by the synthesised default policy.
+    assistant_policy_id: Optional[uuid.UUID] = None
+    assistant_policy_version: Optional[int] = None
+    assistant_validation_profile: Optional[str] = None
 
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -773,6 +787,9 @@ def _row_to_trace_item(row: Dict[str, Any]) -> AssistantRunTraceItem:
         reviewed_by_user_id=row.get("reviewed_by_user_id"),
         has_receipt=row.get("receipt_id") is not None,
         receipt_created_at=row.get("receipt_created_at"),
+        assistant_policy_id=row.get("assistant_policy_id"),
+        assistant_policy_version=row.get("assistant_policy_version"),
+        assistant_validation_profile=row.get("assistant_validation_profile"),
         created_at=row["created_at"],
         updated_at=row.get("updated_at"),
     )
@@ -801,6 +818,9 @@ _TRACE_SELECT_COLUMNS = """
     review_decision,
     reviewed_at,
     reviewed_by_user_id,
+    assistant_policy_id,
+    assistant_policy_version,
+    assistant_validation_profile,
     created_at,
     updated_at
 """
@@ -1060,6 +1080,9 @@ _RECEIPT_RETURNING_COLUMNS = """
     refusal_reason_codes,
     model_provider,
     model_name,
+    assistant_policy_id,
+    assistant_policy_version,
+    assistant_validation_profile,
     assistant_run_created_at,
     assistant_run_reviewed_at,
     assistant_run_reviewed_by_user_id,
@@ -1107,6 +1130,12 @@ class AssistantRunReceipt(BaseModel):
     model_provider: Optional[str] = None
     model_name: Optional[str] = None
 
+    # M6.7.1 — policy context snapshot. Null on legacy receipts written
+    # before policy stamping, and on runs governed by the default policy.
+    assistant_policy_id: Optional[uuid.UUID] = None
+    assistant_policy_version: Optional[int] = None
+    assistant_validation_profile: Optional[str] = None
+
     assistant_run_created_at: datetime
     assistant_run_reviewed_at: Optional[datetime] = None
     assistant_run_reviewed_by_user_id: Optional[uuid.UUID] = None
@@ -1148,6 +1177,9 @@ def _row_to_receipt(row: Dict[str, Any]) -> AssistantRunReceipt:
         refusal_reason_codes=list(row.get("refusal_reason_codes") or []),
         model_provider=row.get("model_provider"),
         model_name=row.get("model_name"),
+        assistant_policy_id=row.get("assistant_policy_id"),
+        assistant_policy_version=row.get("assistant_policy_version"),
+        assistant_validation_profile=row.get("assistant_validation_profile"),
         assistant_run_created_at=row["assistant_run_created_at"],
         assistant_run_reviewed_at=row.get("assistant_run_reviewed_at"),
         assistant_run_reviewed_by_user_id=row.get("assistant_run_reviewed_by_user_id"),
@@ -1239,6 +1271,9 @@ def _insert_receipt(
                     refusal_reason_codes,
                     model_provider,
                     model_name,
+                    assistant_policy_id,
+                    assistant_policy_version,
+                    assistant_validation_profile,
                     assistant_run_created_at,
                     assistant_run_reviewed_at,
                     assistant_run_reviewed_by_user_id
@@ -1265,6 +1300,9 @@ def _insert_receipt(
                     CAST(:refusal_reason_codes AS jsonb),
                     :model_provider,
                     :model_name,
+                    CAST(NULLIF(:assistant_policy_id, '') AS uuid),
+                    :assistant_policy_version,
+                    :assistant_validation_profile,
                     :assistant_run_created_at,
                     :assistant_run_reviewed_at,
                     :assistant_run_reviewed_by_user_id
@@ -1298,6 +1336,18 @@ def _insert_receipt(
                 ),
                 "model_provider": run.get("model_provider"),
                 "model_name": run.get("model_name"),
+                # M6.7.1 — snapshot policy context onto the receipt. The
+                # NULLIF/CAST pattern lets the empty-string sentinel for
+                # "no policy id" round-trip to a SQL NULL.
+                "assistant_policy_id": (
+                    str(run["assistant_policy_id"])
+                    if run.get("assistant_policy_id")
+                    else ""
+                ),
+                "assistant_policy_version": run.get("assistant_policy_version"),
+                "assistant_validation_profile": run.get(
+                    "assistant_validation_profile"
+                ),
                 "assistant_run_created_at": run["created_at"],
                 "assistant_run_reviewed_at": run.get("reviewed_at"),
                 "assistant_run_reviewed_by_user_id": run.get("reviewed_by_user_id"),
@@ -1722,6 +1772,20 @@ def _update_assistant_run_output_blocked(
 # Endpoint
 # ---------------------------------------------------------------------
 
+
+def _policy_response_kwargs(policy: AssistantPolicy) -> Dict[str, Any]:
+    """M6.7.1 — common kwargs that stamp policy context onto every
+    AssistantRunMetadata response. Default policy → null id/version,
+    `standard` profile."""
+    return {
+        "assistant_policy_id": policy.id if not policy.is_default else None,
+        "assistant_policy_version": (
+            int(policy.policy_version) if not policy.is_default else None
+        ),
+        "assistant_validation_profile": policy.validation_profile,
+    }
+
+
 @router.post(
     "/runs",
     response_model=AssistantRunCreateResponse,
@@ -1869,6 +1933,7 @@ def create_assistant_run(
                 model_name=None,
                 generation_enabled=False,
                 governance_note=GOVERNANCE_NOTE,
+                **_policy_response_kwargs(policy),
             )
         )
 
@@ -1903,6 +1968,7 @@ def create_assistant_run(
                 model_name=None,
                 generation_enabled=False,
                 governance_note=GOVERNANCE_NOTE,
+                **_policy_response_kwargs(policy),
             )
         )
 
@@ -2020,6 +2086,7 @@ def create_assistant_run(
                 model_name=model_name,
                 generation_enabled=True,
                 governance_note=GOVERNANCE_NOTE,
+                **_policy_response_kwargs(policy),
             )
         )
 
@@ -2053,5 +2120,6 @@ def create_assistant_run(
             model_name=model_name,
             generation_enabled=True,
             governance_note=GOVERNANCE_NOTE,
+            **_policy_response_kwargs(policy),
         )
     )
