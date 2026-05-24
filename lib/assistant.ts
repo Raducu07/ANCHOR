@@ -1,6 +1,9 @@
 import { apiFetch } from "@/lib/api";
 import type {
   AssistantContractResponse,
+  AssistantPolicyHistoryResponse,
+  AssistantPolicyResponse,
+  AssistantPolicyUpdatePayload,
   AssistantReviewStatusInput,
   AssistantRunDetailResponse,
   AssistantRunEnvelope,
@@ -133,4 +136,32 @@ export async function updateAssistantRunReview(
       body: JSON.stringify(body),
     },
   );
+}
+
+// M6.7 — Assistant policy / settings.
+// Metadata-only governance configuration. Hard safety prohibitions
+// (no diagnosis, no prescribing, no dosing, no autonomous triage) are
+// NOT configurable and are enforced server-side.
+
+export function getAssistantPolicy(): Promise<AssistantPolicyResponse> {
+  return apiFetch<AssistantPolicyResponse>("/v1/assistant/policy");
+}
+
+export function updateAssistantPolicy(
+  payload: AssistantPolicyUpdatePayload,
+): Promise<AssistantPolicyResponse> {
+  return apiFetch<AssistantPolicyResponse>("/v1/assistant/policy", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getAssistantPolicyHistory(
+  limit?: number,
+): Promise<AssistantPolicyHistoryResponse> {
+  const url =
+    typeof limit === "number"
+      ? `/v1/assistant/policy/history?limit=${encodeURIComponent(String(limit))}`
+      : "/v1/assistant/policy/history";
+  return apiFetch<AssistantPolicyHistoryResponse>(url);
 }
