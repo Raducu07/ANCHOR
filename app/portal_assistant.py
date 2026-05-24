@@ -292,6 +292,12 @@ class AssistantRunCreate(BaseModel):
 
 
 class AssistantRunMetadata(BaseModel):
+    # `model_provider` and `model_name` collide with Pydantic v2's
+    # protected `model_` namespace and would otherwise warn at import.
+    # Disable protected_namespaces locally; field names are part of the
+    # public wire contract and must not be renamed.
+    model_config = ConfigDict(protected_namespaces=())
+
     run_id: uuid.UUID
     mode: str
     contract_version: str
@@ -339,6 +345,9 @@ class AssistantRunTraceItem(BaseModel):
     """Metadata-only view of an assistant_runs row. Contains no draft, no
     input text, no prompt text — only hashes, key lists, flags, and the
     governance pointers."""
+
+    # See AssistantRunMetadata for the rationale on protected_namespaces.
+    model_config = ConfigDict(protected_namespaces=())
 
     run_id: uuid.UUID
     clinic_id: uuid.UUID
@@ -774,6 +783,9 @@ _RECEIPT_RETURNING_COLUMNS = """
 
 class AssistantRunReceipt(BaseModel):
     """Metadata-only Assistant receipt. No raw content fields."""
+
+    # See AssistantRunMetadata for the rationale on protected_namespaces.
+    model_config = ConfigDict(protected_namespaces=())
 
     receipt_id: uuid.UUID
     assistant_run_id: uuid.UUID
