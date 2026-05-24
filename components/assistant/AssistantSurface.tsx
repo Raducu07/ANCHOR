@@ -679,6 +679,17 @@ function reviewStatusLabel(status: string | undefined | null): string {
   }
 }
 
+// M6.7.1 — policy-version display helper.
+//   `null` / `undefined` / `0` → "Default policy"
+//   number N  → "v{N}"
+// Stays a string so it can flow through the existing DetailRow.
+function policyVersionLabel(version: number | null | undefined): string {
+  if (version === null || version === undefined || version === 0) {
+    return "Default policy";
+  }
+  return `v${version}`;
+}
+
 function reviewDecisionLabel(decision: string | undefined | null): string {
   switch (decision) {
     case "approved_for_use":
@@ -807,6 +818,23 @@ function RunRecordCard({
           }
         />
         <DetailRow label="Generation enabled" value={generationEnabled ? "Yes" : "No"} />
+        <DetailRow
+          label="Policy version"
+          value={policyVersionLabel(
+            typeof record.assistant_policy_version === "number"
+              ? record.assistant_policy_version
+              : null,
+          )}
+        />
+        <DetailRow
+          label="Validation profile"
+          value={
+            typeof record.assistant_validation_profile === "string" &&
+            record.assistant_validation_profile
+              ? record.assistant_validation_profile
+              : "standard"
+          }
+        />
         {record.created_at_utc ?? record.created_at ? (
           <DetailRow
             label="Created at"
@@ -1372,6 +1400,14 @@ function RunDetailBody({
         {r.reviewed_by_user_id ? (
           <DetailRow label="Reviewed by" value={r.reviewed_by_user_id} mono />
         ) : null}
+        <DetailRow
+          label="Policy version"
+          value={policyVersionLabel(r.assistant_policy_version ?? null)}
+        />
+        <DetailRow
+          label="Validation profile"
+          value={r.assistant_validation_profile ?? "standard"}
+        />
         <DetailRow label="Mode" value={r.mode} />
         <DetailRow label="Contract" value={r.contract_version} />
         <DetailRow label="Workflow origin" value={r.workflow_origin} />
@@ -1654,7 +1690,27 @@ function ReceiptEvidenceCard({
           value={receipt.output_sha256 ?? "None"}
           mono={!!receipt.output_sha256}
         />
+        <ReceiptCell
+          label="Policy version"
+          value={policyVersionLabel(
+            typeof receipt.assistant_policy_version === "number"
+              ? receipt.assistant_policy_version
+              : null,
+          )}
+        />
+        <ReceiptCell
+          label="Validation profile"
+          value={
+            typeof receipt.assistant_validation_profile === "string" &&
+            receipt.assistant_validation_profile
+              ? receipt.assistant_validation_profile
+              : "standard"
+          }
+        />
       </div>
+      <p className="mt-2 text-[11px] leading-5 text-emerald-700">
+        Policy context is metadata only. Hard clinical safety rules cannot be disabled.
+      </p>
     </div>
   );
 }

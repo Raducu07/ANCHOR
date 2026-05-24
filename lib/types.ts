@@ -377,6 +377,11 @@ export type AssistantRunRecord = {
   blocked_message?: string | null;
   refusal_reason_codes?: string[];
   safety_flags?: string[];
+  // M6.7.1 — policy context. Null when the run was governed by the
+  // synthesised default policy; "standard" is the default profile.
+  assistant_policy_id?: string | null;
+  assistant_policy_version?: number | null;
+  assistant_validation_profile?: "standard" | "conservative" | string | null;
   [key: string]: unknown;
 };
 
@@ -427,6 +432,11 @@ export type AssistantRunTraceItem = {
   // declared above (M6.3); these complement it.
   has_receipt?: boolean;
   receipt_created_at?: string | null;
+  // M6.7.1 — policy context for this run. Null when the run was
+  // governed by the synthesised default policy.
+  assistant_policy_id?: string | null;
+  assistant_policy_version?: number | null;
+  assistant_validation_profile?: "standard" | "conservative" | string | null;
   created_at: string;
   updated_at: string | null;
 };
@@ -457,6 +467,12 @@ export type AssistantRunReceipt = {
   refusal_reason_codes: string[];
   model_provider: string | null;
   model_name: string | null;
+  // M6.7.1 — policy context snapshot on the receipt. Null on legacy
+  // receipts written before policy stamping, and on runs governed by
+  // the default policy.
+  assistant_policy_id?: string | null;
+  assistant_policy_version?: number | null;
+  assistant_validation_profile?: "standard" | "conservative" | string | null;
   assistant_run_created_at: string;
   assistant_run_reviewed_at?: string | null;
   assistant_run_reviewed_by_user_id?: string | null;
