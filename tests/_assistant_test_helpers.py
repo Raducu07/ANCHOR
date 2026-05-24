@@ -88,6 +88,12 @@ class FakeDB:
         # M6.4: row returned by the review-update UPDATE ... RETURNING
         # statement. None => 404 from the endpoint.
         self.update_review_row: Optional[Dict[str, Any]] = None
+        # M6.5: receipt INSERT ON CONFLICT ... RETURNING. Setting None
+        # simulates a unique-conflict (the endpoint then falls back to
+        # `select_receipt_row`).
+        self.insert_receipt_row: Optional[Dict[str, Any]] = None
+        # M6.5: SELECT FROM assistant_run_receipts (existing-receipt fetch).
+        self.select_receipt_row: Optional[Dict[str, Any]] = None
 
     def execute(self, statement: Any, params: Optional[Dict[str, Any]] = None) -> _FakeResult:
         sql = str(getattr(statement, "text", statement))
@@ -107,6 +113,24 @@ class FakeDB:
             and "RETURNING" in sql
         ):
             return _FakeResult(row=self.update_review_row)
+
+        # M6.5: receipt INSERT ON CONFLICT ... RETURNING. None => conflict
+        # (ON CONFLICT DO NOTHING returns no row), prompting the endpoint
+        # to fall back to a SELECT.
+        if (
+            "INSERT INTO assistant_run_receipts" in sql
+            and "ON CONFLICT" in sql
+        ):
+            return _FakeResult(row=self.insert_receipt_row)
+
+        # M6.5: SELECT FROM assistant_run_receipts (existing-receipt fetch
+        # OR conflict fallback).
+        if (
+            "SELECT" in sql
+            and "FROM assistant_run_receipts" in sql
+            and "INSERT" not in sql
+        ):
+            return _FakeResult(row=self.select_receipt_row)
 
         # M6.3: traceability detail SELECT (params include run_id).
         if (

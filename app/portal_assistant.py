@@ -359,6 +359,12 @@ class AssistantRunTraceItem(BaseModel):
     reviewed_at: Optional[datetime] = None
     reviewed_by_user_id: Optional[uuid.UUID] = None
 
+    # M6.5 — metadata-only receipt linkage (derived). `has_receipt` is
+    # true when receipt_id is populated; `receipt_created_at` is only
+    # populated by the GET-receipt endpoint that joins the receipts row.
+    has_receipt: bool = False
+    receipt_created_at: Optional[datetime] = None
+
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -456,6 +462,8 @@ def _row_to_trace_item(row: Dict[str, Any]) -> AssistantRunTraceItem:
         review_decision=row.get("review_decision"),
         reviewed_at=row.get("reviewed_at"),
         reviewed_by_user_id=row.get("reviewed_by_user_id"),
+        has_receipt=row.get("receipt_id") is not None,
+        receipt_created_at=row.get("receipt_created_at"),
         created_at=row["created_at"],
         updated_at=row.get("updated_at"),
     )
@@ -700,6 +708,441 @@ def update_assistant_run_review(
     )
 
     return AssistantRunDetailResponse(run=_row_to_trace_item(dict(row)))
+
+
+# ---------------------------------------------------------------------
+# M6.5 — Assistant receipt linkage (metadata only)
+# ---------------------------------------------------------------------
+#
+# A receipt is a frozen snapshot of an Assistant run's governance metadata
+# at the moment a human-reviewed run is sealed as evidence. It carries no
+# raw input, no prompt, no draft. One receipt per (clinic_id, run) is
+# enforced by the unique index in 20260524_01_assistant_run_receipts.sql.
+
+_RECEIPT_KIND = "assistant_run_metadata"
+_RECEIPT_VERSION = "assistant_receipt_v1"
+_RECEIPT_GOVERNANCE_NOTE = (
+    "This receipt is metadata-only evidence. "
+    "Raw input, prompts, and draft output are not stored."
+)
+
+_RECEIPT_RETURNING_COLUMNS = """
+    id AS receipt_id,
+    assistant_run_id,
+    clinic_id,
+    created_by_user_id,
+    receipt_kind,
+    receipt_version,
+    storage_policy,
+    raw_content_stored,
+    prompt_stored,
+    draft_stored,
+    run_status,
+    review_status,
+    review_decision,
+    input_sha256,
+    output_sha256,
+    mode,
+    contract_version,
+    workflow_origin,
+    pii_detected,
+    pii_types,
+    safety_flags,
+    refusal_reason_codes,
+    model_provider,
+    model_name,
+    assistant_run_created_at,
+    assistant_run_reviewed_at,
+    assistant_run_reviewed_by_user_id,
+    receipt_created_at,
+    created_at,
+    updated_at
+"""
+
+
+class AssistantRunReceipt(BaseModel):
+    """Metadata-only Assistant receipt. No raw content fields."""
+
+    receipt_id: uuid.UUID
+    assistant_run_id: uuid.UUID
+    clinic_id: uuid.UUID
+    created_by_user_id: uuid.UUID
+
+    receipt_kind: str
+    receipt_version: str
+
+    storage_policy: str = "metadata_only_by_default"
+    raw_content_stored: bool = False
+    prompt_stored: bool = False
+    draft_stored: bool = False
+
+    run_status: str
+    review_status: str
+    review_decision: Optional[str] = None
+
+    input_sha256: str
+    output_sha256: Optional[str] = None
+
+    mode: str
+    contract_version: str
+    workflow_origin: str
+
+    pii_detected: bool
+    pii_types: List[str] = Field(default_factory=list)
+    safety_flags: List[str] = Field(default_factory=list)
+    refusal_reason_codes: List[str] = Field(default_factory=list)
+
+    model_provider: Optional[str] = None
+    model_name: Optional[str] = None
+
+    assistant_run_created_at: datetime
+    assistant_run_reviewed_at: Optional[datetime] = None
+    assistant_run_reviewed_by_user_id: Optional[uuid.UUID] = None
+
+    receipt_created_at: datetime
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class AssistantRunReceiptResponse(BaseModel):
+    receipt: AssistantRunReceipt
+    run: AssistantRunTraceItem
+    governance_note: str = _RECEIPT_GOVERNANCE_NOTE
+
+
+def _row_to_receipt(row: Dict[str, Any]) -> AssistantRunReceipt:
+    return AssistantRunReceipt(
+        receipt_id=row["receipt_id"],
+        assistant_run_id=row["assistant_run_id"],
+        clinic_id=row["clinic_id"],
+        created_by_user_id=row["created_by_user_id"],
+        receipt_kind=row["receipt_kind"],
+        receipt_version=row["receipt_version"],
+        storage_policy=row.get("storage_policy") or "metadata_only_by_default",
+        raw_content_stored=bool(row.get("raw_content_stored") or False),
+        prompt_stored=bool(row.get("prompt_stored") or False),
+        draft_stored=bool(row.get("draft_stored") or False),
+        run_status=row["run_status"],
+        review_status=row["review_status"],
+        review_decision=row.get("review_decision"),
+        input_sha256=row["input_sha256"],
+        output_sha256=row.get("output_sha256"),
+        mode=row["mode"],
+        contract_version=row["contract_version"],
+        workflow_origin=row["workflow_origin"],
+        pii_detected=bool(row.get("pii_detected") or False),
+        pii_types=list(row.get("pii_types") or []),
+        safety_flags=list(row.get("safety_flags") or []),
+        refusal_reason_codes=list(row.get("refusal_reason_codes") or []),
+        model_provider=row.get("model_provider"),
+        model_name=row.get("model_name"),
+        assistant_run_created_at=row["assistant_run_created_at"],
+        assistant_run_reviewed_at=row.get("assistant_run_reviewed_at"),
+        assistant_run_reviewed_by_user_id=row.get("assistant_run_reviewed_by_user_id"),
+        receipt_created_at=row["receipt_created_at"],
+        created_at=row["created_at"],
+        updated_at=row.get("updated_at"),
+    )
+
+
+def _fetch_run_for_clinic(
+    db: Session, *, clinic_id: str, run_id: uuid.UUID
+) -> Optional[Dict[str, Any]]:
+    row = (
+        db.execute(
+            text(
+                f"""
+                SELECT {_TRACE_SELECT_COLUMNS}
+                FROM assistant_runs
+                WHERE clinic_id = CAST(:clinic_id AS uuid)
+                  AND id = CAST(:run_id AS uuid)
+                LIMIT 1
+                """
+            ),
+            {"clinic_id": clinic_id, "run_id": str(run_id)},
+        )
+        .mappings()
+        .first()
+    )
+    return dict(row) if row else None
+
+
+def _select_receipt_for_run(
+    db: Session, *, clinic_id: str, run_id: uuid.UUID
+) -> Optional[Dict[str, Any]]:
+    row = (
+        db.execute(
+            text(
+                f"""
+                SELECT {_RECEIPT_RETURNING_COLUMNS}
+                FROM assistant_run_receipts
+                WHERE clinic_id = CAST(:clinic_id AS uuid)
+                  AND assistant_run_id = CAST(:run_id AS uuid)
+                LIMIT 1
+                """
+            ),
+            {"clinic_id": clinic_id, "run_id": str(run_id)},
+        )
+        .mappings()
+        .first()
+    )
+    return dict(row) if row else None
+
+
+def _insert_receipt(
+    db: Session,
+    *,
+    clinic_id: str,
+    created_by_user_id: str,
+    run: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Insert a metadata-only receipt for `run`. On unique-constraint
+    conflict (a receipt already exists for this run), returns None and
+    the caller falls back to `_select_receipt_for_run`."""
+    row = (
+        db.execute(
+            text(
+                f"""
+                INSERT INTO assistant_run_receipts (
+                    clinic_id,
+                    assistant_run_id,
+                    created_by_user_id,
+                    receipt_kind,
+                    receipt_version,
+                    storage_policy,
+                    raw_content_stored,
+                    prompt_stored,
+                    draft_stored,
+                    run_status,
+                    review_status,
+                    review_decision,
+                    input_sha256,
+                    output_sha256,
+                    mode,
+                    contract_version,
+                    workflow_origin,
+                    pii_detected,
+                    pii_types,
+                    safety_flags,
+                    refusal_reason_codes,
+                    model_provider,
+                    model_name,
+                    assistant_run_created_at,
+                    assistant_run_reviewed_at,
+                    assistant_run_reviewed_by_user_id
+                )
+                VALUES (
+                    CAST(:clinic_id AS uuid),
+                    CAST(:assistant_run_id AS uuid),
+                    CAST(:created_by_user_id AS uuid),
+                    :receipt_kind,
+                    :receipt_version,
+                    :storage_policy,
+                    false, false, false,
+                    :run_status,
+                    :review_status,
+                    :review_decision,
+                    :input_sha256,
+                    :output_sha256,
+                    :mode,
+                    :contract_version,
+                    :workflow_origin,
+                    :pii_detected,
+                    CAST(:pii_types AS jsonb),
+                    CAST(:safety_flags AS jsonb),
+                    CAST(:refusal_reason_codes AS jsonb),
+                    :model_provider,
+                    :model_name,
+                    :assistant_run_created_at,
+                    :assistant_run_reviewed_at,
+                    :assistant_run_reviewed_by_user_id
+                )
+                ON CONFLICT (clinic_id, assistant_run_id) DO NOTHING
+                RETURNING {_RECEIPT_RETURNING_COLUMNS}
+                """
+            ),
+            {
+                "clinic_id": clinic_id,
+                "assistant_run_id": str(run["run_id"]),
+                "created_by_user_id": created_by_user_id,
+                "receipt_kind": _RECEIPT_KIND,
+                "receipt_version": _RECEIPT_VERSION,
+                "storage_policy": "metadata_only_by_default",
+                "run_status": run["run_status"],
+                "review_status": run["review_status"],
+                "review_decision": run.get("review_decision"),
+                "input_sha256": run["input_sha256"],
+                "output_sha256": run.get("output_sha256"),
+                "mode": run["mode"],
+                "contract_version": run["contract_version"],
+                "workflow_origin": run["workflow_origin"],
+                "pii_detected": bool(run.get("pii_detected") or False),
+                # JSONB columns: serialise + cast (same pattern as the PR 2A
+                # production fix in _insert_assistant_run_created).
+                "pii_types": json.dumps(list(run.get("pii_types") or [])),
+                "safety_flags": json.dumps(list(run.get("safety_flags") or [])),
+                "refusal_reason_codes": json.dumps(
+                    list(run.get("refusal_reason_codes") or [])
+                ),
+                "model_provider": run.get("model_provider"),
+                "model_name": run.get("model_name"),
+                "assistant_run_created_at": run["created_at"],
+                "assistant_run_reviewed_at": run.get("reviewed_at"),
+                "assistant_run_reviewed_by_user_id": run.get("reviewed_by_user_id"),
+            },
+        )
+        .mappings()
+        .first()
+    )
+    return dict(row) if row else None
+
+
+def _link_receipt_on_run(
+    db: Session,
+    *,
+    clinic_id: str,
+    run_id: uuid.UUID,
+    receipt_id: uuid.UUID,
+) -> None:
+    """Write the receipt id back onto assistant_runs.receipt_id. Safe to
+    re-run because the unique index on receipts means the value must
+    already match if it was previously set."""
+    db.execute(
+        text(
+            """
+            UPDATE assistant_runs
+            SET receipt_id = CAST(:receipt_id AS uuid),
+                updated_at = now()
+            WHERE id = CAST(:run_id AS uuid)
+              AND clinic_id = CAST(:clinic_id AS uuid)
+            """
+        ),
+        {
+            "receipt_id": str(receipt_id),
+            "run_id": str(run_id),
+            "clinic_id": clinic_id,
+        },
+    )
+
+
+@router.post(
+    "/runs/{run_id}/receipt",
+    response_model=AssistantRunReceiptResponse,
+)
+def create_or_return_assistant_run_receipt(
+    run_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AssistantRunReceiptResponse:
+    """Create (or return existing) metadata-only receipt for an Assistant
+    run. Requires the run to be human-reviewed; refused and failed runs
+    can still get receipts because refusal/failure is governance evidence
+    in its own right."""
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
+
+    clinic_id_s = str(clinic_id)
+    clinic_user_id_s = str(clinic_user_id)
+
+    run = _fetch_run_for_clinic(db, clinic_id=clinic_id_s, run_id=run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="assistant_run_not_found")
+
+    if run.get("review_status") in (None, "", REVIEW_STATUS_NOT_REVIEWED):
+        raise HTTPException(status_code=400, detail="assistant_run_not_reviewed")
+
+    receipt_row = _insert_receipt(
+        db,
+        clinic_id=clinic_id_s,
+        created_by_user_id=clinic_user_id_s,
+        run=run,
+    )
+    log_event = "assistant_run_receipt_created"
+    if receipt_row is None:
+        # Unique conflict — receipt already exists for this run.
+        receipt_row = _select_receipt_for_run(
+            db, clinic_id=clinic_id_s, run_id=run_id
+        )
+        log_event = "assistant_run_receipt_returned"
+
+    if receipt_row is None:
+        # Should not happen (conflict implies a row exists), but treat as
+        # a safe 500 rather than crashing.
+        raise HTTPException(status_code=500, detail="assistant_run_receipt_unavailable")
+
+    receipt = _row_to_receipt(receipt_row)
+
+    # Link the receipt id back onto the run (idempotent — the unique
+    # constraint on receipts means this can only ever resolve to one id).
+    _link_receipt_on_run(
+        db,
+        clinic_id=clinic_id_s,
+        run_id=run_id,
+        receipt_id=receipt.receipt_id,
+    )
+
+    # Reflect the link in the run dict before mapping to the response.
+    run["receipt_id"] = receipt.receipt_id
+    run["receipt_created_at"] = receipt.receipt_created_at
+
+    logger.info(
+        log_event,
+        extra={
+            "route": getattr(request.url, "path", None),
+            "clinic_id": clinic_id_s,
+            "clinic_user_id": clinic_user_id_s,
+            "run_id": str(run_id),
+            "receipt_id": str(receipt.receipt_id),
+            "review_status": run.get("review_status"),
+            "run_status": run.get("run_status"),
+        },
+    )
+
+    return AssistantRunReceiptResponse(
+        receipt=receipt,
+        run=_row_to_trace_item(run),
+    )
+
+
+@router.get(
+    "/runs/{run_id}/receipt",
+    response_model=AssistantRunReceiptResponse,
+)
+def get_assistant_run_receipt(
+    run_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AssistantRunReceiptResponse:
+    """Return the metadata-only receipt for an Assistant run, or 404 if
+    none has been created yet. A non-matching `clinic_id + run_id` returns
+    404 for both the run and the receipt — no cross-clinic leakage."""
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
+
+    clinic_id_s = str(clinic_id)
+
+    run = _fetch_run_for_clinic(db, clinic_id=clinic_id_s, run_id=run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="assistant_run_not_found")
+
+    receipt_row = _select_receipt_for_run(
+        db, clinic_id=clinic_id_s, run_id=run_id
+    )
+    if not receipt_row:
+        raise HTTPException(status_code=404, detail="assistant_run_receipt_not_found")
+
+    receipt = _row_to_receipt(receipt_row)
+    run["receipt_id"] = receipt.receipt_id
+    run["receipt_created_at"] = receipt.receipt_created_at
+
+    return AssistantRunReceiptResponse(
+        receipt=receipt,
+        run=_row_to_trace_item(run),
+    )
 
 
 def _validate_client_communication(input_obj: Dict[str, Any]) -> ClientCommunicationInput:
