@@ -5,6 +5,7 @@ import type {
   AssistantRunDetailResponse,
   AssistantRunEnvelope,
   AssistantRunListResponse,
+  AssistantRunReceiptResponse,
   AssistantRunRecord,
   AssistantRunReviewUpdateRequest,
   AssistantRunReviewUpdateResponse,
@@ -89,6 +90,32 @@ export async function getAssistantRun(runId: string): Promise<AssistantRunDetail
 }
 
 export type { AssistantRunTraceItem };
+
+// M6.5 — create-or-return / fetch a metadata-only Assistant receipt.
+//
+// Receipts are idempotent per (clinic, run): a second POST returns the
+// same receipt. The frontend never sends raw input, prompt, or draft —
+// the backend snapshots metadata from the existing assistant_runs row.
+
+export async function createAssistantRunReceipt(
+  runId: string,
+): Promise<AssistantRunReceiptResponse> {
+  return apiFetch<AssistantRunReceiptResponse>(
+    `/v1/assistant/runs/${encodeURIComponent(runId)}/receipt`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+export async function getAssistantRunReceipt(
+  runId: string,
+): Promise<AssistantRunReceiptResponse> {
+  return apiFetch<AssistantRunReceiptResponse>(
+    `/v1/assistant/runs/${encodeURIComponent(runId)}/receipt`,
+  );
+}
 
 // M6.4 — record a metadata-only human review outcome for a single run.
 // Reviewer identity comes from the authenticated clinic_user context on
