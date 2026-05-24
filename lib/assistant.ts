@@ -165,3 +165,17 @@ export function getAssistantPolicyHistory(
       : "/v1/assistant/policy/history";
   return apiFetch<AssistantPolicyHistoryResponse>(url);
 }
+
+// M6.8 — Assistant analytics into Intelligence.
+// Metadata-only aggregation of assistant_runs evidence. The endpoint
+// lives under /v1/portal/intelligence/ to match existing Intelligence
+// routes; the wire shape is owned by AssistantIntelligenceSummaryResponse.
+export function getAssistantIntelligenceSummary(
+  days?: number,
+): Promise<import("@/lib/types").AssistantIntelligenceSummaryResponse> {
+  const url =
+    typeof days === "number"
+      ? `/v1/portal/intelligence/assistant-summary?days=${encodeURIComponent(String(days))}`
+      : "/v1/portal/intelligence/assistant-summary";
+  return apiFetch<import("@/lib/types").AssistantIntelligenceSummaryResponse>(url);
+}

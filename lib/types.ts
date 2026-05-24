@@ -569,3 +569,83 @@ export type AssistantPolicyHistoryItem = {
 export type AssistantPolicyHistoryResponse = {
   items: AssistantPolicyHistoryItem[];
 };
+
+// M6.8 — Assistant analytics into Intelligence (metadata-only).
+export type AssistantIntelligenceWindow = {
+  days: number;
+  start_at: string;
+  end_at: string;
+};
+
+export type AssistantIntelligenceSummary = {
+  total_runs: number;
+  draft_generated: number;
+  refused_before_model_call: number;
+  output_blocked: number;
+  generation_failed: number;
+  generation_disabled_by_policy: number;
+  pii_detected: number;
+  reviewed: number;
+  approved: number;
+  needs_edit: number;
+  rejected: number;
+  receipt_linked: number;
+  default_policy_runs: number;
+  policy_versioned_runs: number;
+};
+
+export type AssistantIntelligenceRates = {
+  draft_generated_rate: number;
+  refusal_rate: number;
+  output_blocked_rate: number;
+  pii_detected_rate: number;
+  review_completion_rate: number;
+  receipt_completion_rate: number;
+  approval_rate_among_reviewed: number;
+};
+
+export type AssistantIntelligenceFunnel = {
+  submitted: number;
+  generated_or_refused_or_blocked: number;
+  reviewed: number;
+  receipt_created: number;
+};
+
+export type AssistantIntelligenceCodeCount = {
+  code: string;
+  count: number;
+};
+
+export type AssistantIntelligenceStatusCount = {
+  status: string;
+  count: number;
+};
+
+export type AssistantIntelligenceProfileCount = {
+  validation_profile: string;
+  count: number;
+};
+
+export type AssistantIntelligenceUsageLimits = {
+  daily_limit_per_clinic: number;
+  monthly_limit_per_clinic: number;
+  runs_today: number;
+  runs_this_month: number;
+  daily_utilization_rate: number;
+  monthly_utilization_rate: number;
+  source: "assistant_policy" | "default" | string;
+};
+
+export type AssistantIntelligenceSummaryResponse = {
+  window: AssistantIntelligenceWindow;
+  summary: AssistantIntelligenceSummary;
+  rates: AssistantIntelligenceRates;
+  funnel: AssistantIntelligenceFunnel;
+  top_refusal_reasons: AssistantIntelligenceCodeCount[];
+  top_safety_flags: AssistantIntelligenceCodeCount[];
+  by_status: AssistantIntelligenceStatusCount[];
+  by_review_status: AssistantIntelligenceStatusCount[];
+  by_validation_profile: AssistantIntelligenceProfileCount[];
+  usage_limits: AssistantIntelligenceUsageLimits;
+  governance_note: string;
+};
