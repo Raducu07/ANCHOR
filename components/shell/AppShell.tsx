@@ -1,30 +1,37 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { getSessionUser } from "@/lib/auth";
-import type { SessionUser } from "@/lib/types";
+import {
+  SESSION_SERVER_SNAPSHOT,
+  getSessionUserSnapshot,
+  subscribeSessionStorage,
+} from "@/lib/auth";
 import { SideNav } from "./SideNav";
 import { TopBar } from "./TopBar";
 
 export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
-  const [ready, setReady] = useState(false);
-  const [user, setUser] = useState<SessionUser | null>(null);
+  // Session is read via useSyncExternalStore so React handles the
+  // server/client snapshot divergence safely. getServerSnapshot returns
+  // null, so the server renders the placeholder and the client either
+  // hydrates to the same placeholder (no session) or to the full shell
+  // (session present) without a setState-in-effect.
+  const user = useSyncExternalStore(
+    subscribeSessionStorage,
+    getSessionUserSnapshot,
+    SESSION_SERVER_SNAPSHOT,
+  );
 
+  // Effect handles ONLY the redirect side-effect — no local setState.
   useEffect(() => {
-    const sessionUser = getSessionUser();
-    if (!sessionUser) {
+    if (!user) {
       router.replace("/login");
-      return;
     }
+  }, [user, router]);
 
-    setUser(sessionUser);
-    setReady(true);
-  }, [router]);
-
-  if (!ready || !user) {
+  if (!user) {
     return <div className="min-h-screen bg-[#f7f9fb]" />;
   }
 

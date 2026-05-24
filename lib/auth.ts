@@ -65,3 +65,44 @@ export function getSessionUser(): SessionUser | null {
     return null;
   }
 }
+
+// ---------------------------------------------------------------------
+// useSyncExternalStore adapters for components that read the session
+// without using setState-in-effect. The cache below keeps the returned
+// reference stable between renders so React's external-store contract
+// is satisfied (no infinite re-render loop).
+// ---------------------------------------------------------------------
+
+let _sessionRawCache: string | null = "__uninit__";
+let _sessionUserCache: SessionUser | null = null;
+
+export function getSessionUserSnapshot(): SessionUser | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(SESSION_KEY);
+  if (raw === _sessionRawCache) return _sessionUserCache;
+  _sessionRawCache = raw;
+  _sessionUserCache = null;
+  if (raw) {
+    try {
+      _sessionUserCache = JSON.parse(raw) as SessionUser;
+    } catch {
+      _sessionUserCache = null;
+    }
+  }
+  return _sessionUserCache;
+}
+
+// Server snapshot for useSyncExternalStore: there is no session during
+// SSR, so we return null. Constant identity is required.
+export const SESSION_SERVER_SNAPSHOT = (): SessionUser | null => null;
+
+export function subscribeSessionStorage(callback: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const handler = (event: StorageEvent) => {
+    if (event.key === SESSION_KEY || event.key === null) {
+      callback();
+    }
+  };
+  window.addEventListener("storage", handler);
+  return () => window.removeEventListener("storage", handler);
+}

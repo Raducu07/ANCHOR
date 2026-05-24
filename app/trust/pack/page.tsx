@@ -6,6 +6,14 @@ import { AppShell } from "@/components/shell/AppShell";
 import { getTrustPack } from "@/lib/trust";
 import type { TrustPackResponse } from "@/lib/types";
 
+// Optional payload extras that are not declared on TrustPackResponse but
+// may be present on real responses. Each field is typed `unknown[]` so
+// the component must narrow with Array.isArray before reading.
+type TrustPackOptionalExtras = TrustPackResponse["pack"] & {
+  evidence_basis?: unknown[];
+  limitations?: unknown[];
+};
+
 function sanitizeClinicName(value: unknown, fallback = "Your clinic") {
   const text = typeof value === "string" ? value.trim() : "";
   if (!text) return fallback;
@@ -56,8 +64,10 @@ export default function TrustPackPage() {
       setError(null);
       const response = await getTrustPack();
       setData(response);
-    } catch (err: any) {
-      setError(err?.message || "Failed to load trust pack.");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to load trust pack.";
+      setError(message);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -107,9 +117,15 @@ export default function TrustPackPage() {
   const evidenceBasis = useMemo(() => {
     if (!data) return [];
 
-    const packAny = data.pack as any;
-    if (Array.isArray(packAny?.evidence_basis) && packAny.evidence_basis.length > 0) {
-      return packAny.evidence_basis as string[];
+    // The Trust Pack payload may carry optional `evidence_basis` and
+    // `limitations` arrays that are not declared on TrustPackResponse.
+    // Narrow them as `unknown` then validate before use.
+    const packExtras = data.pack as TrustPackOptionalExtras;
+    if (
+      Array.isArray(packExtras.evidence_basis) &&
+      packExtras.evidence_basis.length > 0
+    ) {
+      return packExtras.evidence_basis.map((item) => String(item));
     }
 
     return [
@@ -126,9 +142,12 @@ export default function TrustPackPage() {
   const limitations = useMemo(() => {
     if (!data) return [];
 
-    const packAny = data.pack as any;
-    if (Array.isArray(packAny?.limitations) && packAny.limitations.length > 0) {
-      return packAny.limitations as string[];
+    const packExtras = data.pack as TrustPackOptionalExtras;
+    if (
+      Array.isArray(packExtras.limitations) &&
+      packExtras.limitations.length > 0
+    ) {
+      return packExtras.limitations.map((item) => String(item));
     }
 
     const items = [
