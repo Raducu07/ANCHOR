@@ -94,6 +94,15 @@ class FakeDB:
         self.insert_receipt_row: Optional[Dict[str, Any]] = None
         # M6.5: SELECT FROM assistant_run_receipts (existing-receipt fetch).
         self.select_receipt_row: Optional[Dict[str, Any]] = None
+        # M6.7: Assistant policy fetches / writes.
+        #   `select_policy_row`        — current active policy SELECT
+        #   `select_policy_history_rows` — GET /policy/history
+        #   `insert_policy_row`        — RETURNING row from policy INSERT
+        #   `max_policy_version_value` — value returned by COALESCE(MAX(...))
+        self.select_policy_row: Optional[Dict[str, Any]] = None
+        self.select_policy_history_rows: List[Dict[str, Any]] = []
+        self.insert_policy_row: Optional[Dict[str, Any]] = None
+        self.max_policy_version_value: int = 0
 
     def execute(self, statement: Any, params: Optional[Dict[str, Any]] = None) -> _FakeResult:
         sql = str(getattr(statement, "text", statement))
@@ -103,6 +112,35 @@ class FakeDB:
         if "SELECT COUNT(*)" in sql and "assistant_runs" in sql:
             value = self.count_queue.pop(0) if self.count_queue else 0
             return _FakeResult(row={"c": value})
+
+        # M6.7: policy MAX(policy_version) lookup.
+        if "MAX(policy_version)" in sql and "assistant_policy_settings" in sql:
+            return _FakeResult(row={"v": int(self.max_policy_version_value)})
+
+        # M6.7: policy SELECTs.
+        if (
+            "SELECT" in sql
+            and "FROM assistant_policy_settings" in sql
+            and "INSERT" not in sql
+            and "UPDATE" not in sql
+        ):
+            # History list query has ORDER BY policy_version DESC.
+            if "ORDER BY" in sql:
+                return _FakeResult(rows=list(self.select_policy_history_rows))
+            # Active fetch (single row).
+            return _FakeResult(row=self.select_policy_row)
+
+        # M6.7: policy INSERT ... RETURNING.
+        if "INSERT INTO assistant_policy_settings" in sql:
+            return _FakeResult(row=self.insert_policy_row)
+
+        # M6.7: policy deactivation UPDATE (no RETURNING).
+        if "UPDATE assistant_policy_settings" in sql:
+            return _FakeResult(row=None)
+
+        # M6.7: admin_audit_events insert for policy updates (no RETURNING).
+        if "INSERT INTO admin_audit_events" in sql:
+            return _FakeResult(row=None)
 
         # M6.4: review-update UPDATE ... RETURNING. Uniquely identifiable
         # by `review_status` in the SQL text (the other PR 2B UPDATEs do
@@ -229,6 +267,7 @@ def build_app(
     *,
     authenticated: bool = True,
     model_stub: Optional[Callable[..., Tuple[str, str, str]]] = default_success_stub,
+    auth_role: str = "staff",
 ) -> Tuple[FastAPI, FakeDB]:
     """Returns a fresh FastAPI app + the FakeDB bound to its get_db.
 
@@ -261,11 +300,11 @@ def build_app(
         def _fake_require_clinic_user(request: Request) -> Dict[str, str]:
             request.state.clinic_id = TEST_CLINIC_ID
             request.state.clinic_user_id = TEST_USER_ID
-            request.state.role = "staff"
+            request.state.role = auth_role
             return {
                 "clinic_id": TEST_CLINIC_ID,
                 "clinic_user_id": TEST_USER_ID,
-                "role": "staff",
+                "role": auth_role,
             }
 
         app.dependency_overrides[require_clinic_user] = _fake_require_clinic_user

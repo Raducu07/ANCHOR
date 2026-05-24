@@ -189,9 +189,26 @@ def _scan_identifier_risk(draft: str) -> bool:
     return False
 
 
-def validate_client_communication_output(draft: str) -> AssistantOutputSafetyResult:
+# M6.7 — Conservative profile adds a small handful of stricter rules on
+# top of the standard pattern table. The validator is NEVER disabled —
+# 'off' is not a legal profile value and is rejected upstream.
+_CONSERVATIVE_PATTERNS: List[Pattern[str]] = [
+    re.compile(r"\bmonitor\s+(?:at\s+)?home\b", re.IGNORECASE),
+    re.compile(r"\bkeep\s+an\s+eye\s+on\b", re.IGNORECASE),
+    re.compile(r"\bwait\s+and\s+see\b", re.IGNORECASE),
+]
+
+
+def validate_client_communication_output(
+    draft: str,
+    profile: str = "standard",
+) -> AssistantOutputSafetyResult:
     """Run all post-output checks. Returns an allow/block decision plus
-    the codes that fired. NEVER stores or returns any excerpt of `draft`."""
+    the codes that fired. NEVER stores or returns any excerpt of `draft`.
+
+    `profile` may be 'standard' or 'conservative'. Unknown values fall
+    back to 'standard' (failure-closed: extra checks would not run, but
+    no rule is silently dropped)."""
     codes: List[str] = []
 
     # Rule 1 — required review warning. A missing warning is itself a
@@ -207,6 +224,16 @@ def validate_client_communication_output(draft: str) -> AssistantOutputSafetyRes
     # Rule 7 — identifier risk.
     if _scan_identifier_risk(draft):
         codes.append(SAFETY_CODE_IDENTIFIER_RISK)
+
+    # M6.7 — Conservative profile: extra triage-adjacent patterns. The
+    # match still routes to the existing triage code so frontends and
+    # audit do not have to learn a new vocabulary.
+    if profile == "conservative" and draft:
+        collapsed = re.sub(r"\s+", " ", draft)
+        for pat in _CONSERVATIVE_PATTERNS:
+            if pat.search(collapsed):
+                codes.append(SAFETY_CODE_TRIAGE_OR_DISCHARGE_DECISION)
+                break
 
     codes = _ordered_unique(codes)
     allowed = len(codes) == 0

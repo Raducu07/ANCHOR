@@ -154,14 +154,28 @@ def enforce_assistant_run_limits(
     *,
     clinic_id: str,
     now: Optional[datetime] = None,
+    daily_limit_override: Optional[int] = None,
+    monthly_limit_override: Optional[int] = None,
 ) -> None:
     """Raise AssistantUsageLimitExceeded if `clinic_id` is at-or-above
-    either the daily or monthly run cap. Daily is checked first."""
+    either the daily or monthly run cap. Daily is checked first.
+
+    M6.7 — if an Assistant policy is active for the clinic, the route
+    passes the policy's per-clinic limits via *_override; otherwise
+    env-derived defaults are used (backward compatible with PR 2D)."""
     daily_count, monthly_count = get_assistant_run_counts(
         db, clinic_id=clinic_id, now=now
     )
-    d_limit = daily_run_limit()
-    m_limit = monthly_run_limit()
+    d_limit = (
+        int(daily_limit_override)
+        if daily_limit_override is not None
+        else daily_run_limit()
+    )
+    m_limit = (
+        int(monthly_limit_override)
+        if monthly_limit_override is not None
+        else monthly_run_limit()
+    )
 
     if daily_count >= d_limit:
         raise AssistantUsageLimitExceeded(

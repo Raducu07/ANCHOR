@@ -52,6 +52,20 @@ from app.assistant_output_safety import (
     OUTPUT_BLOCKED_MESSAGE,
     validate_client_communication_output,
 )
+from app.assistant_policy import (
+    ALLOWED_PATCH_FIELDS,
+    ALLOWED_VALIDATION_PROFILES,
+    AssistantPolicy,
+    DEFAULT_POLICY_LABEL,
+    FORBIDDEN_PATCH_FIELDS,
+    VALIDATION_PROFILE_STANDARD,
+    deactivate_active_policies,
+    get_active_policy_row,
+    get_effective_policy,
+    get_policy_history_rows,
+    insert_new_policy_version,
+    insert_policy_audit_event,
+)
 from app.assistant_prompts import (
     CLIENT_COMMUNICATION_SYSTEM_PROMPT,
     FIXED_REFUSAL_MESSAGE,
@@ -418,6 +432,84 @@ class AssistantContractsResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------
+# M6.7 — Assistant policy / settings response models
+# ---------------------------------------------------------------------
+
+_ASSISTANT_POLICY_GOVERNANCE_NOTE = (
+    "Assistant policy settings are clinic-scoped. Core clinical safety "
+    "prohibitions cannot be disabled."
+)
+
+
+class AssistantPolicySettings(BaseModel):
+    """Effective Assistant policy for a clinic. Metadata-only — contains
+    operational toggles and limits but never any raw content."""
+
+    id: Optional[uuid.UUID] = None
+    clinic_id: Optional[uuid.UUID] = None
+    policy_version: int
+    is_active: bool
+    is_default: bool
+
+    client_communication_enabled: bool
+    generation_enabled: bool
+    validation_profile: str
+
+    daily_run_limit_per_clinic: int
+    monthly_run_limit_per_clinic: int
+
+    require_human_review: bool
+    allow_receipts_after_review: bool
+
+    policy_label: str
+    policy_notes: Optional[str] = None
+
+    created_by_user_id: Optional[uuid.UUID] = None
+    created_at: Optional[datetime] = None
+    activated_at: Optional[datetime] = None
+
+
+class AssistantPolicyResponse(BaseModel):
+    policy: AssistantPolicySettings
+    governance_note: str = _ASSISTANT_POLICY_GOVERNANCE_NOTE
+
+
+class AssistantPolicyUpdateRequest(BaseModel):
+    """Bounded PATCH body. `extra='forbid'` rejects unknown / hard-doctrine
+    fields at the parser layer; the route also explicitly rejects the
+    forbidden field names with a clearer error code."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    client_communication_enabled: Optional[bool] = None
+    generation_enabled: Optional[bool] = None
+    validation_profile: Optional[str] = Field(default=None, max_length=64)
+    daily_run_limit_per_clinic: Optional[int] = Field(default=None, ge=1, le=500)
+    monthly_run_limit_per_clinic: Optional[int] = Field(default=None, ge=1, le=10000)
+    policy_label: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    policy_notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class AssistantPolicyHistoryItem(BaseModel):
+    policy_version: int
+    is_active: bool
+    validation_profile: str
+    client_communication_enabled: bool
+    generation_enabled: bool
+    daily_run_limit_per_clinic: int
+    monthly_run_limit_per_clinic: int
+    policy_label: str
+    created_at: datetime
+    activated_at: Optional[datetime] = None
+    superseded_at: Optional[datetime] = None
+    created_by_user_id: Optional[uuid.UUID] = None
+
+
+class AssistantPolicyHistoryResponse(BaseModel):
+    items: List[AssistantPolicyHistoryItem]
+
+
+# ---------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------
 
@@ -442,6 +534,202 @@ def get_assistant_contracts() -> AssistantContractsResponse:
             ),
         ],
     )
+
+
+# ---------------------------------------------------------------------
+# M6.7 — Assistant policy endpoints
+# ---------------------------------------------------------------------
+
+# Roles permitted to update Assistant policy. Matches the clinic admin
+# pattern used by portal_submit.override_submission (`role != "admin"`).
+_POLICY_ADMIN_ROLES = {"admin", "owner", "practice_manager"}
+
+
+def _policy_to_settings_model(policy: AssistantPolicy) -> AssistantPolicySettings:
+    return AssistantPolicySettings(
+        id=policy.id,
+        clinic_id=policy.clinic_id,
+        policy_version=policy.policy_version,
+        is_active=policy.is_active,
+        is_default=policy.is_default,
+        client_communication_enabled=policy.client_communication_enabled,
+        generation_enabled=policy.generation_enabled,
+        validation_profile=policy.validation_profile,
+        daily_run_limit_per_clinic=policy.daily_run_limit_per_clinic,
+        monthly_run_limit_per_clinic=policy.monthly_run_limit_per_clinic,
+        require_human_review=policy.require_human_review,
+        allow_receipts_after_review=policy.allow_receipts_after_review,
+        policy_label=policy.policy_label,
+        policy_notes=policy.policy_notes,
+        created_by_user_id=policy.created_by_user_id,
+        created_at=policy.created_at,
+        activated_at=policy.activated_at,
+    )
+
+
+def _row_to_history_item(row: Dict[str, Any]) -> AssistantPolicyHistoryItem:
+    return AssistantPolicyHistoryItem(
+        policy_version=int(row["policy_version"]),
+        is_active=bool(row["is_active"]),
+        validation_profile=str(row["validation_profile"]),
+        client_communication_enabled=bool(row["client_communication_enabled"]),
+        generation_enabled=bool(row["generation_enabled"]),
+        daily_run_limit_per_clinic=int(row["daily_run_limit_per_clinic"]),
+        monthly_run_limit_per_clinic=int(row["monthly_run_limit_per_clinic"]),
+        policy_label=str(row["policy_label"]),
+        created_at=row["created_at"],
+        activated_at=row.get("activated_at"),
+        superseded_at=row.get("superseded_at"),
+        created_by_user_id=row.get("created_by_user_id"),
+    )
+
+
+@router.get("/policy", response_model=AssistantPolicyResponse)
+def get_assistant_policy(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AssistantPolicyResponse:
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
+
+    policy = get_effective_policy(db, clinic_id=str(clinic_id))
+    return AssistantPolicyResponse(policy=_policy_to_settings_model(policy))
+
+
+@router.patch("/policy", response_model=AssistantPolicyResponse)
+def update_assistant_policy(
+    payload: AssistantPolicyUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AssistantPolicyResponse:
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    role = getattr(request.state, "role", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
+    if role not in _POLICY_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="forbidden_not_admin")
+
+    # Validate validation_profile early.
+    if (
+        payload.validation_profile is not None
+        and payload.validation_profile not in ALLOWED_VALIDATION_PROFILES
+    ):
+        raise HTTPException(
+            status_code=400, detail="invalid_validation_profile"
+        )
+
+    # Belt-and-braces: even though `extra='forbid'` blocks unknown keys,
+    # we explicitly reject the hard-doctrine field names if they ever
+    # become aliases. (No-op today; future-proof.)
+    patch_dict = payload.model_dump(exclude_unset=True)
+    forbidden = set(patch_dict.keys()) & FORBIDDEN_PATCH_FIELDS
+    if forbidden:
+        raise HTTPException(
+            status_code=400, detail="assistant_policy_field_not_allowed"
+        )
+
+    # Cross-field validation: monthly limit must be >= daily limit.
+    current = get_effective_policy(db, clinic_id=str(clinic_id))
+    effective_daily = patch_dict.get(
+        "daily_run_limit_per_clinic", current.daily_run_limit_per_clinic
+    )
+    effective_monthly = patch_dict.get(
+        "monthly_run_limit_per_clinic", current.monthly_run_limit_per_clinic
+    )
+    if int(effective_monthly) < int(effective_daily):
+        raise HTTPException(
+            status_code=400, detail="monthly_limit_below_daily_limit"
+        )
+
+    # Build the full settings dict for the new version row by merging
+    # the patch on top of the current effective policy.
+    new_settings = {
+        "client_communication_enabled": patch_dict.get(
+            "client_communication_enabled", current.client_communication_enabled
+        ),
+        "generation_enabled": patch_dict.get(
+            "generation_enabled", current.generation_enabled
+        ),
+        "validation_profile": patch_dict.get(
+            "validation_profile", current.validation_profile
+        ),
+        "daily_run_limit_per_clinic": int(effective_daily),
+        "monthly_run_limit_per_clinic": int(effective_monthly),
+        "policy_label": patch_dict.get("policy_label", current.policy_label),
+        "policy_notes": patch_dict.get("policy_notes", current.policy_notes),
+    }
+
+    # Compute the new version number — based on the highest version in
+    # history, not just the active row, so deactivated rows aren't
+    # silently overwritten.
+    from app.assistant_policy import _max_policy_version  # local import to avoid cycle nag
+
+    next_version = _max_policy_version(db, clinic_id=str(clinic_id)) + 1
+    previous_version = current.policy_version
+
+    # Deactivate any currently-active row before inserting the new one
+    # (partial unique index would otherwise reject the new is_active=true).
+    deactivate_active_policies(db, clinic_id=str(clinic_id))
+
+    new_row = insert_new_policy_version(
+        db,
+        clinic_id=str(clinic_id),
+        created_by_user_id=str(clinic_user_id),
+        policy_version=next_version,
+        settings=new_settings,
+    )
+
+    # Audit (metadata only).
+    changed_fields = sorted(set(patch_dict.keys()))
+    ip_hash = getattr(request.state, "ip_hash", None)
+    insert_policy_audit_event(
+        db,
+        clinic_id=str(clinic_id),
+        admin_user_id=str(clinic_user_id),
+        previous_policy_version=int(previous_version),
+        new_policy_version=int(next_version),
+        changed_fields=changed_fields,
+        ip_hash=ip_hash,
+    )
+    logger.info(
+        "assistant_policy_updated",
+        extra={
+            "route": getattr(request.url, "path", None),
+            "clinic_id": str(clinic_id),
+            "clinic_user_id": str(clinic_user_id),
+            "previous_policy_version": int(previous_version),
+            "new_policy_version": int(next_version),
+            "changed_fields": changed_fields,
+        },
+    )
+
+    # Map the new row into the response model.
+    from app.assistant_policy import _row_to_policy  # type: ignore
+
+    new_policy = _row_to_policy(new_row)
+    return AssistantPolicyResponse(policy=_policy_to_settings_model(new_policy))
+
+
+@router.get("/policy/history", response_model=AssistantPolicyHistoryResponse)
+def get_assistant_policy_history(
+    request: Request,
+    db: Session = Depends(get_db),
+    limit: int = Query(default=20, ge=1, le=200),
+) -> AssistantPolicyHistoryResponse:
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    role = getattr(request.state, "role", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
+    if role not in _POLICY_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="forbidden_not_admin")
+
+    rows = get_policy_history_rows(db, clinic_id=str(clinic_id), limit=limit)
+    items = [_row_to_history_item(r) for r in rows]
+    return AssistantPolicyHistoryResponse(items=items)
 
 
 # ---------------------------------------------------------------------
@@ -1210,6 +1498,11 @@ def _insert_assistant_run_created(
     input_field_keys: List[str],
     pii_detected: bool,
     pii_types: List[str],
+    # M6.7 — forward-link to the active policy that governed this run.
+    # All three may be None when no policy row exists yet (default policy).
+    assistant_policy_id: Optional[str] = None,
+    assistant_policy_version: Optional[int] = None,
+    assistant_validation_profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     row = (
         db.execute(
@@ -1226,7 +1519,10 @@ def _insert_assistant_run_created(
                   review_status,
                   receipt_id, governance_event_id,
                   model_provider, model_name,
-                  run_status
+                  run_status,
+                  assistant_policy_id,
+                  assistant_policy_version,
+                  assistant_validation_profile
                 )
                 VALUES (
                   CAST(:run_id AS uuid),
@@ -1242,7 +1538,10 @@ def _insert_assistant_run_created(
                   :review_status,
                   NULL, NULL,
                   NULL, NULL,
-                  :run_status
+                  :run_status,
+                  CAST(NULLIF(:assistant_policy_id, '') AS uuid),
+                  :assistant_policy_version,
+                  :assistant_validation_profile
                 )
                 RETURNING
                   id AS run_id, mode, contract_version,
@@ -1268,6 +1567,11 @@ def _insert_assistant_run_created(
                 "refusal_reason_codes": json.dumps([]),
                 "review_status": "not_reviewed",
                 "run_status": RUN_STATUS_CREATED,
+                "assistant_policy_id": (
+                    str(assistant_policy_id) if assistant_policy_id else ""
+                ),
+                "assistant_policy_version": assistant_policy_version,
+                "assistant_validation_profile": assistant_validation_profile,
             },
         )
         .mappings()
@@ -1444,12 +1748,40 @@ def create_assistant_run(
     clinic_id_s = str(clinic_id)
     clinic_user_id_s = str(clinic_user_id)
 
+    # M6.7: load active Assistant policy (or safe default). The policy
+    # governs mode availability, generation toggle, usage limits, and
+    # validation profile for THIS run.
+    policy = get_effective_policy(db, clinic_id=clinic_id_s)
+
+    # Policy may disable a mode for this clinic. Reject BEFORE any
+    # insert / model call.
+    if mode == MODE_CLIENT_COMMUNICATION and not policy.client_communication_enabled:
+        logger.info(
+            "assistant_mode_disabled_by_policy",
+            extra={
+                "route": getattr(request.url, "path", None),
+                "clinic_id": clinic_id_s,
+                "mode": mode,
+                "policy_version": policy.policy_version,
+            },
+        )
+        raise HTTPException(
+            status_code=403, detail="assistant_mode_disabled_by_policy"
+        )
+
     # PR 2D: cost-control guardrail.
     # Check usage limits BEFORE any input hashing, assistant_runs insert,
     # safety gate, or model call. An over-limit clinic must not be able to
     # silently create uncontrolled records or Anthropic spend.
+    # M6.7 — pass the policy's per-clinic caps (env defaults flow through
+    # when no policy row exists).
     try:
-        enforce_assistant_run_limits(db, clinic_id=clinic_id_s)
+        enforce_assistant_run_limits(
+            db,
+            clinic_id=clinic_id_s,
+            daily_limit_override=policy.daily_run_limit_per_clinic,
+            monthly_limit_override=policy.monthly_run_limit_per_clinic,
+        )
     except AssistantUsageLimitExceeded as exc:
         code = (
             "assistant_daily_run_limit_exceeded"
@@ -1489,7 +1821,8 @@ def create_assistant_run(
 
     run_id = uuid.uuid4()
 
-    # Step 3: INSERT before any model call.
+    # Step 3: INSERT before any model call. Stamp the active policy
+    # version + validation profile on the run for traceability.
     row = _insert_assistant_run_created(
         db,
         run_id=run_id,
@@ -1499,7 +1832,45 @@ def create_assistant_run(
         input_field_keys=input_field_keys,
         pii_detected=pii_detected,
         pii_types=pii_types,
+        assistant_policy_id=(str(policy.id) if policy.id else None),
+        assistant_policy_version=(
+            int(policy.policy_version) if not policy.is_default else None
+        ),
+        assistant_validation_profile=policy.validation_profile,
     )
+
+    # M6.7 — policy may disable generation. If so, we DO NOT call the
+    # model; we record a refused-by-policy outcome. The metadata-only
+    # record + refusal code make this auditable governance evidence.
+    if not policy.generation_enabled:
+        policy_refusal_codes = ["generation_disabled_by_policy"]
+        _update_assistant_run_refused(
+            db,
+            run_id=run_id,
+            clinic_id=clinic_id_s,
+            refusal_codes=policy_refusal_codes,
+        )
+        return AssistantRunCreateResponse(
+            run=AssistantRunMetadata(
+                run_id=run_id,
+                mode=MODE_CLIENT_COMMUNICATION,
+                contract_version=ASSISTANT_CONTRACT_VERSION,
+                run_status=RUN_STATUS_REFUSED,
+                draft=FIXED_REFUSAL_MESSAGE,
+                refused=True,
+                refusal_reason_codes=policy_refusal_codes,
+                safety_flags=policy_refusal_codes,
+                pii_detected=pii_detected,
+                pii_types=list(pii_types),
+                input_field_keys=list(input_field_keys),
+                review_status="not_reviewed",
+                output_sha256=None,
+                model_provider=None,
+                model_name=None,
+                generation_enabled=False,
+                governance_note=GOVERNANCE_NOTE,
+            )
+        )
 
     # Step 4: input-side safety gate.
     refusal_codes = evaluate_input_safety(validated_dict)
@@ -1598,7 +1969,10 @@ def create_assistant_run(
     # Step 5c (M6.6) — post-output safety validation. The validator
     # operates on the transient draft string and returns only codes; the
     # raw draft is never returned, logged, or persisted from this point.
-    safety_result = validate_client_communication_output(draft)
+    # M6.7 — validation profile comes from the active policy.
+    safety_result = validate_client_communication_output(
+        draft, profile=policy.validation_profile
+    )
 
     if not safety_result.allowed:
         _update_assistant_run_output_blocked(
