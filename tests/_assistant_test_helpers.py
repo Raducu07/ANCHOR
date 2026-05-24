@@ -85,6 +85,9 @@ class FakeDB:
         # SELECTs whose params include a `run_id` (the detail endpoint).
         self.select_list_rows: List[Dict[str, Any]] = []
         self.select_detail_row: Optional[Dict[str, Any]] = None
+        # M6.4: row returned by the review-update UPDATE ... RETURNING
+        # statement. None => 404 from the endpoint.
+        self.update_review_row: Optional[Dict[str, Any]] = None
 
     def execute(self, statement: Any, params: Optional[Dict[str, Any]] = None) -> _FakeResult:
         sql = str(getattr(statement, "text", statement))
@@ -94,6 +97,16 @@ class FakeDB:
         if "SELECT COUNT(*)" in sql and "assistant_runs" in sql:
             value = self.count_queue.pop(0) if self.count_queue else 0
             return _FakeResult(row={"c": value})
+
+        # M6.4: review-update UPDATE ... RETURNING. Uniquely identifiable
+        # by `review_status` in the SQL text (the other PR 2B UPDATEs do
+        # not touch this column).
+        if (
+            "UPDATE assistant_runs" in sql
+            and "review_status" in sql
+            and "RETURNING" in sql
+        ):
+            return _FakeResult(row=self.update_review_row)
 
         # M6.3: traceability detail SELECT (params include run_id).
         if (

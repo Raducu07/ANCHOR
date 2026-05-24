@@ -354,6 +354,11 @@ class AssistantRunTraceItem(BaseModel):
     model_provider: Optional[str] = None
     model_name: Optional[str] = None
 
+    # M6.4 — metadata-only human review evidence.
+    review_decision: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    reviewed_by_user_id: Optional[uuid.UUID] = None
+
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -448,6 +453,9 @@ def _row_to_trace_item(row: Dict[str, Any]) -> AssistantRunTraceItem:
         governance_event_id=row.get("governance_event_id"),
         model_provider=row.get("model_provider"),
         model_name=row.get("model_name"),
+        review_decision=row.get("review_decision"),
+        reviewed_at=row.get("reviewed_at"),
+        reviewed_by_user_id=row.get("reviewed_by_user_id"),
         created_at=row["created_at"],
         updated_at=row.get("updated_at"),
     )
@@ -473,6 +481,9 @@ _TRACE_SELECT_COLUMNS = """
     governance_event_id,
     model_provider,
     model_name,
+    review_decision,
+    reviewed_at,
+    reviewed_by_user_id,
     created_at,
     updated_at
 """
@@ -569,6 +580,124 @@ def get_assistant_run_detail(
 
     if not row:
         raise HTTPException(status_code=404, detail="assistant_run_not_found")
+
+    return AssistantRunDetailResponse(run=_row_to_trace_item(dict(row)))
+
+
+# ---------------------------------------------------------------------
+# M6.4 — Human review-state workflow
+# ---------------------------------------------------------------------
+
+REVIEW_STATUS_NOT_REVIEWED = "not_reviewed"
+REVIEW_STATUS_APPROVED = "reviewed_approved"
+REVIEW_STATUS_REJECTED = "reviewed_rejected"
+REVIEW_STATUS_NEEDS_EDIT = "reviewed_needs_edit"
+
+REVIEW_DECISION_APPROVED = "approved_for_use"
+REVIEW_DECISION_REJECTED = "rejected_not_safe"
+REVIEW_DECISION_NEEDS_EDIT = "needs_edit_before_use"
+
+# Allowed PATCH values for review_status. 'not_reviewed' is intentionally
+# excluded: this endpoint records review completion and is not a reset path.
+_PATCH_REVIEW_STATUSES = {
+    REVIEW_STATUS_APPROVED,
+    REVIEW_STATUS_REJECTED,
+    REVIEW_STATUS_NEEDS_EDIT,
+}
+
+_REVIEW_STATUS_TO_DECISION: Dict[str, str] = {
+    REVIEW_STATUS_APPROVED: REVIEW_DECISION_APPROVED,
+    REVIEW_STATUS_REJECTED: REVIEW_DECISION_REJECTED,
+    REVIEW_STATUS_NEEDS_EDIT: REVIEW_DECISION_NEEDS_EDIT,
+}
+
+
+class AssistantRunReviewUpdate(BaseModel):
+    """Request body for PATCH /v1/assistant/runs/{run_id}/review.
+
+    `extra="forbid"` ensures the endpoint rejects any extra fields (notes,
+    reviewer overrides, free text) at the parsing layer — review evidence
+    is metadata-only by contract."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    review_status: str = Field(..., min_length=1, max_length=64)
+
+
+@router.patch(
+    "/runs/{run_id}/review",
+    response_model=AssistantRunDetailResponse,
+)
+def update_assistant_run_review(
+    run_id: uuid.UUID,
+    payload: AssistantRunReviewUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AssistantRunDetailResponse:
+    """Record a metadata-only human review outcome for one Assistant run.
+
+    Reviewer identity comes from the authenticated clinic_user context;
+    it cannot be set by the client. The request carries only the review
+    completion status; the decision token is derived server-side."""
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
+
+    review_status_in = payload.review_status
+
+    # 'not_reviewed' is explicitly rejected: PATCH cannot be used to
+    # reset review state. Unknown values also rejected at 400.
+    if review_status_in == REVIEW_STATUS_NOT_REVIEWED:
+        raise HTTPException(status_code=400, detail="invalid_review_status")
+    if review_status_in not in _PATCH_REVIEW_STATUSES:
+        raise HTTPException(status_code=400, detail="invalid_review_status")
+
+    review_decision = _REVIEW_STATUS_TO_DECISION[review_status_in]
+
+    row = (
+        db.execute(
+            text(
+                f"""
+                UPDATE assistant_runs
+                SET review_status = :review_status,
+                    review_decision = :review_decision,
+                    reviewed_at = now(),
+                    reviewed_by_user_id = CAST(:reviewed_by_user_id AS uuid),
+                    updated_at = now()
+                WHERE id = CAST(:run_id AS uuid)
+                  AND clinic_id = CAST(:clinic_id AS uuid)
+                RETURNING {_TRACE_SELECT_COLUMNS}
+                """
+            ),
+            {
+                "review_status": review_status_in,
+                "review_decision": review_decision,
+                "reviewed_by_user_id": str(clinic_user_id),
+                "run_id": str(run_id),
+                "clinic_id": str(clinic_id),
+            },
+        )
+        .mappings()
+        .first()
+    )
+
+    if not row:
+        # Same generic detail as GET /runs/{run_id} — no cross-clinic leakage.
+        raise HTTPException(status_code=404, detail="assistant_run_not_found")
+
+    # Safe metadata-only log. No raw input, draft, or prompt is involved.
+    logger.info(
+        "assistant_run_review_updated",
+        extra={
+            "route": getattr(request.url, "path", None),
+            "clinic_id": str(clinic_id),
+            "clinic_user_id": str(clinic_user_id),
+            "run_id": str(run_id),
+            "review_status": review_status_in,
+            "review_decision": review_decision,
+        },
+    )
 
     return AssistantRunDetailResponse(run=_row_to_trace_item(dict(row)))
 
