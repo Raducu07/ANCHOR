@@ -605,6 +605,8 @@ function runStatusLabel(runStatus: string | undefined): string {
       return "Refused before model call";
     case "generation_failed":
       return "Generation failed";
+    case "output_blocked":
+      return "Output blocked";
     case "created":
     case undefined:
     case "":
@@ -670,12 +672,20 @@ function RunRecordCard({
   const reviewStatus = record.review_status ?? record.status ?? "not_reviewed";
   const generationEnabled = record.generation_enabled === true;
   const runStatus = typeof record.run_status === "string" ? record.run_status : undefined;
-  const refused = record.refused === true || runStatus === "generation_refused";
+  const blocked = record.blocked === true || runStatus === "output_blocked";
+  // `refused` historically encoded both "input refused" and (since M6.6)
+  // "output blocked" — keep the input-side specifically so the UI can
+  // pick the right panel.
+  const refusedBeforeModel = runStatus === "generation_refused" || (
+    record.refused === true && !blocked
+  );
   const refusalCodes = record.refusal_reason_codes ?? [];
   const safetyFlags = record.safety_flags ?? [];
   const draft = typeof record.draft === "string" ? record.draft : null;
-  const showDraftPanel = runStatus === "generation_succeeded" && !!draft && !refused;
-  const showRefusalPanel = refused;
+  const blockedMessage = typeof record.blocked_message === "string" ? record.blocked_message : null;
+  const showDraftPanel = runStatus === "generation_succeeded" && !!draft && !refusedBeforeModel && !blocked;
+  const showRefusalPanel = refusedBeforeModel;
+  const showBlockedPanel = blocked;
   const showFailurePanel = runStatus === "generation_failed";
 
   return (
@@ -711,6 +721,16 @@ function RunRecordCard({
       {showRefusalPanel ? (
         <RefusalPanel reasonCodes={refusalCodes} safetyFlags={safetyFlags} />
       ) : null}
+      {showBlockedPanel ? (
+        <OutputBlockedPanel
+          reasonCodes={refusalCodes}
+          safetyFlags={safetyFlags}
+          blockedMessage={blockedMessage}
+          outputSha256={typeof record.output_sha256 === "string" ? record.output_sha256 : null}
+          modelProvider={typeof record.model_provider === "string" ? record.model_provider : null}
+          modelName={typeof record.model_name === "string" ? record.model_name : null}
+        />
+      ) : null}
       {showFailurePanel ? <FailurePanel /> : null}
 
       <div className="mt-4 space-y-2">
@@ -722,7 +742,10 @@ function RunRecordCard({
         ) : null}
         {record.mode ? <DetailRow label="Mode" value={record.mode} /> : null}
         <DetailRow label="Run status" value={runStatusLabel(runStatus)} />
-        <DetailRow label="Refused" value={refused ? "Yes" : "No"} />
+        <DetailRow
+          label="Refused"
+          value={blocked ? "Blocked" : refusedBeforeModel ? "Yes" : "No"}
+        />
         {fieldKeys.length ? (
           <DetailRow label="Input fields" value={fieldKeys.join(", ")} />
         ) : null}
@@ -895,6 +918,88 @@ function FailurePanel() {
   );
 }
 
+function OutputBlockedPanel({
+  reasonCodes,
+  safetyFlags,
+  blockedMessage,
+  outputSha256,
+  modelProvider,
+  modelName,
+}: {
+  reasonCodes: string[];
+  safetyFlags: string[];
+  blockedMessage: string | null;
+  outputSha256: string | null;
+  modelProvider: string | null;
+  modelName: string | null;
+}) {
+  return (
+    <div className="mt-5 rounded-xl border border-rose-300 bg-rose-50 p-4">
+      <p className="text-sm font-semibold text-rose-900">Output blocked</p>
+      <p className="mt-1 text-xs leading-5 text-rose-800">
+        ANCHOR blocked this generated draft because it may contain unsafe clinical content.
+        No draft text is stored or shown. Output hash records that a generated output existed
+        without retaining it. This is governance evidence, not a clinical correctness check.
+      </p>
+      {blockedMessage ? (
+        <p className="mt-2 text-xs leading-5 text-rose-800">{blockedMessage}</p>
+      ) : null}
+
+      {reasonCodes.length ? (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-rose-700">
+            Refusal reason codes
+          </p>
+          <ul className="mt-1 flex flex-wrap gap-1.5">
+            {reasonCodes.map((code) => (
+              <li
+                key={code}
+                className="rounded-full border border-rose-200 bg-white px-2 py-0.5 text-[11px] font-medium text-rose-700"
+              >
+                {code}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {safetyFlags.length ? (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-rose-700">
+            Safety flags
+          </p>
+          <ul className="mt-1 flex flex-wrap gap-1.5">
+            {safetyFlags.map((flag) => (
+              <li
+                key={flag}
+                className="rounded-full border border-rose-200 bg-white px-2 py-0.5 text-[11px] font-medium text-rose-700"
+              >
+                {flag}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <div className="rounded-lg border border-rose-100 bg-white px-3 py-2">
+          <p className="text-[11px] uppercase tracking-wide text-rose-700">Output hash</p>
+          <p className="mt-1 font-mono text-xs text-slate-900 break-all">
+            {outputSha256 ?? "None"}
+          </p>
+        </div>
+        <div className="rounded-lg border border-rose-100 bg-white px-3 py-2">
+          <p className="text-[11px] uppercase tracking-wide text-rose-700">Model</p>
+          <p className="mt-1 text-xs font-medium text-slate-900">
+            {modelProvider || modelName
+              ? `${modelProvider ?? "-"} / ${modelName ?? "-"}`
+              : "Not invoked"}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------
 // M6.3 — Evidence/traceability section
 // ---------------------------------------------------------------------
@@ -1018,7 +1123,11 @@ function EvidenceSection({
                     <td className="px-3 py-2 text-slate-700">{reviewStatusLabel(r.review_status)}</td>
                     <td className="px-3 py-2 text-slate-700">{r.pii_detected ? "Yes" : "No"}</td>
                     <td className="px-3 py-2 text-slate-700">
-                      {r.refusal_reason_codes.length > 0 ? "Yes" : "No"}
+                      {r.run_status === "output_blocked"
+                        ? "Blocked"
+                        : r.refusal_reason_codes.length > 0
+                          ? "Yes"
+                          : "No"}
                     </td>
                     <td className="px-3 py-2 font-mono text-[12px] text-slate-700">
                       {truncateHash(r.output_sha256)}
