@@ -22,13 +22,19 @@ from tests._assistant_test_helpers import (
 )
 
 
+# Sentinel so callers can pass `None` explicitly without it being replaced
+# by the helper's default (`x or <default>` patterns would silently
+# overwrite an intentional None with the default value).
+_UNSET = object()
+
+
 def _trace_row(
     *,
     run_id: str | None = None,
     review_status: str = "reviewed_approved",
-    review_decision: str | None = "approved_for_use",
-    reviewed_at: datetime | None = None,
-    reviewed_by_user_id: str | None = TEST_USER_ID,
+    review_decision: Any = _UNSET,
+    reviewed_at: Any = _UNSET,
+    reviewed_by_user_id: Any = _UNSET,
     output_sha256: str | None = "a" * 64,
     model_provider: str | None = "anthropic",
     model_name: str | None = "claude-sonnet-4-6",
@@ -37,8 +43,30 @@ def _trace_row(
     run_status: str = "generation_succeeded",
 ) -> Dict[str, Any]:
     """Shape mirrors what psycopg returns for the RETURNING clause of the
-    review UPDATE."""
-    when = reviewed_at or datetime(2026, 5, 23, 13, 14, 15, tzinfo=timezone.utc)
+    review UPDATE.
+
+    `review_decision`, `reviewed_at`, and `reviewed_by_user_id` use a
+    sentinel default so callers can pass `None` explicitly to model an
+    unreviewed row. Passing the field at all means "use this value";
+    omitting it means "use the helper's default reviewed-row value".
+    """
+    default_when = datetime(2026, 5, 23, 13, 14, 15, tzinfo=timezone.utc)
+    resolved_reviewed_at = default_when if reviewed_at is _UNSET else reviewed_at
+    resolved_reviewed_by = (
+        _uuid.UUID(TEST_USER_ID)
+        if reviewed_by_user_id is _UNSET
+        else (
+            _uuid.UUID(reviewed_by_user_id)
+            if isinstance(reviewed_by_user_id, str)
+            else reviewed_by_user_id
+        )
+    )
+    resolved_decision = "approved_for_use" if review_decision is _UNSET else review_decision
+
+    # updated_at tracks the reviewed_at when present, otherwise the run's
+    # creation timestamp — mirroring how the backend updates the row.
+    updated_at = resolved_reviewed_at or datetime(2026, 5, 23, 12, 0, 0, tzinfo=timezone.utc)
+
     return {
         "run_id": _uuid.UUID(run_id) if run_id else _uuid.uuid4(),
         "clinic_id": _uuid.UUID(TEST_CLINIC_ID),
@@ -59,11 +87,11 @@ def _trace_row(
         "governance_event_id": None,
         "model_provider": model_provider,
         "model_name": model_name,
-        "review_decision": review_decision,
-        "reviewed_at": when,
-        "reviewed_by_user_id": _uuid.UUID(reviewed_by_user_id) if reviewed_by_user_id else None,
+        "review_decision": resolved_decision,
+        "reviewed_at": resolved_reviewed_at,
+        "reviewed_by_user_id": resolved_reviewed_by,
         "created_at": datetime(2026, 5, 23, 12, 0, 0, tzinfo=timezone.utc),
-        "updated_at": when,
+        "updated_at": updated_at,
     }
 
 
