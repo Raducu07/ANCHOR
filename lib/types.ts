@@ -411,8 +411,52 @@ export type AssistantRunTraceItem = {
   review_decision?: string | null;
   reviewed_at?: string | null;
   reviewed_by_user_id?: string | null;
+  // M6.5 — metadata-only receipt linkage. `receipt_id` is already
+  // declared above (M6.3); these complement it.
+  has_receipt?: boolean;
+  receipt_created_at?: string | null;
   created_at: string;
   updated_at: string | null;
+};
+
+// M6.5 — Assistant receipt (metadata only).
+export type AssistantRunReceipt = {
+  receipt_id: string;
+  assistant_run_id: string;
+  clinic_id: string;
+  created_by_user_id: string;
+  receipt_kind: string;
+  receipt_version: string;
+  storage_policy: string;
+  raw_content_stored: boolean;
+  prompt_stored: boolean;
+  draft_stored: boolean;
+  run_status: string;
+  review_status: string;
+  review_decision?: string | null;
+  input_sha256: string;
+  output_sha256: string | null;
+  mode: string;
+  contract_version: string;
+  workflow_origin: string;
+  pii_detected: boolean;
+  pii_types: string[];
+  safety_flags: string[];
+  refusal_reason_codes: string[];
+  model_provider: string | null;
+  model_name: string | null;
+  assistant_run_created_at: string;
+  assistant_run_reviewed_at?: string | null;
+  assistant_run_reviewed_by_user_id?: string | null;
+  receipt_created_at: string;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type AssistantRunReceiptResponse = {
+  receipt: AssistantRunReceipt;
+  run: AssistantRunTraceItem;
+  governance_note: string;
 };
 
 // M6.4 — review-state PATCH wire types.

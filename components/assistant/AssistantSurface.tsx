@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   ASSISTANT_MODE_CLIENT_COMMUNICATION,
+  createAssistantRunReceipt,
   getAssistantContract,
   getAssistantRun,
+  getAssistantRunReceipt,
   listAssistantRuns,
   submitAssistantRun,
   updateAssistantRunReview,
@@ -15,6 +17,7 @@ import type {
   AssistantContractResponse,
   AssistantReviewStatusInput,
   AssistantRunDetailResponse,
+  AssistantRunReceipt,
   AssistantRunRecord,
   AssistantRunTraceItem,
 } from "@/lib/types";
@@ -91,6 +94,70 @@ export function AssistantSurface() {
   const [reviewSubmitting, setReviewSubmitting] = useState<string | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
 
+  // M6.5 — receipt action state.
+  const [selectedReceipt, setSelectedReceipt] = useState<AssistantRunReceipt | null>(null);
+  const [receiptLoading, setReceiptLoading] = useState(false);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+  const [receiptSubmitting, setReceiptSubmitting] = useState<string | null>(null);
+
+  async function loadReceiptFor(runId: string) {
+    setReceiptError(null);
+    setReceiptLoading(true);
+    try {
+      const result = await getAssistantRunReceipt(runId);
+      setSelectedReceipt(result.receipt);
+      // The GET response also carries the latest run snapshot — refresh
+      // the selected detail in-place so the receipt linkage state stays
+      // consistent without a second request.
+      setSelectedDetail({
+        run: result.run,
+        storage_policy: "metadata_only_by_default",
+        raw_content_stored: false,
+        draft_stored: false,
+        prompt_stored: false,
+        governance_note: result.governance_note,
+      });
+    } catch (err) {
+      // 404 just means no receipt has been created yet — that's a normal
+      // state, not an error. Surface other errors only.
+      if (err instanceof ApiError && err.status === 404) {
+        setSelectedReceipt(null);
+      } else {
+        const message =
+          err instanceof ApiError ? err.message : "Unable to load receipt.";
+        setReceiptError(message);
+        setSelectedReceipt(null);
+      }
+    } finally {
+      setReceiptLoading(false);
+    }
+  }
+
+  async function createReceipt(runId: string) {
+    setReceiptSubmitting(runId);
+    setReceiptError(null);
+    try {
+      const result = await createAssistantRunReceipt(runId);
+      setSelectedReceipt(result.receipt);
+      setSelectedDetail({
+        run: result.run,
+        storage_policy: "metadata_only_by_default",
+        raw_content_stored: false,
+        draft_stored: false,
+        prompt_stored: false,
+        governance_note: result.governance_note,
+      });
+      // Refresh recent-runs list so receipt linkage appears in the table.
+      void loadEvidence();
+    } catch (err) {
+      const message =
+        err instanceof ApiError ? err.message : "Unable to create receipt.";
+      setReceiptError(message);
+    } finally {
+      setReceiptSubmitting(null);
+    }
+  }
+
   async function updateReview(runId: string, reviewStatus: AssistantReviewStatusInput) {
     setReviewSubmitting(runId);
     setReviewError(null);
@@ -112,6 +179,8 @@ export function AssistantSurface() {
   async function selectRun(runId: string) {
     setSelectedRunId(runId);
     setSelectedDetail(null);
+    setSelectedReceipt(null);
+    setReceiptError(null);
     setDetailError(null);
     setReviewError(null);
     setDetailLoading(true);
@@ -123,6 +192,11 @@ export function AssistantSurface() {
     try {
       const detail = await getAssistantRun(runId);
       setSelectedDetail(detail);
+      // If a receipt is already linked, lazily load it now so the
+      // receipt evidence card renders without a second click.
+      if (detail.run?.has_receipt) {
+        void loadReceiptFor(runId);
+      }
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Unable to load assistant run detail.";
       setDetailError(message);
@@ -489,6 +563,12 @@ export function AssistantSurface() {
         onUpdateReview={(runId, status) => void updateReview(runId, status)}
         reviewSubmitting={reviewSubmitting}
         reviewError={reviewError}
+        selectedReceipt={selectedReceipt}
+        receiptLoading={receiptLoading}
+        receiptError={receiptError}
+        receiptSubmitting={receiptSubmitting}
+        onCreateReceipt={(runId) => void createReceipt(runId)}
+        onRefreshReceipt={(runId) => void loadReceiptFor(runId)}
       />
 
       <div className="grid gap-4 xl:grid-cols-3">
@@ -838,6 +918,12 @@ function EvidenceSection({
   onUpdateReview,
   reviewSubmitting,
   reviewError,
+  selectedReceipt,
+  receiptLoading,
+  receiptError,
+  receiptSubmitting,
+  onCreateReceipt,
+  onRefreshReceipt,
 }: {
   id: string;
   runs: AssistantRunTraceItem[] | null;
@@ -852,6 +938,12 @@ function EvidenceSection({
   onUpdateReview: (runId: string, reviewStatus: AssistantReviewStatusInput) => void;
   reviewSubmitting: string | null;
   reviewError: string | null;
+  selectedReceipt: AssistantRunReceipt | null;
+  receiptLoading: boolean;
+  receiptError: string | null;
+  receiptSubmitting: string | null;
+  onCreateReceipt: (runId: string) => void;
+  onRefreshReceipt: (runId: string) => void;
 }) {
   return (
     <NativeCard>
@@ -901,8 +993,9 @@ function EvidenceSection({
                 <th className="w-[12%] px-3 py-2 font-semibold">Review</th>
                 <th className="w-[8%] px-3 py-2 font-semibold">PII</th>
                 <th className="w-[8%] px-3 py-2 font-semibold">Refused</th>
-                <th className="w-[14%] px-3 py-2 font-semibold">Output hash</th>
-                <th className="w-[14%] px-3 py-2 font-semibold">Model</th>
+                <th className="w-[12%] px-3 py-2 font-semibold">Output hash</th>
+                <th className="w-[12%] px-3 py-2 font-semibold">Model</th>
+                <th className="w-[8%] px-3 py-2 font-semibold">Receipt</th>
                 <th className="w-[6%] px-3 py-2 font-semibold" />
               </tr>
             </thead>
@@ -935,6 +1028,9 @@ function EvidenceSection({
                         ? `${r.model_provider ?? "-"} / ${r.model_name ?? "-"}`
                         : "Not invoked"}
                     </td>
+                    <td className="px-3 py-2 text-slate-700">
+                      {r.has_receipt || r.receipt_id ? "Linked" : "—"}
+                    </td>
                     <td className="px-3 py-2 text-right">
                       <button
                         type="button"
@@ -961,6 +1057,12 @@ function EvidenceSection({
           onUpdateReview={onUpdateReview}
           reviewSubmitting={reviewSubmitting}
           reviewError={reviewError}
+          receipt={selectedReceipt}
+          receiptLoading={receiptLoading}
+          receiptError={receiptError}
+          receiptSubmitting={receiptSubmitting}
+          onCreateReceipt={onCreateReceipt}
+          onRefreshReceipt={onRefreshReceipt}
         />
       ) : null}
 
@@ -983,6 +1085,12 @@ function RunDetailPanel({
   onUpdateReview,
   reviewSubmitting,
   reviewError,
+  receipt,
+  receiptLoading,
+  receiptError,
+  receiptSubmitting,
+  onCreateReceipt,
+  onRefreshReceipt,
 }: {
   runId: string;
   detail: AssistantRunDetailResponse | null;
@@ -991,6 +1099,12 @@ function RunDetailPanel({
   onUpdateReview: (runId: string, reviewStatus: AssistantReviewStatusInput) => void;
   reviewSubmitting: string | null;
   reviewError: string | null;
+  receipt: AssistantRunReceipt | null;
+  receiptLoading: boolean;
+  receiptError: string | null;
+  receiptSubmitting: string | null;
+  onCreateReceipt: (runId: string) => void;
+  onRefreshReceipt: (runId: string) => void;
 }) {
   return (
     <section className="mt-5 rounded-xl border border-slate-200 bg-white p-5">
@@ -1023,6 +1137,12 @@ function RunDetailPanel({
           onUpdateReview={onUpdateReview}
           reviewSubmitting={reviewSubmitting}
           reviewError={reviewError}
+          receipt={receipt}
+          receiptLoading={receiptLoading}
+          receiptError={receiptError}
+          receiptSubmitting={receiptSubmitting}
+          onCreateReceipt={onCreateReceipt}
+          onRefreshReceipt={onRefreshReceipt}
         />
       ) : null}
     </section>
@@ -1034,11 +1154,23 @@ function RunDetailBody({
   onUpdateReview,
   reviewSubmitting,
   reviewError,
+  receipt,
+  receiptLoading,
+  receiptError,
+  receiptSubmitting,
+  onCreateReceipt,
+  onRefreshReceipt,
 }: {
   detail: AssistantRunDetailResponse;
   onUpdateReview: (runId: string, reviewStatus: AssistantReviewStatusInput) => void;
   reviewSubmitting: string | null;
   reviewError: string | null;
+  receipt: AssistantRunReceipt | null;
+  receiptLoading: boolean;
+  receiptError: string | null;
+  receiptSubmitting: string | null;
+  onCreateReceipt: (runId: string) => void;
+  onRefreshReceipt: (runId: string) => void;
 }) {
   const r = detail.run;
   const isReviewed = r.review_status && r.review_status !== "not_reviewed";
@@ -1071,6 +1203,18 @@ function RunDetailBody({
           error={reviewError}
         />
       )}
+
+      <ReceiptSection
+        runId={r.run_id}
+        reviewStatus={r.review_status}
+        hasReceipt={Boolean(r.has_receipt) || r.receipt_id != null || receipt != null}
+        receipt={receipt}
+        loading={receiptLoading}
+        error={receiptError}
+        submitting={receiptSubmitting === r.run_id}
+        onCreateReceipt={onCreateReceipt}
+        onRefreshReceipt={onRefreshReceipt}
+      />
 
       <div className="mt-4 space-y-2">
         <DetailRow label="Run status" value={runStatusLabel(r.run_status)} />
@@ -1126,6 +1270,12 @@ function RunDetailBody({
           value={r.receipt_id ? r.receipt_id : "Not linked yet"}
           mono={!!r.receipt_id}
         />
+        {r.receipt_created_at ? (
+          <DetailRow
+            label="Receipt created at"
+            value={formatDateTime(r.receipt_created_at)}
+          />
+        ) : null}
         <DetailRow
           label="Governance event"
           value={r.governance_event_id ? r.governance_event_id : "Not linked yet"}
@@ -1194,6 +1344,197 @@ function ReviewActionArea({
           Could not record review: {error}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function ReceiptSection({
+  runId,
+  reviewStatus,
+  hasReceipt,
+  receipt,
+  loading,
+  error,
+  submitting,
+  onCreateReceipt,
+  onRefreshReceipt,
+}: {
+  runId: string;
+  reviewStatus: string;
+  hasReceipt: boolean;
+  receipt: AssistantRunReceipt | null;
+  loading: boolean;
+  error: string | null;
+  submitting: boolean;
+  onCreateReceipt: (runId: string) => void;
+  onRefreshReceipt: (runId: string) => void;
+}) {
+  const reviewed = reviewStatus && reviewStatus !== "not_reviewed";
+
+  // 1) Not reviewed — receipt creation is blocked at the backend (400).
+  if (!reviewed) {
+    return (
+      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <p className="text-sm font-semibold text-slate-900">Receipt</p>
+        <p className="mt-1 text-xs leading-5 text-slate-600">
+          Record human review before creating a receipt. Human review must be recorded before
+          receipt creation. This receipt is not a clinical record.
+        </p>
+      </div>
+    );
+  }
+
+  // 2) Reviewed but no receipt yet — show create action.
+  if (!hasReceipt && !receipt) {
+    return (
+      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <p className="text-sm font-semibold text-slate-900">Create metadata receipt</p>
+        <p className="mt-1 text-xs leading-5 text-slate-600">
+          Creates a metadata-only governance receipt. Raw input, prompts, and draft output are
+          not stored. Receipt confirms governance metadata, not clinical correctness.
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => onCreateReceipt(runId)}
+            disabled={submitting}
+            className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-900 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {submitting ? "Creating…" : "Create metadata receipt"}
+          </button>
+          {error ? (
+            <p className="text-xs leading-5 text-rose-700">
+              Could not create receipt: {error}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  // 3) Reviewed and receipt exists — show evidence card.
+  if (receipt) {
+    return <ReceiptEvidenceCard receipt={receipt} onRefresh={() => onRefreshReceipt(runId)} />;
+  }
+
+  // 4) Linked but not yet fetched — surface a load state / link.
+  return (
+    <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-900">Receipt linked</p>
+          <p className="mt-1 text-xs leading-5 text-slate-600">
+            A metadata-only receipt is linked to this run. Open it to inspect receipt metadata.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => onRefreshReceipt(runId)}
+          disabled={loading}
+          className="inline-flex shrink-0 items-center rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-900 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loading ? "Loading…" : "Open receipt metadata"}
+        </button>
+      </div>
+      {error ? (
+        <p className="mt-2 text-xs leading-5 text-rose-700">
+          Could not load receipt: {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ReceiptEvidenceCard({
+  receipt,
+  onRefresh,
+}: {
+  receipt: AssistantRunReceipt;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="mt-5 rounded-xl border border-sky-200 bg-sky-50/60 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-sky-900">Metadata-only governance receipt</p>
+          <p className="mt-1 text-xs leading-5 text-sky-800">
+            Raw input, prompts, and draft output are not stored. Receipt confirms governance
+            metadata, not clinical correctness. This receipt is not a clinical record.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="inline-flex shrink-0 items-center rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-xs font-medium text-sky-900 shadow-sm transition hover:border-sky-300"
+        >
+          Refresh receipt
+        </button>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <ReceiptCell label="Storage policy" value={receipt.storage_policy} />
+        <ReceiptCell
+          label="Raw input stored"
+          value={receipt.raw_content_stored ? "Yes" : "No"}
+        />
+        <ReceiptCell
+          label="Prompt stored"
+          value={receipt.prompt_stored ? "Yes" : "No"}
+        />
+        <ReceiptCell
+          label="Draft stored"
+          value={receipt.draft_stored ? "Yes" : "No"}
+        />
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <ReceiptCell label="Receipt ID" value={receipt.receipt_id} mono />
+        <ReceiptCell label="Receipt kind" value={receipt.receipt_kind} />
+        <ReceiptCell label="Receipt version" value={receipt.receipt_version} />
+        <ReceiptCell
+          label="Created at"
+          value={formatDateTime(receipt.receipt_created_at)}
+        />
+        <ReceiptCell label="Run status" value={runStatusLabel(receipt.run_status)} />
+        <ReceiptCell
+          label="Review status"
+          value={reviewStatusLabel(receipt.review_status)}
+        />
+        <ReceiptCell
+          label="Review decision"
+          value={reviewDecisionLabel(receipt.review_decision)}
+        />
+        <ReceiptCell label="Input hash" value={receipt.input_sha256} mono />
+        <ReceiptCell
+          label="Output hash"
+          value={receipt.output_sha256 ?? "None"}
+          mono={!!receipt.output_sha256}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ReceiptCell({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="rounded-lg border border-sky-100 bg-white px-3 py-2">
+      <p className="text-[11px] uppercase tracking-wide text-sky-700">{label}</p>
+      <p
+        className={[
+          "mt-1 text-sm text-slate-900",
+          mono ? "font-mono text-xs break-all" : "font-medium",
+        ].join(" ")}
+      >
+        {value}
+      </p>
     </div>
   );
 }
