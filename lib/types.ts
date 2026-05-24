@@ -361,9 +361,20 @@ export type AssistantRunRecord = {
   governance_note?: string;
   // PR 2B governed generation fields. Frontend must tolerate any missing
   // field for backward compatibility with PR 2A-style responses.
-  run_status?: "created" | "generation_succeeded" | "generation_refused" | "generation_failed" | string;
+  run_status?:
+    | "created"
+    | "generation_succeeded"
+    | "generation_refused"
+    | "generation_failed"
+    | "output_blocked"
+    | string;
   draft?: string | null;
   refused?: boolean;
+  // M6.6 — true when the model was invoked but ANCHOR blocked the
+  // generated draft before returning it. Distinct from `refused`, which
+  // means the model was not invoked at all.
+  blocked?: boolean;
+  blocked_message?: string | null;
   refusal_reason_codes?: string[];
   safety_flags?: string[];
   [key: string]: unknown;
@@ -401,6 +412,7 @@ export type AssistantRunTraceItem = {
     | "generation_succeeded"
     | "generation_refused"
     | "generation_failed"
+    | "output_blocked"
     | string;
   receipt_id: string | null;
   governance_event_id: string | null;
