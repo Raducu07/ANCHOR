@@ -6,6 +6,8 @@ import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { apiFetch, ApiError } from "@/lib/api";
+import { getAssistantIntelligenceSummary } from "@/lib/assistant";
+import type { AssistantIntelligenceSummaryResponse } from "@/lib/types";
 
 type IntelligenceRecommendation = {
   type: "learning" | "policy_review" | "privacy_training" | "workflow_guidance";
@@ -64,6 +66,13 @@ export default function IntelligencePage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // M6.8 — Assistant analytics. Loaded independently so a failure here
+  // does NOT take down the existing Governance Intelligence cards.
+  const [assistantIntel, setAssistantIntel] =
+    useState<AssistantIntelligenceSummaryResponse | null>(null);
+  const [assistantIntelLoading, setAssistantIntelLoading] = useState(true);
+  const [assistantIntelError, setAssistantIntelError] = useState<string | null>(null);
+
   async function load(selectedWindow: "7d" | "30d", showRefreshState = false) {
     try {
       if (showRefreshState) {
@@ -93,6 +102,34 @@ export default function IntelligencePage() {
 
   useEffect(() => {
     void load(windowValue, false);
+  }, [windowValue]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadAssistantIntel() {
+      setAssistantIntelLoading(true);
+      setAssistantIntelError(null);
+      try {
+        const days = windowValue === "7d" ? 7 : 30;
+        const result = await getAssistantIntelligenceSummary(days);
+        if (!cancelled) setAssistantIntel(result);
+      } catch (err) {
+        if (!cancelled) {
+          setAssistantIntel(null);
+          const message =
+            err instanceof ApiError
+              ? err.message
+              : "Unable to load Assistant intelligence.";
+          setAssistantIntelError(message);
+        }
+      } finally {
+        if (!cancelled) setAssistantIntelLoading(false);
+      }
+    }
+    void loadAssistantIntel();
+    return () => {
+      cancelled = true;
+    };
   }, [windowValue]);
 
   const hotspot = summary?.headline_hotspot ?? null;
@@ -313,6 +350,12 @@ export default function IntelligencePage() {
             </div>
           </>
         )}
+
+        <AssistantIntelligenceSection
+          data={assistantIntel}
+          loading={assistantIntelLoading}
+          error={assistantIntelError}
+        />
       </div>
     </AppShell>
   );
@@ -442,4 +485,216 @@ function formatDateTime(value?: string | null) {
 function capitalize(value: string) {
   if (!value) return "—";
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+// ---------------------------------------------------------------------
+// M6.8 — Assistant Governance Intelligence section.
+//
+// Metadata-only aggregation from /v1/portal/intelligence/assistant-summary.
+// Lives below the existing Governance Intelligence cards on the same
+// /intelligence page so users have one place for clinic-level governance
+// signals. No raw prompt/input/draft is ever loaded onto this surface
+// because the backend never returns any.
+// ---------------------------------------------------------------------
+
+function AssistantIntelligenceSection({
+  data,
+  loading,
+  error,
+}: {
+  data: AssistantIntelligenceSummaryResponse | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  return (
+    <div className="space-y-4">
+      <Card variant="native">
+        <SectionTitle
+          title="Assistant governance intelligence"
+          description="Assistant intelligence uses metadata only. No raw prompt, input, draft, transcript, or clinical content is analysed or stored. Signals indicate governance workflow activity, not clinical quality or patient outcomes."
+        />
+      </Card>
+
+      {loading ? (
+        <div className="grid gap-4 xl:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Card variant="native" key={i} className="h-40 animate-pulse bg-slate-100" />
+          ))}
+        </div>
+      ) : error ? (
+        <Card variant="native">
+          <p className="text-sm font-medium text-amber-800">
+            Assistant intelligence unavailable
+          </p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{error}</p>
+          <p className="mt-2 text-xs leading-5 text-slate-500">
+            The rest of the Intelligence overview is unaffected.
+          </p>
+        </Card>
+      ) : data ? (
+        <AssistantIntelligenceCards data={data} />
+      ) : null}
+    </div>
+  );
+}
+
+function AssistantIntelligenceCards({
+  data,
+}: {
+  data: AssistantIntelligenceSummaryResponse;
+}) {
+  const s = data.summary;
+  const r = data.rates;
+  const u = data.usage_limits;
+  const topRefusal = data.top_refusal_reasons[0] ?? null;
+  const topSafety = data.top_safety_flags[0] ?? null;
+
+  return (
+    <>
+      <div className="grid gap-4 xl:grid-cols-4">
+        <MetricCard
+          label="Assistant runs"
+          value={s.total_runs}
+          helper={`Total Assistant runs in the last ${data.window.days} days.`}
+        />
+        <MetricCard
+          label="Drafts generated"
+          value={s.draft_generated}
+          helper={`${formatPercent(r.draft_generated_rate)} of runs returned a transient draft.`}
+        />
+        <MetricCard
+          label="Refused / blocked"
+          value={s.refused_before_model_call + s.output_blocked}
+          helper={`Input refusals ${s.refused_before_model_call} · output blocks ${s.output_blocked} · generation failed ${s.generation_failed}.`}
+        />
+        <MetricCard
+          label="Generation enabled"
+          value={s.generation_disabled_by_policy === 0 ? "Yes" : "Policy gated"}
+          helper={`${s.generation_disabled_by_policy} runs were refused by policy (generation disabled).`}
+        />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+        <Card variant="native">
+          <SectionTitle
+            title="Review completion"
+            description="Human review remains required before operational use. Approved, needs edit, and rejected reflect recorded review outcomes."
+          />
+          <div className="mt-4 grid grid-cols-2 gap-4">
+            <MiniMetric label="Reviewed" value={s.reviewed} />
+            <MiniMetric
+              label="Review completion rate"
+              value={formatPercent(r.review_completion_rate)}
+            />
+            <MiniMetric label="Approved" value={s.approved} />
+            <MiniMetric label="Needs edit" value={s.needs_edit} />
+            <MiniMetric label="Rejected" value={s.rejected} />
+            <MiniMetric
+              label="Approval among reviewed"
+              value={formatPercent(r.approval_rate_among_reviewed)}
+            />
+          </div>
+        </Card>
+
+        <Card variant="native">
+          <SectionTitle
+            title="Receipt completion"
+            description="Receipts are metadata-only governance evidence. Issued after a review outcome is recorded."
+          />
+          <div className="mt-4 grid grid-cols-2 gap-4">
+            <MiniMetric label="Receipts linked" value={s.receipt_linked} />
+            <MiniMetric
+              label="Receipt completion rate"
+              value={formatPercent(r.receipt_completion_rate)}
+            />
+            <MiniMetric label="Funnel submitted" value={data.funnel.submitted} />
+            <MiniMetric label="Funnel reviewed" value={data.funnel.reviewed} />
+          </div>
+        </Card>
+      </div>
+
+      <Card variant="native">
+        <SectionTitle
+          title="Safety signals"
+          description="Codes are governance refusal and safety markers, not clinical assessments."
+        />
+        <div className="mt-4 grid gap-4 xl:grid-cols-4">
+          <MiniMetric
+            label="Top refusal reason"
+            value={topRefusal ? `${topRefusal.code} (${topRefusal.count})` : "—"}
+          />
+          <MiniMetric
+            label="Top safety flag"
+            value={topSafety ? `${topSafety.code} (${topSafety.count})` : "—"}
+          />
+          <MiniMetric
+            label="Output blocked rate"
+            value={formatPercent(r.output_blocked_rate)}
+          />
+          <MiniMetric
+            label="PII detected rate"
+            value={formatPercent(r.pii_detected_rate)}
+          />
+        </div>
+      </Card>
+
+      <Card variant="native">
+        <SectionTitle
+          title="Usage vs limits"
+          description={`Limits sourced from ${u.source === "assistant_policy" ? "active Assistant policy" : "default configuration"}.`}
+        />
+        <div className="mt-4 grid gap-4 xl:grid-cols-4">
+          <MiniMetric
+            label="Runs today"
+            value={`${u.runs_today} / ${u.daily_limit_per_clinic}`}
+          />
+          <MiniMetric
+            label="Daily utilisation"
+            value={formatPercent(u.daily_utilization_rate)}
+          />
+          <MiniMetric
+            label="Runs this month"
+            value={`${u.runs_this_month} / ${u.monthly_limit_per_clinic}`}
+          />
+          <MiniMetric
+            label="Monthly utilisation"
+            value={formatPercent(u.monthly_utilization_rate)}
+          />
+        </div>
+      </Card>
+
+      <Card variant="native">
+        <SectionTitle
+          title="Policy and validation profile context"
+          description="Default policy is synthesised when no policy version is active. Validation profiles are clinic-scoped governance configuration."
+        />
+        <div className="mt-4 grid gap-4 xl:grid-cols-[1fr_1fr]">
+          <div className="grid grid-cols-2 gap-4">
+            <MiniMetric label="Default-policy runs" value={s.default_policy_runs} />
+            <MiniMetric label="Policy-versioned runs" value={s.policy_versioned_runs} />
+          </div>
+          <div className="space-y-2">
+            {data.by_validation_profile.length ? (
+              data.by_validation_profile.map((p) => (
+                <div
+                  key={p.validation_profile}
+                  className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm"
+                >
+                  <span className="font-medium text-slate-900">
+                    {p.validation_profile}
+                  </span>
+                  <span className="text-slate-600">{p.count}</span>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-slate-500">
+                No validation profile breakdown for the selected window.
+              </p>
+            )}
+          </div>
+        </div>
+        <p className="mt-3 text-xs leading-5 text-slate-500">{data.governance_note}</p>
+      </Card>
+    </>
+  );
 }
