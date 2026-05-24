@@ -44,8 +44,12 @@ export default function TrustPosturePage() {
       setError(null);
       const response = await getTrustPosture();
       setData(response);
-    } catch (err: any) {
-      setError(err?.message || "Failed to load governance posture.");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to load governance posture.";
+      setError(message);
     } finally {
       setLoading(false);
       setRefreshing(false);

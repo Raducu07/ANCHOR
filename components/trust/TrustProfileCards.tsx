@@ -1,9 +1,44 @@
 // Reference / experimental UI only.
 // This file is currently not used by active routes and should not be treated as current source-of-truth UI.
-// @ts-nocheck
 import Link from "next/link";
 import type { ReactNode } from "react";
-import type { TrustProfileResponse } from "@/lib/types";
+import type { TrustState } from "@/lib/types";
+
+// Local leadership-summary shape used by these experimental cards. It
+// deliberately differs from `TrustProfileResponse` in @/lib/types because
+// that exported type matches the live `/trust/profile` payload, not the
+// leadership posture summary these cards were originally drafted against.
+// Keep these fields aligned with what the cards actually read.
+export type TrustProfileLeadershipData = {
+  generated_at: string;
+  trust_state: TrustState;
+  posture_status: string;
+  posture_score: number | string;
+  operations: {
+    events_24h: number;
+    intervention_rate_24h: number;
+    pii_warned_rate_24h: number;
+    top_mode_24h: string | null;
+    top_route_24h: string | null;
+  };
+  controls: {
+    metadata_only_accountability: boolean;
+    governance_receipts: boolean;
+    policy_versioning: boolean;
+    tenant_isolation_rls_forced: boolean;
+    privacy_controls_active: boolean;
+    export_capability: boolean;
+    learning_layer_available: boolean;
+  };
+  learning_readiness: {
+    recommended_topics: string[];
+    learning_tie_in_rate_24h: number;
+  };
+  export_readiness: {
+    trust_pack_available: boolean;
+    last_pack_generated_at: string | null;
+  };
+};
 
 function CardShell({
   title,
@@ -57,20 +92,7 @@ function posturePillClass(state: string) {
   return "bg-rose-100 text-rose-800";
 }
 
-function displayValue(value: string | null | undefined) {
-  const cleaned = (value ?? "").trim();
-
-  if (!cleaned) return "—";
-
-  const lowered = cleaned.toLowerCase();
-  if (["null", "none", "undefined", "n/a", "na"].includes(lowered)) {
-    return "—";
-  }
-
-  return cleaned;
-}
-
-export function TrustHeroCard({ data }: { data: TrustProfileResponse }) {
+export function TrustHeroCard({ data }: { data: TrustProfileLeadershipData }) {
   return (
     <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -122,8 +144,8 @@ export function TrustHeroCard({ data }: { data: TrustProfileResponse }) {
   );
 }
 
-export function ControlsChecklistCard({ data }: { data: TrustProfileResponse }) {
-  const items = [
+export function ControlsChecklistCard({ data }: { data: TrustProfileLeadershipData }) {
+  const items: Array<[string, boolean]> = [
     ["Metadata-only accountability", data.controls.metadata_only_accountability],
     ["Governance receipts", data.controls.governance_receipts],
     ["Policy versioning", data.controls.policy_versioning],
@@ -156,7 +178,7 @@ export function ControlsChecklistCard({ data }: { data: TrustProfileResponse }) 
   );
 }
 
-export function OperationalTrustCard({ data }: { data: TrustProfileResponse }) {
+export function OperationalTrustCard({ data }: { data: TrustProfileLeadershipData }) {
   return (
     <CardShell title="Operational trust indicators" subtitle="Recent activity and governance signals">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -169,7 +191,7 @@ export function OperationalTrustCard({ data }: { data: TrustProfileResponse }) {
   );
 }
 
-export function LearningReadinessCard({ data }: { data: TrustProfileResponse }) {
+export function LearningReadinessCard({ data }: { data: TrustProfileLeadershipData }) {
   const topics =
     data.learning_readiness.recommended_topics?.length > 0
       ? data.learning_readiness.recommended_topics
@@ -203,7 +225,7 @@ export function LearningReadinessCard({ data }: { data: TrustProfileResponse }) 
   );
 }
 
-export function ExportReadinessCard({ data }: { data: TrustProfileResponse }) {
+export function ExportReadinessCard({ data }: { data: TrustProfileLeadershipData }) {
   return (
     <CardShell title="Export readiness" subtitle="Trust-pack status for leadership and external trust materials">
       <div className="grid gap-4 md:grid-cols-2">

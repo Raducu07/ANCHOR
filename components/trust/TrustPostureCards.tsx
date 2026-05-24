@@ -1,8 +1,42 @@
 // Reference / experimental UI only.
 // This file is currently not used by active routes and should not be treated as current source-of-truth UI.
-// @ts-nocheck
 import type { ReactNode } from "react";
-import type { TrustPostureResponse } from "@/lib/types";
+
+// Local shape used by these experimental cards. It deliberately differs
+// from `TrustPostureResponse` in @/lib/types because that exported type
+// matches the live `/trust/posture` page payload, not the leadership
+// summary shape these cards were originally drafted against. Keep these
+// fields aligned with whatever the cards actually read.
+export type TrustPostureLeadershipData = {
+  generated_at: string;
+  summary: {
+    headline: string;
+    posture_status: string;
+    posture_score: number | string;
+  };
+  adoption: {
+    events_30d: number;
+    top_mode: string | null;
+    active_modes: string[];
+  };
+  governance: {
+    intervention_rate_30d: number;
+    replacement_rate_30d: number;
+    receipt_coverage_rate: number;
+    active_policy_version: number | string | null;
+  };
+  privacy: {
+    metadata_only_model: boolean;
+    pii_warning_rate_30d: number;
+    raw_content_storage: boolean;
+  };
+  learning: {
+    learn_enabled: boolean;
+    top_recommended_topics: string[];
+  };
+  attention_areas: { type: string; label: string }[];
+  recommended_actions: string[];
+};
 
 function CardShell({
   title,
@@ -50,7 +84,7 @@ function posturePillClass(state: string) {
   return "bg-rose-100 text-rose-800";
 }
 
-export function PostureSummaryHero({ data }: { data: TrustPostureResponse }) {
+export function PostureSummaryHero({ data }: { data: TrustPostureLeadershipData }) {
   return (
     <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -76,7 +110,7 @@ export function PostureSummaryHero({ data }: { data: TrustPostureResponse }) {
   );
 }
 
-export function AdoptionOverviewCard({ data }: { data: TrustPostureResponse }) {
+export function AdoptionOverviewCard({ data }: { data: TrustPostureLeadershipData }) {
   return (
     <CardShell title="Adoption overview" subtitle="Usage footprint across the last 30 days">
       <div className="grid gap-4 md:grid-cols-3">
@@ -96,7 +130,7 @@ export function AdoptionOverviewCard({ data }: { data: TrustPostureResponse }) {
   );
 }
 
-export function GovernancePerformanceCard({ data }: { data: TrustPostureResponse }) {
+export function GovernancePerformanceCard({ data }: { data: TrustPostureLeadershipData }) {
   return (
     <CardShell title="Governance performance" subtitle="Key governing signals from recent activity">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -109,7 +143,7 @@ export function GovernancePerformanceCard({ data }: { data: TrustPostureResponse
   );
 }
 
-export function PrivacyAccountabilityCard({ data }: { data: TrustPostureResponse }) {
+export function PrivacyAccountabilityCard({ data }: { data: TrustPostureLeadershipData }) {
   return (
     <CardShell title="Privacy & accountability" subtitle="Core doctrine and privacy-facing signals">
       <div className="grid gap-4 md:grid-cols-3">
@@ -130,7 +164,7 @@ export function PrivacyAccountabilityCard({ data }: { data: TrustPostureResponse
   );
 }
 
-export function LearningSummaryCard({ data }: { data: TrustPostureResponse }) {
+export function LearningSummaryCard({ data }: { data: TrustPostureLeadershipData }) {
   return (
     <CardShell title="Learning & readiness" subtitle="Recommended enablement themes from governance patterns">
       <div className="mb-4">
@@ -154,7 +188,7 @@ export function LearningSummaryCard({ data }: { data: TrustPostureResponse }) {
   );
 }
 
-export function AttentionAreasCard({ data }: { data: TrustPostureResponse }) {
+export function AttentionAreasCard({ data }: { data: TrustPostureLeadershipData }) {
   return (
     <CardShell title="Attention areas" subtitle="Signals that warrant leadership visibility or follow-up">
       <div className="space-y-3">
@@ -169,7 +203,7 @@ export function AttentionAreasCard({ data }: { data: TrustPostureResponse }) {
   );
 }
 
-export function RecommendedActionsCard({ data }: { data: TrustPostureResponse }) {
+export function RecommendedActionsCard({ data }: { data: TrustPostureLeadershipData }) {
   return (
     <CardShell title="Recommended next actions" subtitle="Conservative, governance-safe follow-up actions">
       <ul className="space-y-3">

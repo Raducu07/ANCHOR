@@ -1,12 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { getSessionUser } from "@/lib/auth";
-import type { SessionUser } from "@/lib/types";
+import {
+  SESSION_SERVER_SNAPSHOT,
+  getSessionUserSnapshot,
+  subscribeSessionStorage,
+} from "@/lib/auth";
 
 function roleLabel(role: string) {
   return role
@@ -16,11 +19,14 @@ function roleLabel(role: string) {
 }
 
 export default function SettingsPage() {
-  const [user, setUser] = useState<SessionUser | null>(null);
-
-  useEffect(() => {
-    setUser(getSessionUser());
-  }, []);
+  // Read the session via useSyncExternalStore so we don't trip the
+  // react-hooks/set-state-in-effect rule. getServerSnapshot returns
+  // null on the server, matching pre-hydration behaviour.
+  const user = useSyncExternalStore(
+    subscribeSessionStorage,
+    getSessionUserSnapshot,
+    SESSION_SERVER_SNAPSHOT,
+  );
 
   const email = user?.email ?? "Signed-in session";
   const role = user ? roleLabel(user.role) : "Clinic user";
