@@ -496,3 +496,60 @@ export type AssistantRunDetailResponse = {
   prompt_stored: boolean;
   governance_note: string;
 };
+
+// M6.7 — Assistant policy / settings.
+export type AssistantValidationProfile = "standard" | "conservative";
+
+export type AssistantPolicySettings = {
+  id: string | null;
+  clinic_id: string | null;
+  policy_version: number;
+  is_active: boolean;
+  is_default: boolean;
+  client_communication_enabled: boolean;
+  generation_enabled: boolean;
+  validation_profile: AssistantValidationProfile | string;
+  daily_run_limit_per_clinic: number;
+  monthly_run_limit_per_clinic: number;
+  require_human_review: boolean;
+  allow_receipts_after_review: boolean;
+  policy_label: string;
+  policy_notes: string | null;
+  created_by_user_id: string | null;
+  created_at: string | null;
+  activated_at: string | null;
+};
+
+export type AssistantPolicyResponse = {
+  policy: AssistantPolicySettings;
+  governance_note: string;
+};
+
+export type AssistantPolicyUpdatePayload = {
+  client_communication_enabled?: boolean;
+  generation_enabled?: boolean;
+  validation_profile?: AssistantValidationProfile;
+  daily_run_limit_per_clinic?: number;
+  monthly_run_limit_per_clinic?: number;
+  policy_label?: string;
+  policy_notes?: string | null;
+};
+
+export type AssistantPolicyHistoryItem = {
+  policy_version: number;
+  is_active: boolean;
+  validation_profile: string;
+  client_communication_enabled: boolean;
+  generation_enabled: boolean;
+  daily_run_limit_per_clinic: number;
+  monthly_run_limit_per_clinic: number;
+  policy_label: string;
+  created_at: string;
+  activated_at: string | null;
+  superseded_at: string | null;
+  created_by_user_id: string | null;
+};
+
+export type AssistantPolicyHistoryResponse = {
+  items: AssistantPolicyHistoryItem[];
+};

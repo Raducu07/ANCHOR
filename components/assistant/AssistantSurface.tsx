@@ -6,6 +6,7 @@ import {
   ASSISTANT_MODE_CLIENT_COMMUNICATION,
   createAssistantRunReceipt,
   getAssistantContract,
+  getAssistantPolicy,
   getAssistantRun,
   getAssistantRunReceipt,
   listAssistantRuns,
@@ -15,6 +16,7 @@ import {
 import { ApiError } from "@/lib/api";
 import type {
   AssistantContractResponse,
+  AssistantPolicySettings,
   AssistantReviewStatusInput,
   AssistantRunDetailResponse,
   AssistantRunReceipt,
@@ -228,8 +230,34 @@ export function AssistantSurface() {
     }
   }
 
+  // M6.7 — Assistant policy state. Read-only in this PR (no admin-role
+  // detection in the frontend yet). Failure to load policy must not
+  // block the rest of the Assistant flow.
+  const [policy, setPolicy] = useState<AssistantPolicySettings | null>(null);
+  const [policyError, setPolicyError] = useState<string | null>(null);
+  const [policyLoading, setPolicyLoading] = useState(false);
+
+  async function loadPolicy(isRefresh = false) {
+    try {
+      if (!isRefresh) setPolicyLoading(true);
+      setPolicyError(null);
+      const result = await getAssistantPolicy();
+      setPolicy(result.policy);
+    } catch (err) {
+      setPolicy(null);
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : "Unable to load Assistant policy.";
+      setPolicyError(message);
+    } finally {
+      setPolicyLoading(false);
+    }
+  }
+
   useEffect(() => {
     void loadContract(false);
+    void loadPolicy(false);
   }, []);
 
   async function handleRunSubmit(e: FormEvent<HTMLFormElement>) {
@@ -372,6 +400,13 @@ export function AssistantSurface() {
           />
         )}
       </NativeCard>
+
+      <AssistantPolicyCard
+        policy={policy}
+        loading={policyLoading}
+        error={policyError}
+        onRefresh={() => void loadPolicy(true)}
+      />
 
       <div className="grid gap-4 xl:grid-cols-2">
         <NativeCard>
@@ -1694,6 +1729,135 @@ function ReviewEvidenceCard({
         </div>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// M6.7 — Assistant policy card (read-only in this PR)
+// ---------------------------------------------------------------------
+//
+// Editing controls are intentionally not exposed here yet: the portal
+// does not surface clinic role cleanly to this component, so we keep
+// this card read-only and direct admins to the backend PATCH endpoint
+// via the governance note. The backend admin endpoint exists and is
+// covered by tests.
+
+function AssistantPolicyCard({
+  policy,
+  loading,
+  error,
+  onRefresh,
+}: {
+  policy: AssistantPolicySettings | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  return (
+    <NativeCard>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <SectionTitle
+          title="Assistant policy"
+          description="Metadata-only governance configuration. Hard clinical safety rules cannot be disabled."
+        />
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="inline-flex shrink-0 items-center rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm transition hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loading ? "Loading…" : "Refresh policy"}
+        </button>
+      </div>
+
+      {error ? (
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-semibold text-amber-900">
+            Policy could not be loaded
+          </p>
+          <p className="mt-1 text-sm leading-6 text-amber-800">{error}</p>
+          <p className="mt-2 text-xs leading-5 text-amber-700">
+            The Assistant continues to operate with safe defaults until the
+            policy can be loaded.
+          </p>
+        </div>
+      ) : null}
+
+      {policy ? (
+        <>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCell
+              label="Active version"
+              value={
+                policy.is_default
+                  ? "Default (no override)"
+                  : `v${policy.policy_version}${policy.is_active ? " (active)" : ""}`
+              }
+              tone="success"
+            />
+            <MetricCell
+              label="Validation profile"
+              value={policy.validation_profile}
+              tone="success"
+            />
+            <MetricCell
+              label="Generation enabled"
+              value={policy.generation_enabled ? "Yes" : "No"}
+              tone={policy.generation_enabled ? "success" : "default"}
+            />
+            <MetricCell
+              label="Client communication"
+              value={policy.client_communication_enabled ? "Enabled" : "Disabled"}
+              tone={policy.client_communication_enabled ? "success" : "default"}
+            />
+          </div>
+
+          <div className="mt-4 space-y-2">
+            <DetailRow label="Policy label" value={policy.policy_label} />
+            <DetailRow
+              label="Daily run limit (per clinic)"
+              value={String(policy.daily_run_limit_per_clinic)}
+            />
+            <DetailRow
+              label="Monthly run limit (per clinic)"
+              value={String(policy.monthly_run_limit_per_clinic)}
+            />
+            <DetailRow
+              label="Human review required"
+              value={policy.require_human_review ? "Yes" : "No"}
+            />
+            <DetailRow
+              label="Receipts after review"
+              value={policy.allow_receipts_after_review ? "Yes" : "No"}
+            />
+            {policy.policy_notes ? (
+              <DetailRow label="Notes" value={policy.policy_notes} />
+            ) : null}
+            {policy.activated_at ? (
+              <DetailRow
+                label="Activated at"
+                value={formatDateTime(policy.activated_at)}
+              />
+            ) : null}
+          </div>
+
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-xs leading-5 text-slate-700">
+              <strong>Hard clinical safety rules cannot be disabled.</strong>{" "}
+              Human review is required before operational use. Diagnosis,
+              prescribing, dosing, and autonomous triage decisions are not
+              configurable and are always blocked. Policy edits are admin-only
+              and audited.
+            </p>
+          </div>
+        </>
+      ) : !loading && !error ? (
+        <EmptyState
+          title="No policy loaded"
+          description="Click Refresh policy to load the current Assistant policy."
+        />
+      ) : null}
+    </NativeCard>
   );
 }
 
