@@ -304,7 +304,7 @@ export function AssistantSurface() {
   const metadataOnly = contract?.metadata_only ?? contract?.no_raw_content ?? true;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <p className="text-sm font-medium text-slate-500">Assistant</p>
@@ -325,12 +325,14 @@ export function AssistantSurface() {
         </button>
       </div>
 
-      <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4">
+      <div className="rounded-xl border border-slate-200 bg-slate-50 px-5 py-4">
         <div className="flex items-start gap-3">
-          <span className="material-symbols-outlined mt-0.5 text-[18px] text-amber-600">policy</span>
+          <span className="material-symbols-outlined mt-0.5 text-[18px] text-slate-500">policy</span>
           <div>
-            <p className="text-sm font-semibold text-amber-900">Storage policy - metadata-only by default</p>
-            <p className="mt-1 text-sm leading-6 text-amber-800">
+            <p className="text-sm font-semibold text-slate-900">
+              Storage policy — metadata-only by default
+            </p>
+            <p className="mt-1 text-sm leading-6 text-slate-700">
               No raw prompts, inputs, drafts, transcripts, or clinical content are stored by this
               assistant. A draft may be returned transiently for review; only hashes, field keys,
               PII flags, safety flags, and run status are retained. Human review is required
@@ -655,12 +657,6 @@ function runStatusTone(runStatus: string | undefined): "default" | "success" {
   return runStatus === "generation_succeeded" ? "success" : "default";
 }
 
-function truncateHash(hash: string | null | undefined): string {
-  if (!hash) return "None";
-  if (hash.length <= 16) return hash;
-  return `${hash.slice(0, 10)}…${hash.slice(-6)}`;
-}
-
 function reviewStatusLabel(status: string | undefined | null): string {
   switch (status) {
     case "reviewed_approved":
@@ -749,8 +745,8 @@ function RunRecordCard({
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCell label="Run ID" value={runId ? `${String(runId).slice(0, 12)}…` : "-"} />
-        <MetricCell label="Review status" value={reviewStatus} tone="success" />
+        <MetricCell label="Run ID" value={formatShortId(runId ? String(runId) : null)} />
+        <MetricCell label="Review status" value={reviewStatusLabel(reviewStatus)} tone="success" />
         <MetricCell
           label="PII detected"
           value={piiDetected ? "Yes" : "No"}
@@ -780,6 +776,15 @@ function RunRecordCard({
       {showFailurePanel ? <FailurePanel /> : null}
 
       <div className="mt-4 space-y-2">
+        {runId ? (
+          <DetailRow
+            label="Run ID"
+            value={String(runId)}
+            displayValue={formatShortId(String(runId))}
+            mono
+            copyValue={String(runId)}
+          />
+        ) : null}
         {record.contract_version ?? record.contract_id ? (
           <DetailRow
             label="Contract"
@@ -806,8 +811,10 @@ function RunRecordCard({
         ) : null}
         <DetailRow
           label="Output hash"
-          value={record.output_sha256 ? truncateHash(record.output_sha256) : "None"}
+          value={record.output_sha256 ?? "None"}
+          displayValue={record.output_sha256 ? formatShortId(record.output_sha256) : "None"}
           mono={!!record.output_sha256}
+          copyValue={record.output_sha256 ?? null}
         />
         <DetailRow
           label="Model"
@@ -849,8 +856,8 @@ function RunRecordCard({
         </div>
       ) : null}
 
-      <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-        <p className="text-xs leading-5 text-amber-800">
+      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <p className="text-xs leading-5 text-slate-700">
           <strong>Human review required.</strong> Any draft returned by ANCHOR must be checked
           against the clinical record before use. ANCHOR does not make clinical decisions.
         </p>
@@ -1170,6 +1177,7 @@ function EvidenceSection({
             <tbody>
               {runs.map((r) => {
                 const isSelected = selectedRunId === r.run_id;
+                const receiptLinked = Boolean(r.has_receipt || r.receipt_id);
                 return (
                   <tr
                     key={r.run_id}
@@ -1179,11 +1187,21 @@ function EvidenceSection({
                     ].join(" ")}
                   >
                     <td className="px-3 py-2 font-mono text-[12px] text-slate-700">
-                      {`${r.run_id.slice(0, 8)}…`}
+                      {formatShortId(r.run_id)}
                     </td>
                     <td className="px-3 py-2 text-slate-700">{formatDateTime(r.created_at)}</td>
-                    <td className="px-3 py-2 text-slate-700">{runStatusLabel(r.run_status)}</td>
-                    <td className="px-3 py-2 text-slate-700">{reviewStatusLabel(r.review_status)}</td>
+                    <td className="px-3 py-2">
+                      <StatusPill
+                        label={runStatusLabel(r.run_status)}
+                        tone={runStatusTonePill(r.run_status)}
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <StatusPill
+                        label={reviewStatusLabel(r.review_status)}
+                        tone={reviewStatusTonePill(r.review_status)}
+                      />
+                    </td>
                     <td className="px-3 py-2 text-slate-700">{r.pii_detected ? "Yes" : "No"}</td>
                     <td className="px-3 py-2 text-slate-700">
                       {r.run_status === "output_blocked"
@@ -1193,15 +1211,18 @@ function EvidenceSection({
                           : "No"}
                     </td>
                     <td className="px-3 py-2 font-mono text-[12px] text-slate-700">
-                      {truncateHash(r.output_sha256)}
+                      {r.output_sha256 ? formatShortId(r.output_sha256) : "—"}
                     </td>
                     <td className="px-3 py-2 text-slate-700">
                       {r.model_provider || r.model_name
                         ? `${r.model_provider ?? "-"} / ${r.model_name ?? "-"}`
                         : "Not invoked"}
                     </td>
-                    <td className="px-3 py-2 text-slate-700">
-                      {r.has_receipt || r.receipt_id ? "Linked" : "—"}
+                    <td className="px-3 py-2">
+                      <StatusPill
+                        label={receiptLinked ? "Linked" : "Not linked"}
+                        tone={receiptLinked ? "info" : "neutral"}
+                      />
                     </td>
                     <td className="px-3 py-2 text-right">
                       <button
@@ -1281,9 +1302,14 @@ function RunDetailPanel({
   return (
     <section className="mt-5 rounded-xl border border-slate-200 bg-white p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className="text-sm font-semibold text-slate-900">Run metadata</p>
-          <p className="mt-1 text-xs leading-5 text-slate-500 font-mono">{runId}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <span className="font-mono text-xs text-slate-500 break-all">
+              {formatShortId(runId)}
+            </span>
+            <CopyButton value={runId} ariaLabel="Copy run ID" />
+          </div>
         </div>
         {detail ? (
           <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-emerald-700">
@@ -1291,6 +1317,11 @@ function RunDetailPanel({
           </span>
         ) : null}
       </div>
+
+      <p className="mt-3 text-xs leading-5 text-slate-500">
+        This is an Assistant governance record, not a chat history. ANCHOR stores metadata,
+        hashes, policy context, review state, and receipt evidence only.
+      </p>
 
       {loading ? (
         <p className="mt-4 text-sm text-slate-500">Loading metadata…</p>
@@ -1398,7 +1429,12 @@ function RunDetailBody({
           <DetailRow label="Reviewed at" value={formatDateTime(r.reviewed_at)} />
         ) : null}
         {r.reviewed_by_user_id ? (
-          <DetailRow label="Reviewed by" value={r.reviewed_by_user_id} mono />
+          <DetailRow
+            label="Reviewed by"
+            value={r.reviewed_by_user_id}
+            displayValue={reviewerFriendlyLabel(r.reviewed_by_user_id)}
+            copyValue={r.reviewed_by_user_id}
+          />
         ) : null}
         <DetailRow
           label="Policy version"
@@ -1431,11 +1467,19 @@ function RunDetailBody({
           label="Refusal codes"
           value={r.refusal_reason_codes.length ? r.refusal_reason_codes.join(", ") : "None"}
         />
-        <DetailRow label="Input hash" value={r.input_sha256} mono />
+        <DetailRow
+          label="Input hash"
+          value={r.input_sha256}
+          displayValue={formatShortId(r.input_sha256)}
+          mono
+          copyValue={r.input_sha256}
+        />
         <DetailRow
           label="Output hash"
-          value={r.output_sha256 ? r.output_sha256 : "None"}
+          value={r.output_sha256 ?? "None"}
+          displayValue={r.output_sha256 ? formatShortId(r.output_sha256) : "None"}
           mono={!!r.output_sha256}
+          copyValue={r.output_sha256 ?? null}
         />
         <DetailRow
           label="Model"
@@ -1447,8 +1491,10 @@ function RunDetailBody({
         />
         <DetailRow
           label="Receipt"
-          value={r.receipt_id ? r.receipt_id : "Not linked yet"}
+          value={r.receipt_id ?? "Not linked yet"}
+          displayValue={r.receipt_id ? formatShortId(r.receipt_id) : "Not linked yet"}
           mono={!!r.receipt_id}
+          copyValue={r.receipt_id ?? null}
         />
         {r.receipt_created_at ? (
           <DetailRow
@@ -1458,8 +1504,12 @@ function RunDetailBody({
         ) : null}
         <DetailRow
           label="Governance event"
-          value={r.governance_event_id ? r.governance_event_id : "Not linked yet"}
+          value={r.governance_event_id ?? "Not linked yet"}
+          displayValue={
+            r.governance_event_id ? formatShortId(r.governance_event_id) : "Not linked yet"
+          }
           mono={!!r.governance_event_id}
+          copyValue={r.governance_event_id ?? null}
         />
         <DetailRow label="Created at" value={formatDateTime(r.created_at)} />
         <DetailRow label="Updated at" value={formatDateTime(r.updated_at)} />
@@ -1651,45 +1701,38 @@ function ReceiptEvidenceCard({
         </button>
       </div>
 
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <ReceiptGroup title="Storage posture">
         <ReceiptCell label="Storage policy" value={receipt.storage_policy} />
         <ReceiptCell
           label="Raw input stored"
           value={receipt.raw_content_stored ? "Yes" : "No"}
         />
-        <ReceiptCell
-          label="Prompt stored"
-          value={receipt.prompt_stored ? "Yes" : "No"}
-        />
-        <ReceiptCell
-          label="Draft stored"
-          value={receipt.draft_stored ? "Yes" : "No"}
-        />
-      </div>
+        <ReceiptCell label="Prompt stored" value={receipt.prompt_stored ? "Yes" : "No"} />
+        <ReceiptCell label="Draft stored" value={receipt.draft_stored ? "Yes" : "No"} />
+      </ReceiptGroup>
 
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <ReceiptCell label="Receipt ID" value={receipt.receipt_id} mono />
+      <ReceiptGroup title="Receipt identity">
+        <ReceiptCell
+          label="Receipt ID"
+          value={formatShortId(receipt.receipt_id)}
+          copyValue={receipt.receipt_id}
+          mono
+        />
         <ReceiptCell label="Receipt kind" value={receipt.receipt_kind} />
         <ReceiptCell label="Receipt version" value={receipt.receipt_version} />
-        <ReceiptCell
-          label="Created at"
-          value={formatDateTime(receipt.receipt_created_at)}
-        />
+        <ReceiptCell label="Created at" value={formatDateTime(receipt.receipt_created_at)} />
+      </ReceiptGroup>
+
+      <ReceiptGroup title="Review outcome">
         <ReceiptCell label="Run status" value={runStatusLabel(receipt.run_status)} />
-        <ReceiptCell
-          label="Review status"
-          value={reviewStatusLabel(receipt.review_status)}
-        />
+        <ReceiptCell label="Review status" value={reviewStatusLabel(receipt.review_status)} />
         <ReceiptCell
           label="Review decision"
           value={reviewDecisionLabel(receipt.review_decision)}
         />
-        <ReceiptCell label="Input hash" value={receipt.input_sha256} mono />
-        <ReceiptCell
-          label="Output hash"
-          value={receipt.output_sha256 ?? "None"}
-          mono={!!receipt.output_sha256}
-        />
+      </ReceiptGroup>
+
+      <ReceiptGroup title="Policy context">
         <ReceiptCell
           label="Policy version"
           value={policyVersionLabel(
@@ -1707,10 +1750,41 @@ function ReceiptEvidenceCard({
               : "standard"
           }
         />
-      </div>
-      <p className="mt-2 text-[11px] leading-5 text-emerald-700">
+      </ReceiptGroup>
+
+      <ReceiptGroup title="Hash evidence">
+        <ReceiptCell
+          label="Input hash"
+          value={formatShortId(receipt.input_sha256)}
+          copyValue={receipt.input_sha256}
+          mono
+        />
+        <ReceiptCell
+          label="Output hash"
+          value={receipt.output_sha256 ? formatShortId(receipt.output_sha256) : "None"}
+          copyValue={receipt.output_sha256 ?? null}
+          mono={!!receipt.output_sha256}
+        />
+      </ReceiptGroup>
+
+      <p className="mt-3 text-[11px] leading-5 text-emerald-700">
         Policy context is metadata only. Hard clinical safety rules cannot be disabled.
       </p>
+      <p className="mt-1 text-[11px] leading-5 text-sky-700">
+        This is an Assistant governance record, not a chat history. ANCHOR stores metadata,
+        hashes, policy context, review state, and receipt evidence only.
+      </p>
+    </div>
+  );
+}
+
+function ReceiptGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="mt-3">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-sky-700">
+        {title}
+      </p>
+      <div className="mt-1.5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{children}</div>
     </div>
   );
 }
@@ -1719,22 +1793,27 @@ function ReceiptCell({
   label,
   value,
   mono = false,
+  copyValue,
 }: {
   label: string;
   value: string;
   mono?: boolean;
+  copyValue?: string | null;
 }) {
   return (
     <div className="rounded-lg border border-sky-100 bg-white px-3 py-2">
       <p className="text-[11px] uppercase tracking-wide text-sky-700">{label}</p>
-      <p
-        className={[
-          "mt-1 text-sm text-slate-900",
-          mono ? "font-mono text-xs break-all" : "font-medium",
-        ].join(" ")}
-      >
-        {value}
-      </p>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <span
+          className={[
+            "text-sm text-slate-900",
+            mono ? "font-mono text-xs break-all" : "font-medium",
+          ].join(" ")}
+        >
+          {value}
+        </span>
+        {copyValue ? <CopyButton value={copyValue} ariaLabel={`Copy ${label}`} /> : null}
+      </div>
     </div>
   );
 }
@@ -1779,9 +1858,17 @@ function ReviewEvidenceCard({
         </div>
         <div className="rounded-lg border border-emerald-100 bg-white px-3 py-2 sm:col-span-2">
           <p className="text-[11px] uppercase tracking-wide text-emerald-700">Reviewed by</p>
-          <p className="mt-1 font-mono text-xs text-slate-900">
-            {reviewedByUserId ?? "—"}
+          <p className="mt-1 text-sm font-medium text-slate-900">
+            {reviewedByUserId ? "Clinic user" : "—"}
           </p>
+          {reviewedByUserId ? (
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <span className="font-mono text-xs text-slate-500 break-all">
+                Reviewer ID: {formatShortId(reviewedByUserId)}
+              </span>
+              <CopyButton value={reviewedByUserId} ariaLabel="Copy reviewer ID" />
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
@@ -1921,7 +2008,7 @@ function NativeCard({ children, className = "" }: { children: ReactNode; classNa
   return (
     <section
       className={[
-        "rounded-xl border border-slate-200/80 bg-white p-8 shadow-[0_18px_40px_rgba(42,52,57,0.07)]",
+        "rounded-xl border border-slate-200/80 bg-white p-6 shadow-[0_18px_40px_rgba(42,52,57,0.07)]",
         className,
       ].join(" ")}
     >
@@ -1969,19 +2056,144 @@ function DetailRow({
   label,
   value,
   mono = false,
+  copyValue,
+  displayValue,
 }: {
   label: string;
   value: string;
   mono?: boolean;
+  copyValue?: string | null;
+  displayValue?: string;
 }) {
   return (
     <div className="grid grid-cols-[160px_1fr] gap-4 border-b border-slate-100 py-2 text-sm last:border-b-0">
       <dt className="text-slate-500">{label}</dt>
-      <dd className={["font-medium text-slate-900", mono ? "font-mono text-xs" : ""].join(" ")}>
-        {value}
+      <dd className="flex min-w-0 flex-wrap items-center gap-2">
+        <span
+          className={[
+            "font-medium text-slate-900",
+            mono ? "font-mono text-xs break-all" : "",
+          ].join(" ")}
+        >
+          {displayValue ?? value}
+        </span>
+        {copyValue ? <CopyButton value={copyValue} ariaLabel={`Copy ${label}`} /> : null}
       </dd>
     </div>
   );
+}
+
+// M6.9 — local UX helpers. Long hashes/IDs are visually noisy and break
+// table layout. We shorten the display but keep the full value behind a
+// copy button so governance evidence stays inspectable.
+function formatShortId(value: string | null | undefined): string {
+  if (!value) return "—";
+  if (value.length <= 18) return value;
+  return `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
+
+// Reviewer identity is currently a UUID from the authenticated clinic
+// user context. We show a safe friendly label plus a shortened ID, and
+// keep the full UUID copyable below — no name is invented.
+function reviewerFriendlyLabel(reviewedByUserId: string | null | undefined): string {
+  if (!reviewedByUserId) return "—";
+  return `Clinic user · ${formatShortId(reviewedByUserId)}`;
+}
+
+async function copyToClipboard(value: string): Promise<boolean> {
+  if (!value) return false;
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // Best-effort: clipboard access can fail in restricted contexts.
+    // The on-screen value remains selectable for manual copy.
+  }
+  return false;
+}
+
+function CopyButton({
+  value,
+  ariaLabel,
+}: {
+  value: string;
+  ariaLabel: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label={ariaLabel}
+      onClick={async () => {
+        const ok = await copyToClipboard(value);
+        if (ok) {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1500);
+        }
+      }}
+      className="inline-flex shrink-0 items-center rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-900"
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+function StatusPill({
+  label,
+  tone = "neutral",
+}: {
+  label: string;
+  tone?: "neutral" | "success" | "warn" | "danger" | "info";
+}) {
+  const toneClass =
+    tone === "success"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+      : tone === "warn"
+        ? "border-amber-200 bg-amber-50 text-amber-800"
+        : tone === "danger"
+          ? "border-rose-200 bg-rose-50 text-rose-800"
+          : tone === "info"
+            ? "border-sky-200 bg-sky-50 text-sky-800"
+            : "border-slate-200 bg-slate-50 text-slate-700";
+  return (
+    <span
+      className={[
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium",
+        toneClass,
+      ].join(" ")}
+    >
+      {label}
+    </span>
+  );
+}
+
+function runStatusTonePill(runStatus: string | undefined | null): "neutral" | "success" | "warn" | "danger" {
+  switch (runStatus) {
+    case "generation_succeeded":
+      return "success";
+    case "generation_refused":
+    case "output_blocked":
+      return "danger";
+    case "generation_failed":
+      return "warn";
+    default:
+      return "neutral";
+  }
+}
+
+function reviewStatusTonePill(status: string | undefined | null): "neutral" | "success" | "warn" | "danger" {
+  switch (status) {
+    case "reviewed_approved":
+      return "success";
+    case "reviewed_rejected":
+      return "danger";
+    case "reviewed_needs_edit":
+      return "warn";
+    default:
+      return "neutral";
+  }
 }
 
 function EmptyState({ title, description }: { title: string; description: string }) {
