@@ -635,3 +635,28 @@ def get_intelligence_recommendations(
         "window": window,
         "items": recommendations,
     }
+
+
+# -------------------------------------------------------------------
+# M6.8 — Assistant Intelligence summary
+#
+# Metadata-only aggregation of assistant_runs evidence. Lives next to
+# the existing Intelligence routes so the frontend can hit the same
+# namespace, but the heavy lifting is in app/assistant_intelligence.py
+# to keep this module focused on the original Governance Intelligence.
+# -------------------------------------------------------------------
+from app.assistant_intelligence import build_assistant_intelligence_summary  # noqa: E402
+
+
+@router.get("/assistant-summary")
+def get_assistant_intelligence_summary(
+    days: int = Query(default=30, ge=1, le=180),
+    clinic_ctx: Any = Depends(require_clinic_user),
+    db: Session = Depends(get_clinic_scoped_db),
+) -> Dict[str, Any]:
+    clinic_id = _extract_clinic_id(clinic_ctx)
+    return build_assistant_intelligence_summary(
+        db,
+        clinic_id=clinic_id,
+        days=int(days),
+    )
