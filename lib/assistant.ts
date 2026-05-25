@@ -120,6 +120,18 @@ export async function getAssistantRunReceipt(
   );
 }
 
+// M6.9.3 — identifier-keyed lookup: accepts either an Assistant receipt
+// UUID or an Assistant run UUID, returns the same metadata-only receipt
+// response shape plus a `matched_by` discriminator. Clinic-scoped on the
+// backend; cross-clinic identifiers 404.
+export async function getAssistantReceiptByIdentifier(
+  identifier: string,
+): Promise<AssistantRunReceiptResponse> {
+  return apiFetch<AssistantRunReceiptResponse>(
+    `/v1/assistant/receipts/${encodeURIComponent(identifier)}`,
+  );
+}
+
 // M6.4 — record a metadata-only human review outcome for a single run.
 // Reviewer identity comes from the authenticated clinic_user context on
 // the backend; this function never sends notes, draft text, or reviewer

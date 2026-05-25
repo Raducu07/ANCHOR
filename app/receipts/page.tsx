@@ -5,6 +5,7 @@ type ReceiptsRouteProps = {
   searchParams: Promise<{
     request_id?: string | string[];
     assistantRunId?: string | string[];
+    assistantReceiptId?: string | string[];
   }>;
 };
 
@@ -18,12 +19,14 @@ export default async function ReceiptsRoute({ searchParams }: ReceiptsRouteProps
   const params = await searchParams;
   const requestId = firstString(params.request_id);
   const assistantRunId = firstString(params.assistantRunId);
+  const assistantReceiptId = firstString(params.assistantReceiptId);
 
   return (
     <AppShell>
       <ReceiptsPage
         initialRequestId={requestId}
         initialAssistantRunId={assistantRunId}
+        initialAssistantReceiptId={assistantReceiptId}
       />
     </AppShell>
   );

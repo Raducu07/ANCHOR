@@ -8,7 +8,7 @@ import { fetchReceipt, fetchRecentSubmissions } from "@/lib/receipts/api";
 import type { RecentSubmission } from "@/lib/receipts/api";
 import { exportReceiptAsJson } from "@/lib/receipts/export";
 import {
-  getAssistantRunReceipt,
+  getAssistantReceiptByIdentifier,
   listAssistantRuns,
 } from "@/lib/assistant";
 import { ApiError } from "@/lib/api";
@@ -50,11 +50,16 @@ const MODE_FILTER_OPTIONS: Array<{ value: ModeFilter; label: string }> = [
 export function ReceiptsPage({
   initialRequestId = "",
   initialAssistantRunId = "",
+  initialAssistantReceiptId = "",
 }: {
   initialRequestId?: string;
   initialAssistantRunId?: string;
+  initialAssistantReceiptId?: string;
 }) {
   const router = useRouter();
+  const hasAssistantDeepLink = Boolean(
+    initialAssistantRunId || initialAssistantReceiptId,
+  );
 
   const [inputValue, setInputValue] = useState(initialRequestId);
   const [trackedRequestId, setTrackedRequestId] = useState(initialRequestId);
@@ -269,6 +274,14 @@ export function ReceiptsPage({
           <p className="text-sm font-medium">Receipt unavailable</p>
           <p className="mt-2 text-sm leading-6">{errorMessage}</p>
         </NativeCard>
+      ) : null}
+
+      {hasAssistantDeepLink ? (
+        <AssistantReceiptsSection
+          initialAssistantRunId={initialAssistantRunId}
+          initialAssistantReceiptId={initialAssistantReceiptId}
+          priority
+        />
       ) : null}
 
       <NativeCard>
@@ -562,7 +575,12 @@ export function ReceiptsPage({
             )}
           </NativeCard>
 
-          <AssistantReceiptsSection initialAssistantRunId={initialAssistantRunId} />
+          {hasAssistantDeepLink ? null : (
+            <AssistantReceiptsSection
+              initialAssistantRunId={initialAssistantRunId}
+              initialAssistantReceiptId={initialAssistantReceiptId}
+            />
+          )}
         </div>
 
         <aside className="space-y-6">
@@ -917,8 +935,12 @@ type AssistantReceiptLoadState = "idle" | "loading" | "loaded" | "error" | "not_
 
 function AssistantReceiptsSection({
   initialAssistantRunId,
+  initialAssistantReceiptId,
+  priority = false,
 }: {
   initialAssistantRunId: string;
+  initialAssistantReceiptId: string;
+  priority?: boolean;
 }) {
   const router = useRouter();
 
@@ -926,12 +948,18 @@ function AssistantReceiptsSection({
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsError, setRunsError] = useState<string | null>(null);
 
-  const [lookupInput, setLookupInput] = useState(initialAssistantRunId);
+  // Pre-populate the lookup with whichever identifier was provided via
+  // deep link. Either resolves through the same /receipts/{identifier}
+  // backend route.
+  const initialLookup = initialAssistantReceiptId || initialAssistantRunId;
+  const [lookupInput, setLookupInput] = useState(initialLookup);
+  const [activeIdentifier, setActiveIdentifier] = useState<string>("");
   const [activeRunId, setActiveRunId] = useState<string>("");
+  const [matchedBy, setMatchedBy] = useState<"receipt_id" | "run_id" | null>(null);
   const [receipt, setReceipt] = useState<AssistantRunReceipt | null>(null);
   const [receiptState, setReceiptState] = useState<AssistantReceiptLoadState>("idle");
   const [receiptError, setReceiptError] = useState<string | null>(null);
-  const [autoTriedRunId, setAutoTriedRunId] = useState<string>("");
+  const [autoTriedIdentifier, setAutoTriedIdentifier] = useState<string>("");
 
   const loadRecent = useCallback(async () => {
     setRunsLoading(true);
@@ -954,28 +982,46 @@ function AssistantReceiptsSection({
     }
   }, []);
 
-  const loadReceiptByRunId = useCallback(
-    async (rawRunId: string, updateUrl: boolean) => {
-      const runId = rawRunId.trim();
-      if (!runId) {
+  const loadReceiptByIdentifier = useCallback(
+    async (
+      rawIdentifier: string,
+      updateUrl: boolean,
+      urlKey: "assistantRunId" | "assistantReceiptId" = "assistantRunId",
+    ) => {
+      const identifier = rawIdentifier.trim();
+      if (!identifier) {
         setReceipt(null);
+        setActiveIdentifier("");
         setActiveRunId("");
+        setMatchedBy(null);
         setReceiptState("idle");
         setReceiptError(null);
         return;
       }
-      setActiveRunId(runId);
+      setActiveIdentifier(identifier);
       setReceiptState("loading");
       setReceiptError(null);
       try {
-        const result = await getAssistantRunReceipt(runId);
+        const result = await getAssistantReceiptByIdentifier(identifier);
         setReceipt(result.receipt);
+        setActiveRunId(result.receipt.assistant_run_id);
+        setMatchedBy(result.matched_by ?? null);
         setReceiptState("loaded");
         if (updateUrl) {
-          router.replace(`/receipts?assistantRunId=${encodeURIComponent(runId)}`);
+          // Reflect the actual lookup mode in the URL so the link is
+          // shareable and refresh-safe.
+          const key =
+            result.matched_by === "receipt_id"
+              ? "assistantReceiptId"
+              : result.matched_by === "run_id"
+                ? "assistantRunId"
+                : urlKey;
+          router.replace(`/receipts?${key}=${encodeURIComponent(identifier)}`);
         }
       } catch (err) {
         setReceipt(null);
+        setActiveRunId("");
+        setMatchedBy(null);
         if (err instanceof ApiError && err.status === 404) {
           setReceiptState("not_found");
         } else {
@@ -993,27 +1039,37 @@ function AssistantReceiptsSection({
     void loadRecent();
   }, [loadRecent]);
 
+  // Auto-load from whichever deep-link identifier is present. We prefer
+  // assistantReceiptId, then fall back to assistantRunId; both go through
+  // the same backend lookup so either resolves correctly.
   useEffect(() => {
-    if (!initialAssistantRunId) return;
-    if (autoTriedRunId === initialAssistantRunId) return;
-    setAutoTriedRunId(initialAssistantRunId);
-    setLookupInput(initialAssistantRunId);
-    void loadReceiptByRunId(initialAssistantRunId, false);
-  }, [initialAssistantRunId, autoTriedRunId, loadReceiptByRunId]);
+    const incoming = initialAssistantReceiptId || initialAssistantRunId;
+    if (!incoming) return;
+    if (autoTriedIdentifier === incoming) return;
+    setAutoTriedIdentifier(incoming);
+    setLookupInput(incoming);
+    void loadReceiptByIdentifier(incoming, false);
+  }, [
+    initialAssistantReceiptId,
+    initialAssistantRunId,
+    autoTriedIdentifier,
+    loadReceiptByIdentifier,
+  ]);
+
+  const headingTitle = priority
+    ? "Assistant governance receipt"
+    : "Assistant governance receipts";
+  const headingBody = priority
+    ? "Metadata-only Assistant evidence. This is not a chat transcript or clinical record."
+    : "Assistant receipts are metadata-only governance evidence. They are not chat transcripts and not clinical records. They confirm governance metadata, not clinical correctness.";
 
   return (
     <NativeCard>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <SectionEyebrow>Assistant evidence</SectionEyebrow>
-          <h2 className="mt-2 text-base font-semibold text-slate-900">
-            Assistant governance receipts
-          </h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">
-            Assistant receipts are metadata-only governance evidence. They are not chat
-            transcripts and not clinical records. They confirm governance metadata, not
-            clinical correctness.
-          </p>
+          <h2 className="mt-2 text-base font-semibold text-slate-900">{headingTitle}</h2>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">{headingBody}</p>
         </div>
         <Button
           variant="ghost"
@@ -1026,41 +1082,76 @@ function AssistantReceiptsSection({
         </Button>
       </div>
 
-      {/* Lookup panel — separate from the older governance receipt lookup above
+      {/* When arriving via deep link, surface the Assistant receipt result
+          immediately at the top so the user does not have to scan past the
+          generic governance receipt lookup. */}
+      {priority && receiptState === "loading" ? (
+        <p className="mt-4 text-sm text-slate-600">Loading Assistant receipt…</p>
+      ) : null}
+      {priority && receiptState === "not_found" ? (
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-semibold text-amber-900">
+            No Assistant receipt linked yet
+          </p>
+          <p className="mt-1 text-xs leading-5 text-amber-800">
+            No Assistant receipt is linked to{" "}
+            <span className="font-mono break-all">{activeIdentifier}</span> yet. Receipts
+            are created from the Assistant page after a run has been human-reviewed.
+          </p>
+        </div>
+      ) : null}
+      {priority && receiptState === "error" && receiptError ? (
+        <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+          <p className="text-sm font-semibold text-rose-700">
+            Could not load Assistant receipt
+          </p>
+          <p className="mt-1 text-xs leading-5 text-rose-600">{receiptError}</p>
+        </div>
+      ) : null}
+
+      {receipt && priority ? (
+        <AssistantReceiptDetail
+          receipt={receipt}
+          runId={activeRunId}
+          matchedBy={matchedBy}
+        />
+      ) : null}
+
+      {/* Lookup panel — separate from the older governance receipt lookup
           so existing flows remain unchanged. */}
       <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <p className="text-sm font-semibold text-slate-900">Open an Assistant receipt</p>
         <p className="mt-1 text-xs leading-5 text-slate-600">
-          Paste an Assistant run ID to load its metadata-only receipt. The Assistant page
-          links here directly when a receipt has been created.
+          Paste an Assistant receipt ID or run ID. Receipts are metadata-only and are not
+          chat transcripts.
         </p>
         <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
           <div className="flex-1">
             <label
-              htmlFor="assistant-run-id"
+              htmlFor="assistant-receipt-identifier"
               className="block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500"
             >
-              Assistant run ID
+              Assistant receipt ID or run ID
             </label>
             <input
-              id="assistant-run-id"
+              id="assistant-receipt-identifier"
               type="text"
               value={lookupInput}
               onChange={(e) => setLookupInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  void loadReceiptByRunId(lookupInput, true);
+                  void loadReceiptByIdentifier(lookupInput, true);
                 }
               }}
-              placeholder="Paste an Assistant run ID"
+              placeholder="Paste an Assistant receipt ID or run ID"
               spellCheck={false}
               autoComplete="off"
               className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-2.5 font-mono text-sm text-slate-900 outline-none transition placeholder:font-sans placeholder:font-normal placeholder:text-slate-400 focus:border-slate-400 focus:ring-1 focus:ring-slate-300"
             />
           </div>
           <Button
-            onClick={() => void loadReceiptByRunId(lookupInput, true)}
+            onClick={() => void loadReceiptByIdentifier(lookupInput, true)}
             loading={receiptState === "loading"}
             disabled={receiptState === "loading" || !lookupInput.trim()}
             className="rounded-md px-5 py-2.5"
@@ -1068,19 +1159,23 @@ function AssistantReceiptsSection({
             Open receipt
           </Button>
         </div>
-        {receiptState === "not_found" && activeRunId ? (
+        {!priority && receiptState === "not_found" && activeIdentifier ? (
           <p className="mt-3 text-xs leading-5 text-amber-700">
-            No Assistant receipt is linked to that run ID yet. A receipt is created from
-            the Assistant page after the run has been human-reviewed.
+            No Assistant receipt is linked to that ID yet. A receipt is created from the
+            Assistant page after the run has been human-reviewed.
           </p>
         ) : null}
-        {receiptState === "error" && receiptError ? (
+        {!priority && receiptState === "error" && receiptError ? (
           <p className="mt-3 text-xs leading-5 text-rose-700">{receiptError}</p>
         ) : null}
       </div>
 
-      {receipt ? (
-        <AssistantReceiptDetail receipt={receipt} runId={activeRunId} />
+      {receipt && !priority ? (
+        <AssistantReceiptDetail
+          receipt={receipt}
+          runId={activeRunId}
+          matchedBy={matchedBy}
+        />
       ) : null}
 
       <div className="mt-6">
@@ -1127,7 +1222,7 @@ function AssistantReceiptsSection({
                     type="button"
                     onClick={() => {
                       setLookupInput(r.run_id);
-                      void loadReceiptByRunId(r.run_id, true);
+                      void loadReceiptByIdentifier(r.run_id, true);
                     }}
                     className="self-start whitespace-nowrap text-xs font-semibold text-slate-900 underline underline-offset-4 hover:text-slate-700 sm:self-auto"
                   >
@@ -1148,9 +1243,11 @@ function AssistantReceiptsSection({
 function AssistantReceiptDetail({
   receipt,
   runId,
+  matchedBy,
 }: {
   receipt: AssistantRunReceipt;
   runId: string;
+  matchedBy?: "receipt_id" | "run_id" | null;
 }) {
   return (
     <div className="mt-6 rounded-xl border border-sky-200 bg-sky-50/60 p-4">
@@ -1164,6 +1261,11 @@ function AssistantReceiptDetail({
             clinical content are not stored. This receipt is not a chat transcript and
             not a clinical record.
           </p>
+          {matchedBy ? (
+            <p className="mt-1 text-[11px] text-sky-700">
+              Matched by {matchedBy === "receipt_id" ? "receipt ID" : "run ID"}.
+            </p>
+          ) : null}
         </div>
         <Link
           href={`/assistant?runId=${encodeURIComponent(runId || receipt.assistant_run_id)}`}
