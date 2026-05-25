@@ -485,6 +485,10 @@ export type AssistantRunReceiptResponse = {
   receipt: AssistantRunReceipt;
   run: AssistantRunTraceItem;
   governance_note: string;
+  // M6.9.3 — present on the identifier-keyed lookup endpoint
+  // (GET /v1/assistant/receipts/{identifier}); absent on the existing
+  // per-run endpoint (GET /v1/assistant/runs/{run_id}/receipt).
+  matched_by?: "receipt_id" | "run_id" | null;
 };
 
 // M6.4 — review-state PATCH wire types.
