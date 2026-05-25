@@ -8,6 +8,15 @@ import { fetchReceipt, fetchRecentSubmissions } from "@/lib/receipts/api";
 import type { RecentSubmission } from "@/lib/receipts/api";
 import { exportReceiptAsJson } from "@/lib/receipts/export";
 import {
+  getAssistantRunReceipt,
+  listAssistantRuns,
+} from "@/lib/assistant";
+import { ApiError } from "@/lib/api";
+import type {
+  AssistantRunReceipt,
+  AssistantRunTraceItem,
+} from "@/lib/types";
+import {
   buildInterpretation,
   decisionLabel,
   extractHumanReview,
@@ -38,7 +47,13 @@ const MODE_FILTER_OPTIONS: Array<{ value: ModeFilter; label: string }> = [
   { value: "clinical_note", label: "Clinical note drafting" },
 ];
 
-export function ReceiptsPage({ initialRequestId = "" }: { initialRequestId?: string }) {
+export function ReceiptsPage({
+  initialRequestId = "",
+  initialAssistantRunId = "",
+}: {
+  initialRequestId?: string;
+  initialAssistantRunId?: string;
+}) {
   const router = useRouter();
 
   const [inputValue, setInputValue] = useState(initialRequestId);
@@ -546,6 +561,8 @@ export function ReceiptsPage({ initialRequestId = "" }: { initialRequestId?: str
               </div>
             )}
           </NativeCard>
+
+          <AssistantReceiptsSection initialAssistantRunId={initialAssistantRunId} />
         </div>
 
         <aside className="space-y-6">
@@ -878,4 +895,577 @@ function Pillar({ title, body }: { title: string; body: string }) {
       <p className="mt-1 text-sm leading-6 text-slate-600">{body}</p>
     </div>
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* M6.9.1 — Assistant receipts on the central Receipts surface                */
+/* -------------------------------------------------------------------------- */
+//
+// The Assistant page already creates and inspects metadata-only Assistant
+// receipts via /v1/assistant/runs/{run_id}/receipt. This section surfaces
+// the same evidence from /receipts without any new backend endpoint:
+//
+//   * Recent list is derived from /v1/assistant/runs and filtered to runs
+//     that have a linked receipt.
+//   * Detail lookup takes a run ID and calls the existing per-run receipt
+//     endpoint. Receipt-ID-only lookup requires a backend endpoint and is
+//     deferred — the recent list and Assistant "Open in Receipts" deep link
+//     cover the primary discovery paths.
+//   * No raw input, prompt, or draft is ever fetched or rendered.
+
+type AssistantReceiptLoadState = "idle" | "loading" | "loaded" | "error" | "not_found";
+
+function AssistantReceiptsSection({
+  initialAssistantRunId,
+}: {
+  initialAssistantRunId: string;
+}) {
+  const router = useRouter();
+
+  const [runs, setRuns] = useState<AssistantRunTraceItem[] | null>(null);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runsError, setRunsError] = useState<string | null>(null);
+
+  const [lookupInput, setLookupInput] = useState(initialAssistantRunId);
+  const [activeRunId, setActiveRunId] = useState<string>("");
+  const [receipt, setReceipt] = useState<AssistantRunReceipt | null>(null);
+  const [receiptState, setReceiptState] = useState<AssistantReceiptLoadState>("idle");
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+  const [autoTriedRunId, setAutoTriedRunId] = useState<string>("");
+
+  const loadRecent = useCallback(async () => {
+    setRunsLoading(true);
+    setRunsError(null);
+    try {
+      const result = await listAssistantRuns({ limit: 25 });
+      const items = result.runs ?? [];
+      // Keep only runs that actually have a linked Assistant receipt —
+      // this section is about receipts as governance evidence, not raw runs.
+      setRuns(items.filter((r) => Boolean(r.has_receipt || r.receipt_id)));
+    } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : "Unable to load recent Assistant receipts.";
+      setRuns(null);
+      setRunsError(message);
+    } finally {
+      setRunsLoading(false);
+    }
+  }, []);
+
+  const loadReceiptByRunId = useCallback(
+    async (rawRunId: string, updateUrl: boolean) => {
+      const runId = rawRunId.trim();
+      if (!runId) {
+        setReceipt(null);
+        setActiveRunId("");
+        setReceiptState("idle");
+        setReceiptError(null);
+        return;
+      }
+      setActiveRunId(runId);
+      setReceiptState("loading");
+      setReceiptError(null);
+      try {
+        const result = await getAssistantRunReceipt(runId);
+        setReceipt(result.receipt);
+        setReceiptState("loaded");
+        if (updateUrl) {
+          router.replace(`/receipts?assistantRunId=${encodeURIComponent(runId)}`);
+        }
+      } catch (err) {
+        setReceipt(null);
+        if (err instanceof ApiError && err.status === 404) {
+          setReceiptState("not_found");
+        } else {
+          const message =
+            err instanceof ApiError ? err.message : "Unable to load Assistant receipt.";
+          setReceiptError(message);
+          setReceiptState("error");
+        }
+      }
+    },
+    [router],
+  );
+
+  useEffect(() => {
+    void loadRecent();
+  }, [loadRecent]);
+
+  useEffect(() => {
+    if (!initialAssistantRunId) return;
+    if (autoTriedRunId === initialAssistantRunId) return;
+    setAutoTriedRunId(initialAssistantRunId);
+    setLookupInput(initialAssistantRunId);
+    void loadReceiptByRunId(initialAssistantRunId, false);
+  }, [initialAssistantRunId, autoTriedRunId, loadReceiptByRunId]);
+
+  return (
+    <NativeCard>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <SectionEyebrow>Assistant evidence</SectionEyebrow>
+          <h2 className="mt-2 text-base font-semibold text-slate-900">
+            Assistant governance receipts
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">
+            Assistant receipts are metadata-only governance evidence. They are not chat
+            transcripts and not clinical records. They confirm governance metadata, not
+            clinical correctness.
+          </p>
+        </div>
+        <Button
+          variant="ghost"
+          onClick={() => void loadRecent()}
+          disabled={runsLoading}
+          loading={runsLoading}
+          className="rounded-md px-4 py-2"
+        >
+          Refresh
+        </Button>
+      </div>
+
+      {/* Lookup panel — separate from the older governance receipt lookup above
+          so existing flows remain unchanged. */}
+      <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
+        <p className="text-sm font-semibold text-slate-900">Open an Assistant receipt</p>
+        <p className="mt-1 text-xs leading-5 text-slate-600">
+          Paste an Assistant run ID to load its metadata-only receipt. The Assistant page
+          links here directly when a receipt has been created.
+        </p>
+        <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex-1">
+            <label
+              htmlFor="assistant-run-id"
+              className="block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500"
+            >
+              Assistant run ID
+            </label>
+            <input
+              id="assistant-run-id"
+              type="text"
+              value={lookupInput}
+              onChange={(e) => setLookupInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void loadReceiptByRunId(lookupInput, true);
+                }
+              }}
+              placeholder="Paste an Assistant run ID"
+              spellCheck={false}
+              autoComplete="off"
+              className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-2.5 font-mono text-sm text-slate-900 outline-none transition placeholder:font-sans placeholder:font-normal placeholder:text-slate-400 focus:border-slate-400 focus:ring-1 focus:ring-slate-300"
+            />
+          </div>
+          <Button
+            onClick={() => void loadReceiptByRunId(lookupInput, true)}
+            loading={receiptState === "loading"}
+            disabled={receiptState === "loading" || !lookupInput.trim()}
+            className="rounded-md px-5 py-2.5"
+          >
+            Open receipt
+          </Button>
+        </div>
+        {receiptState === "not_found" && activeRunId ? (
+          <p className="mt-3 text-xs leading-5 text-amber-700">
+            No Assistant receipt is linked to that run ID yet. A receipt is created from
+            the Assistant page after the run has been human-reviewed.
+          </p>
+        ) : null}
+        {receiptState === "error" && receiptError ? (
+          <p className="mt-3 text-xs leading-5 text-rose-700">{receiptError}</p>
+        ) : null}
+      </div>
+
+      {receipt ? (
+        <AssistantReceiptDetail receipt={receipt} runId={activeRunId} />
+      ) : null}
+
+      <div className="mt-6">
+        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+          Recent Assistant receipts
+        </p>
+        {runsError ? (
+          <p className="mt-3 text-sm text-rose-700">{runsError}</p>
+        ) : runsLoading && runs === null ? (
+          <EmptyState text="Loading recent Assistant receipts..." />
+        ) : runs && runs.length > 0 ? (
+          <ul className="mt-3 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white">
+            {runs.map((r) => {
+              const receiptShort = r.receipt_id ? shortenAssistantId(r.receipt_id) : "—";
+              const runShort = shortenAssistantId(r.run_id);
+              const isActive = activeRunId === r.run_id;
+              return (
+                <li
+                  key={r.run_id}
+                  className={[
+                    "flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between",
+                    isActive ? "bg-slate-50" : "",
+                  ].join(" ")}
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-mono font-semibold text-slate-900">
+                        Receipt {receiptShort}
+                      </span>
+                      <ReceiptPill
+                        label={humanizeAssistantStatus(r.run_status)}
+                        tone={assistantRunTone(r.run_status)}
+                      />
+                      <ReceiptPill
+                        label={humanizeAssistantReview(r.review_status)}
+                        tone={assistantReviewTone(r.review_status)}
+                      />
+                    </div>
+                    <p className="mt-1 font-mono text-[11px] text-slate-500">
+                      Run {runShort} · {formatTimestamp(r.created_at)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLookupInput(r.run_id);
+                      void loadReceiptByRunId(r.run_id, true);
+                    }}
+                    className="self-start whitespace-nowrap text-xs font-semibold text-slate-900 underline underline-offset-4 hover:text-slate-700 sm:self-auto"
+                  >
+                    Open receipt
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <EmptyState text="No Assistant receipts have been created yet for this clinic." />
+        )}
+      </div>
+    </NativeCard>
+  );
+}
+
+function AssistantReceiptDetail({
+  receipt,
+  runId,
+}: {
+  receipt: AssistantRunReceipt;
+  runId: string;
+}) {
+  return (
+    <div className="mt-6 rounded-xl border border-sky-200 bg-sky-50/60 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-sky-900">
+            Assistant metadata receipt
+          </p>
+          <p className="mt-1 text-xs leading-5 text-sky-800">
+            Metadata-only governance evidence. Raw prompt, input, draft output, and
+            clinical content are not stored. This receipt is not a chat transcript and
+            not a clinical record.
+          </p>
+        </div>
+        <Link
+          href={`/assistant?runId=${encodeURIComponent(runId || receipt.assistant_run_id)}`}
+          className="inline-flex shrink-0 items-center rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-xs font-medium text-sky-900 shadow-sm transition hover:border-sky-300"
+        >
+          Open in Assistant
+        </Link>
+      </div>
+
+      <ReceiptGroup title="Storage posture">
+        <AssistantReceiptCell label="Storage policy" value={receipt.storage_policy} />
+        <AssistantReceiptCell
+          label="Raw input stored"
+          value={receipt.raw_content_stored ? "Yes" : "No"}
+        />
+        <AssistantReceiptCell
+          label="Prompt stored"
+          value={receipt.prompt_stored ? "Yes" : "No"}
+        />
+        <AssistantReceiptCell
+          label="Draft stored"
+          value={receipt.draft_stored ? "Yes" : "No"}
+        />
+      </ReceiptGroup>
+
+      <ReceiptGroup title="Receipt identity">
+        <AssistantReceiptCell
+          label="Receipt ID"
+          value={shortenAssistantId(receipt.receipt_id)}
+          copyValue={receipt.receipt_id}
+          mono
+        />
+        <AssistantReceiptCell label="Receipt kind" value={receipt.receipt_kind} />
+        <AssistantReceiptCell label="Receipt version" value={receipt.receipt_version} />
+        <AssistantReceiptCell
+          label="Run ID"
+          value={shortenAssistantId(receipt.assistant_run_id)}
+          copyValue={receipt.assistant_run_id}
+          mono
+        />
+        <AssistantReceiptCell
+          label="Created at"
+          value={formatTimestamp(receipt.receipt_created_at)}
+        />
+      </ReceiptGroup>
+
+      <ReceiptGroup title="Review outcome">
+        <AssistantReceiptCell
+          label="Run status"
+          value={humanizeAssistantStatus(receipt.run_status)}
+        />
+        <AssistantReceiptCell
+          label="Review status"
+          value={humanizeAssistantReview(receipt.review_status)}
+        />
+        <AssistantReceiptCell
+          label="Review decision"
+          value={humanizeAssistantDecision(receipt.review_decision)}
+        />
+      </ReceiptGroup>
+
+      <ReceiptGroup title="Policy context">
+        <AssistantReceiptCell
+          label="Policy version"
+          value={
+            typeof receipt.assistant_policy_version === "number" &&
+            receipt.assistant_policy_version > 0
+              ? `v${receipt.assistant_policy_version}`
+              : "Default policy"
+          }
+        />
+        <AssistantReceiptCell
+          label="Validation profile"
+          value={
+            typeof receipt.assistant_validation_profile === "string" &&
+            receipt.assistant_validation_profile
+              ? receipt.assistant_validation_profile
+              : "standard"
+          }
+        />
+      </ReceiptGroup>
+
+      <ReceiptGroup title="Hash evidence">
+        <AssistantReceiptCell
+          label="Input hash"
+          value={shortenAssistantId(receipt.input_sha256)}
+          copyValue={receipt.input_sha256}
+          mono
+        />
+        <AssistantReceiptCell
+          label="Output hash"
+          value={
+            receipt.output_sha256 ? shortenAssistantId(receipt.output_sha256) : "None"
+          }
+          copyValue={receipt.output_sha256 ?? null}
+          mono={!!receipt.output_sha256}
+        />
+      </ReceiptGroup>
+
+      <ReceiptGroup title="Safety metadata">
+        <AssistantReceiptCell
+          label="PII detected"
+          value={receipt.pii_detected ? "Yes" : "No"}
+        />
+        <AssistantReceiptCell
+          label="Safety flags"
+          value={receipt.safety_flags.length ? receipt.safety_flags.join(", ") : "None"}
+        />
+        <AssistantReceiptCell
+          label="Refusal codes"
+          value={
+            receipt.refusal_reason_codes.length
+              ? receipt.refusal_reason_codes.join(", ")
+              : "None"
+          }
+        />
+      </ReceiptGroup>
+
+      <p className="mt-3 text-[11px] leading-5 text-emerald-700">
+        Policy context is metadata only. Hard clinical safety rules cannot be disabled.
+      </p>
+    </div>
+  );
+}
+
+function ReceiptGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="mt-3">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-sky-700">
+        {title}
+      </p>
+      <div className="mt-1.5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{children}</div>
+    </div>
+  );
+}
+
+function AssistantReceiptCell({
+  label,
+  value,
+  mono = false,
+  copyValue,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  copyValue?: string | null;
+}) {
+  return (
+    <div className="rounded-lg border border-sky-100 bg-white px-3 py-2">
+      <p className="text-[11px] uppercase tracking-wide text-sky-700">{label}</p>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <span
+          className={[
+            "text-sm text-slate-900",
+            mono ? "font-mono text-xs break-all" : "font-medium",
+          ].join(" ")}
+        >
+          {value}
+        </span>
+        {copyValue ? <CopyChip value={copyValue} ariaLabel={`Copy ${label}`} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function CopyChip({ value, ariaLabel }: { value: string; ariaLabel: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label={ariaLabel}
+      onClick={async () => {
+        try {
+          if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(value);
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+          }
+        } catch {
+          // Best-effort: failure is non-fatal; value remains on-screen.
+        }
+      }}
+      className="inline-flex shrink-0 items-center rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-900"
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+function ReceiptPill({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: "neutral" | "success" | "warn" | "danger" | "info";
+}) {
+  const toneClass =
+    tone === "success"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+      : tone === "warn"
+        ? "border-amber-200 bg-amber-50 text-amber-800"
+        : tone === "danger"
+          ? "border-rose-200 bg-rose-50 text-rose-800"
+          : tone === "info"
+            ? "border-sky-200 bg-sky-50 text-sky-800"
+            : "border-slate-200 bg-slate-50 text-slate-700";
+  return (
+    <span
+      className={[
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium",
+        toneClass,
+      ].join(" ")}
+    >
+      {label}
+    </span>
+  );
+}
+
+function shortenAssistantId(value: string | null | undefined): string {
+  if (!value) return "—";
+  if (value.length <= 18) return value;
+  return `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
+
+function humanizeAssistantStatus(status: string | null | undefined): string {
+  switch (status) {
+    case "generation_succeeded":
+      return "Draft generated";
+    case "generation_refused":
+      return "Refused before model call";
+    case "generation_failed":
+      return "Generation failed";
+    case "output_blocked":
+      return "Output blocked";
+    case "created":
+    case "":
+    case null:
+    case undefined:
+      return "Created";
+    default:
+      return status;
+  }
+}
+
+function humanizeAssistantReview(status: string | null | undefined): string {
+  switch (status) {
+    case "reviewed_approved":
+      return "Approved";
+    case "reviewed_rejected":
+      return "Rejected";
+    case "reviewed_needs_edit":
+      return "Needs edit";
+    case "not_reviewed":
+    case "":
+    case null:
+    case undefined:
+      return "Not reviewed";
+    default:
+      return String(status);
+  }
+}
+
+function humanizeAssistantDecision(decision: string | null | undefined): string {
+  switch (decision) {
+    case "approved_for_use":
+      return "Approved for use";
+    case "rejected_not_safe":
+      return "Rejected — not safe";
+    case "needs_edit_before_use":
+      return "Needs edit before use";
+    default:
+      return decision ? String(decision) : "None";
+  }
+}
+
+function assistantRunTone(
+  status: string | null | undefined,
+): "neutral" | "success" | "warn" | "danger" | "info" {
+  switch (status) {
+    case "generation_succeeded":
+      return "success";
+    case "generation_refused":
+    case "output_blocked":
+      return "danger";
+    case "generation_failed":
+      return "warn";
+    default:
+      return "neutral";
+  }
+}
+
+function assistantReviewTone(
+  status: string | null | undefined,
+): "neutral" | "success" | "warn" | "danger" | "info" {
+  switch (status) {
+    case "reviewed_approved":
+      return "success";
+    case "reviewed_rejected":
+      return "danger";
+    case "reviewed_needs_edit":
+      return "warn";
+    default:
+      return "neutral";
+  }
 }
