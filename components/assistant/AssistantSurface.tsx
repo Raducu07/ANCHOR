@@ -1692,13 +1692,21 @@ function ReceiptEvidenceCard({
             metadata, not clinical correctness. This receipt is not a clinical record.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          className="inline-flex shrink-0 items-center rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-xs font-medium text-sky-900 shadow-sm transition hover:border-sky-300"
-        >
-          Refresh receipt
-        </button>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Link
+            href={`/receipts?assistantRunId=${encodeURIComponent(receipt.assistant_run_id)}`}
+            className="inline-flex items-center rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-xs font-medium text-sky-900 shadow-sm transition hover:border-sky-300"
+          >
+            Open in Receipts
+          </Link>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="inline-flex items-center rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-xs font-medium text-sky-900 shadow-sm transition hover:border-sky-300"
+          >
+            Refresh receipt
+          </button>
+        </div>
       </div>
 
       <ReceiptGroup title="Storage posture">
