@@ -1149,6 +1149,11 @@ class AssistantRunReceiptResponse(BaseModel):
     receipt: AssistantRunReceipt
     run: AssistantRunTraceItem
     governance_note: str = _RECEIPT_GOVERNANCE_NOTE
+    # M6.9.3 — set on the identifier-keyed lookup endpoint
+    # (GET /v1/assistant/receipts/{identifier}). The existing per-run
+    # endpoint (GET /v1/assistant/runs/{run_id}/receipt) leaves this None
+    # so existing consumers see no shape change.
+    matched_by: Optional[str] = None
 
 
 def _row_to_receipt(row: Dict[str, Any]) -> AssistantRunReceipt:
@@ -1504,6 +1509,107 @@ def get_assistant_run_receipt(
     return AssistantRunReceiptResponse(
         receipt=receipt,
         run=_row_to_trace_item(run),
+    )
+
+
+# ---------------------------------------------------------------------
+# M6.9.3 — identifier-keyed Assistant receipt lookup
+# ---------------------------------------------------------------------
+#
+# Lets the central Receipts page resolve a metadata-only Assistant receipt
+# from either an Assistant receipt UUID or an Assistant run UUID. Does NOT
+# alter the existing per-run endpoint above; central Receipts simply has
+# one more discovery path. Clinic-scoped via the same RLS + explicit
+# clinic_id predicate; cross-clinic identifiers return 404.
+
+
+def _select_receipt_by_identifier_for_clinic(
+    db: Session, *, clinic_id: str, identifier: uuid.UUID
+) -> Optional[Dict[str, Any]]:
+    """Return the metadata-only receipt row whose id OR assistant_run_id
+    matches `identifier` for `clinic_id`, or None. One combined query so
+    the lookup is one round-trip in either case."""
+    row = (
+        db.execute(
+            text(
+                f"""
+                SELECT {_RECEIPT_RETURNING_COLUMNS}
+                FROM assistant_run_receipts
+                WHERE clinic_id = CAST(:clinic_id AS uuid)
+                  AND (
+                        id = CAST(:identifier AS uuid)
+                        OR assistant_run_id = CAST(:identifier AS uuid)
+                      )
+                LIMIT 1
+                """
+            ),
+            {"clinic_id": clinic_id, "identifier": str(identifier)},
+        )
+        .mappings()
+        .first()
+    )
+    return dict(row) if row else None
+
+
+@router.get(
+    "/receipts/{identifier}",
+    response_model=AssistantRunReceiptResponse,
+)
+def lookup_assistant_receipt(
+    identifier: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AssistantRunReceiptResponse:
+    """Resolve a metadata-only Assistant receipt by either receipt UUID or
+    run UUID. Returns the same envelope as the per-run endpoint plus a
+    `matched_by` discriminator. 404 for unknown identifiers and for any
+    receipt that belongs to a different clinic — no cross-clinic leakage."""
+    clinic_id = getattr(request.state, "clinic_id", None)
+    clinic_user_id = getattr(request.state, "clinic_user_id", None)
+    if not clinic_id or not clinic_user_id:
+        raise HTTPException(status_code=401, detail="missing clinic context")
+
+    clinic_id_s = str(clinic_id)
+
+    receipt_row = _select_receipt_by_identifier_for_clinic(
+        db, clinic_id=clinic_id_s, identifier=identifier
+    )
+    if not receipt_row:
+        raise HTTPException(status_code=404, detail="assistant_receipt_not_found")
+
+    receipt = _row_to_receipt(receipt_row)
+
+    # Discriminator: did the identifier match the receipt's own id or the
+    # underlying run id? (The combined OR query above resolves to one row;
+    # both columns are uuid, so equality is exact.)
+    identifier_s = str(identifier)
+    if str(receipt.receipt_id) == identifier_s:
+        matched_by = "receipt_id"
+    elif str(receipt.assistant_run_id) == identifier_s:
+        matched_by = "run_id"
+    else:
+        # Defensive fallback — should not occur given the WHERE clause.
+        matched_by = "receipt_id"
+
+    # Hydrate the run snapshot for the response envelope. The receipt row
+    # already carries enough governance metadata for the receipt card, but
+    # the envelope's `run` field is what the existing frontend type expects.
+    run = _fetch_run_for_clinic(
+        db, clinic_id=clinic_id_s, run_id=receipt.assistant_run_id
+    )
+    if not run:
+        # Receipt exists but its run row is gone — treat as 404 rather than
+        # surfacing an inconsistent envelope.
+        raise HTTPException(status_code=404, detail="assistant_run_not_found")
+
+    # Reflect linkage so the trace item matches the post-link state.
+    run["receipt_id"] = receipt.receipt_id
+    run["receipt_created_at"] = receipt.receipt_created_at
+
+    return AssistantRunReceiptResponse(
+        receipt=receipt,
+        run=_row_to_trace_item(run),
+        matched_by=matched_by,
     )
 
 
