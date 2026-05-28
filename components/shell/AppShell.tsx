@@ -27,6 +27,24 @@ export function AppShell({ children }: { children: ReactNode }) {
   // Effect handles ONLY the redirect side-effect — no local setState.
   useEffect(() => {
     if (!user) {
+      // An intentional sign-out (flagged by TopBar) must NOT preserve a
+      // protected-page returnTo — consume the one-time flag and fall back to
+      // the default /login -> /workspace behaviour.
+      let explicitSignOut = false;
+      try {
+        explicitSignOut =
+          window.sessionStorage.getItem("anchor_explicit_sign_out") === "1";
+        if (explicitSignOut) {
+          window.sessionStorage.removeItem("anchor_explicit_sign_out");
+        }
+      } catch {
+        explicitSignOut = false;
+      }
+      if (explicitSignOut) {
+        router.replace("/login");
+        return;
+      }
+
       // Build a same-origin returnTo from the current browser location so
       // LoginForm can send the user back to the page they requested. Reading
       // window here (effect-only, client-only) avoids useSearchParams/

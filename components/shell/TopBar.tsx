@@ -177,6 +177,14 @@ export function TopBar({ user }: { user: SessionUser }) {
   }, [notificationsOpen]);
 
   function handleSignOut() {
+    // Mark this as an INTENTIONAL sign-out so AppShell's unauthenticated
+    // redirect does not preserve a protected-page returnTo. After an explicit
+    // logout the user should land on the default /workspace post-login.
+    try {
+      window.sessionStorage.setItem("anchor_explicit_sign_out", "1");
+    } catch {
+      // sessionStorage may be unavailable; sign-out still proceeds.
+    }
     clearAuthState();
     router.replace("/login");
   }
