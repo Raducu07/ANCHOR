@@ -29,8 +29,14 @@ type ExportState =
   | { kind: "done" }
   | { kind: "error"; message: string };
 
+// Clinic-admin roles permitted to generate a CPD export. Mirrors the
+// backend LEARN_ADMIN_ROLES on POST /v1/learn/cpd/users/{user_id}/exports,
+// which is admin-only. Non-admin users would otherwise receive 403.
+const EXPORT_ADMIN_ROLES = new Set(["admin", "owner", "practice_manager"]);
+
 export default function MyCPDRecordPage() {
   const [userId, setUserId] = useState<string | null>(null);
+  const [role, setRole] = useState<string | null>(null);
   const [record, setRecord] = useState<CPDRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +45,7 @@ export default function MyCPDRecordPage() {
   useEffect(() => {
     const session = getSessionUser();
     setUserId(session?.clinicUserId ?? null);
+    setRole(session?.role ?? null);
   }, []);
 
   useEffect(() => {
@@ -87,6 +94,8 @@ export default function MyCPDRecordPage() {
   }
 
   const hasCompletions = Boolean(record && record.total_modules_completed > 0);
+  const isExportAdmin = Boolean(role && EXPORT_ADMIN_ROLES.has(role));
+  const canExport = Boolean(userId) && hasCompletions && isExportAdmin;
 
   return (
     <AppShell>
@@ -126,17 +135,26 @@ export default function MyCPDRecordPage() {
             <Card variant="native">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <h2 className="text-base font-semibold text-slate-900">Summary</h2>
-                <div className="flex flex-col items-end gap-2">
-                  <Button
-                    onClick={handleExport}
-                    loading={exportState.kind === "exporting"}
-                    disabled={!userId || !hasCompletions}
-                  >
-                    Export as JSON
-                  </Button>
-                  {!userId ? (
-                    <span className="text-xs text-slate-500">
-                      Export is unavailable: no signed-in user context.
+                <div className="flex max-w-xs flex-col items-end gap-2">
+                  {isExportAdmin ? (
+                    <>
+                      <Button
+                        onClick={handleExport}
+                        loading={exportState.kind === "exporting"}
+                        disabled={!canExport}
+                      >
+                        Export as JSON
+                      </Button>
+                      {!userId ? (
+                        <span className="text-xs text-slate-500">
+                          Export is unavailable: no signed-in user context.
+                        </span>
+                      ) : null}
+                    </>
+                  ) : hasCompletions ? (
+                    <span className="text-right text-xs text-slate-500">
+                      JSON export is available to clinic administrators. Your completion activity
+                      remains recorded as metadata-only evidence.
                     </span>
                   ) : null}
                 </div>
@@ -213,3 +231,4 @@ function SummaryTile({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
