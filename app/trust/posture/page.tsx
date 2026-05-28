@@ -5,8 +5,10 @@ import Link from "next/link";
 import { AppShell } from "@/components/shell/AppShell";
 import { getTrustPosture } from "@/lib/trust";
 import { getAssistantIntelligenceSummary } from "@/lib/assistant";
+import { getTrustLearningDelta } from "@/lib/learn";
 import type {
   AssistantIntelligenceSummaryResponse,
+  TrustPackLearningDelta,
   TrustPostureResponse,
 } from "@/lib/types";
 
@@ -47,6 +49,14 @@ export default function TrustPosturePage() {
     null,
   );
 
+  // Phase 2A-1 (F5) — Learning evidence card. Sourced from the learning
+  // delta aggregate. A fetch failure here must NOT block the rest of the
+  // posture page; it renders its own isolated error state.
+  const [learningDelta, setLearningDelta] = useState<TrustPackLearningDelta | null>(
+    null,
+  );
+  const [learningDeltaError, setLearningDeltaError] = useState<string | null>(null);
+
   async function load(showRefreshing = false) {
     try {
       if (showRefreshing) {
@@ -84,9 +94,25 @@ export default function TrustPosturePage() {
     }
   }
 
+  async function loadLearningDelta() {
+    try {
+      setLearningDeltaError(null);
+      const result = await getTrustLearningDelta();
+      setLearningDelta(result);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Unable to load learning evidence.";
+      setLearningDelta(null);
+      setLearningDeltaError(message);
+    }
+  }
+
   useEffect(() => {
     load();
     void loadAssistantSummary();
+    void loadLearningDelta();
   }, []);
 
   return (
@@ -241,6 +267,11 @@ export default function TrustPosturePage() {
               error={assistantSummaryError}
             />
 
+            <LearningEvidenceCard
+              delta={learningDelta}
+              error={learningDeltaError}
+            />
+
             <div className="grid gap-6 xl:grid-cols-2">
               {data.sections.map((section) => (
                 <div key={section.id} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -386,6 +417,140 @@ function AssistantReceiptEvidenceCard({
         <p className="mt-4 text-sm text-slate-500">
           Loading Assistant receipt evidence…
         </p>
+      )}
+    </div>
+  );
+}
+
+// Phase 2A-1 (F5) — Learning evidence card. Surfaces clinic-level
+// aggregates of CPD-recordable AI literacy activity. Aggregate metadata
+// only — no per-user data, no clinical content. Wording is governance /
+// readiness only: aligned with, not compliant or certified.
+function LearningEvidenceCard({
+  delta,
+  error,
+}: {
+  delta: TrustPackLearningDelta | null;
+  error: string | null;
+}) {
+  const roleRates = delta ? Object.entries(delta.completion_rate_by_role) : [];
+  const hasActivity = Boolean(
+    delta &&
+      (delta.total_staff_with_completions > 0 ||
+        delta.total_cpd_minutes_delivered > 0 ||
+        delta.module_catalogue_count > 0),
+  );
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            Evidence
+          </p>
+          <h2 className="mt-1 text-lg font-semibold text-slate-900">
+            Learning evidence
+          </h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+            Metadata-only evidence of completed AI literacy modules across the
+            clinic. Aligned with RCVS AI literacy expectations and EU AI Act
+            Article 4 readiness. Aggregates only — no per-user records.
+          </p>
+        </div>
+        <Link
+          href="/learn"
+          className="rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+        >
+          Open Learn
+        </Link>
+      </div>
+
+      {error ? (
+        <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
+          Learning evidence is temporarily unavailable. Governance posture above
+          remains unaffected.
+        </p>
+      ) : delta ? (
+        hasActivity ? (
+          <>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-xs uppercase tracking-wide text-slate-500">
+                  Staff with completions
+                </div>
+                <div className="mt-2 text-sm font-semibold text-slate-900">
+                  {delta.total_staff_with_completions}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-xs uppercase tracking-wide text-slate-500">
+                  CPD minutes delivered
+                </div>
+                <div className="mt-2 text-sm font-semibold text-slate-900">
+                  {delta.total_cpd_minutes_delivered}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-xs uppercase tracking-wide text-slate-500">
+                  Bias-detection completions
+                </div>
+                <div className="mt-2 text-sm font-semibold text-slate-900">
+                  {delta.bias_detection_completions}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-xs uppercase tracking-wide text-slate-500">
+                  Modules in catalogue
+                </div>
+                <div className="mt-2 text-sm font-semibold text-slate-900">
+                  {delta.module_catalogue_count}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="text-xs uppercase tracking-wide text-slate-500">
+                Most recent completion
+              </div>
+              <div className="mt-2 text-sm font-medium text-slate-900">
+                {formatDate(delta.last_completion_at ?? undefined)}
+              </div>
+            </div>
+
+            {roleRates.length > 0 ? (
+              <div className="mt-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  Completion rate by role
+                </p>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {roleRates.map(([role, rate]) => (
+                    <div
+                      key={role}
+                      className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
+                    >
+                      <div className="text-xs capitalize text-slate-500">
+                        {role.replaceAll("_", " ")}
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900">
+                        {Math.round(rate * 100)}%
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                  Role rates use ANCHOR access-control roles, not clinical job titles.
+                </p>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            No completed AI literacy modules recorded yet. Completion activity will
+            surface here as metadata-only evidence.
+          </p>
+        )
+      ) : (
+        <p className="mt-4 text-sm text-slate-500">Loading learning evidence…</p>
       )}
     </div>
   );
