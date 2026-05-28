@@ -22,6 +22,28 @@ function getNotificationKey(item: NotificationItem, index: number) {
   return item.id ?? item.requestId ?? (item.createdAt ? `${item.createdAt}-${index}` : `${item.href}-${item.title}-${index}`);
 }
 
+// Readable labels for known session roles. Unknown roles fall back to a
+// snake_case/kebab-case -> Title Case conversion.
+const ROLE_LABELS: Record<string, string> = {
+  admin: "Administrator",
+  owner: "Owner",
+  practice_manager: "Practice Manager",
+  clinic_user: "Team Member",
+  team_member: "Team Member",
+  locum: "Locum",
+  receptionist: "Reception",
+  nurse: "Nurse",
+  vet: "Vet",
+};
+
+function titleCaseRole(value: string) {
+  return value
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
 function getAccountDisplay(user: SessionUser) {
   const extendedUser = user as SessionUser & {
     display_name?: string;
@@ -29,15 +51,29 @@ function getAccountDisplay(user: SessionUser) {
     avatar_url?: string;
   };
 
+  // Name: prefer explicit display_name; otherwise the email local-part; else
+  // the generic fallback.
+  let name = "Clinic User";
+  if (typeof extendedUser.display_name === "string" && extendedUser.display_name.trim()) {
+    name = extendedUser.display_name.trim();
+  } else if (typeof user.email === "string" && user.email.includes("@")) {
+    const localPart = user.email.split("@")[0].trim();
+    if (localPart) name = localPart;
+  }
+
+  // Role: prefer explicit display_role; otherwise map the known session role;
+  // otherwise Title Case an unknown role; else the generic fallback.
+  let role = "Team Member";
+  if (typeof extendedUser.display_role === "string" && extendedUser.display_role.trim()) {
+    role = extendedUser.display_role.trim();
+  } else if (typeof user.role === "string" && user.role.trim()) {
+    const key = user.role.trim().toLowerCase();
+    role = ROLE_LABELS[key] ?? titleCaseRole(user.role.trim());
+  }
+
   return {
-    name:
-      typeof extendedUser.display_name === "string" && extendedUser.display_name.trim()
-        ? extendedUser.display_name.trim()
-        : "Clinic User",
-    role:
-      typeof extendedUser.display_role === "string" && extendedUser.display_role.trim()
-        ? extendedUser.display_role.trim()
-        : "Team member",
+    name,
+    role,
     avatarUrl:
       typeof extendedUser.avatar_url === "string" && extendedUser.avatar_url.trim()
         ? extendedUser.avatar_url.trim()
