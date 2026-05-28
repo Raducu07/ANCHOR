@@ -11,6 +11,7 @@ import {
   exportCpdPayloadAsJson,
   getCPDExportPayload,
   getMyCPDRecord,
+  listLearningModules,
 } from "@/lib/learn";
 import type { CPDRecord } from "@/lib/types";
 
@@ -41,6 +42,9 @@ export default function MyCPDRecordPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exportState, setExportState] = useState<ExportState>({ kind: "idle" });
+  // Lookup of module_id -> title, sourced from the existing catalogue helper.
+  // Metadata only (titles); no markdown / content_reference is fetched.
+  const [moduleTitles, setModuleTitles] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const session = getSessionUser();
@@ -72,6 +76,32 @@ export default function MyCPDRecordPage() {
     }
 
     void load();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadTitles() {
+      try {
+        const modules = await listLearningModules();
+        if (!active) return;
+        const map: Record<string, string> = {};
+        for (const mod of modules) {
+          map[mod.module_id] = mod.title;
+        }
+        setModuleTitles(map);
+      } catch {
+        // Title resolution is best-effort; the list falls back to the
+        // module id and the page remains fully functional without it.
+        if (active) setModuleTitles({});
+      }
+    }
+
+    void loadTitles();
 
     return () => {
       active = false;
@@ -192,7 +222,7 @@ export default function MyCPDRecordPage() {
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="text-sm font-medium text-slate-900">
-                          Module {completion.module_id}
+                          {moduleTitles[completion.module_id] ?? `Module ${completion.module_id}`}
                         </p>
                         <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-slate-500">
                           v{completion.module_version}
