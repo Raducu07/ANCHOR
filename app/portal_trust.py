@@ -4,9 +4,11 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, set_rls_context, clear_rls_context
+from app.learn_models import TrustPackLearningDelta
 from app.trust_snapshot import build_trust_snapshot
 
 # IMPORTANT:
@@ -431,3 +433,102 @@ def trust_materials(
 ) -> Dict[str, Any]:
     snapshot = _build_snapshot_for_ctx(ctx)
     return _build_materials_response(snapshot)
+
+
+# ---------------------------------------------------------------------
+# Phase 2A-1 — Learning evidence delta (aggregate metadata only)
+# ---------------------------------------------------------------------
+#
+# Aggregates only. No per-user data is surfaced here. completion_rate_by_role
+# is keyed on the repo's ACCESS-CONTROL role (admin/staff) — the only role data
+# that exists for users. Clinical roles (vet, nurse, ...) live solely as module
+# audience metadata and are deliberately NOT invented as user attributes.
+def _build_learning_delta(db: Session) -> TrustPackLearningDelta:
+    staff_with_completions = int(
+        db.execute(
+            text(
+                "SELECT COUNT(DISTINCT user_id) AS c FROM learning_completions "
+                "WHERE is_voided = false"
+            )
+        ).scalar()
+        or 0
+    )
+    total_minutes = int(
+        db.execute(
+            text(
+                "SELECT COALESCE(SUM(cpd_minutes_credited), 0) AS c "
+                "FROM learning_completions WHERE is_voided = false"
+            )
+        ).scalar()
+        or 0
+    )
+    bias_detection_completions = int(
+        db.execute(
+            text(
+                "SELECT COUNT(*) AS c FROM learning_completions lc "
+                "JOIN learning_modules m ON m.module_id = lc.module_id "
+                "WHERE lc.is_voided = false AND m.category = 'bias_detection'"
+            )
+        ).scalar()
+        or 0
+    )
+    module_catalogue_count = int(
+        db.execute(
+            text(
+                "SELECT COUNT(*) AS c FROM learning_modules WHERE is_active = true"
+            )
+        ).scalar()
+        or 0
+    )
+    last_completion_at = db.execute(
+        text(
+            "SELECT MAX(completed_at) AS c FROM learning_completions "
+            "WHERE is_voided = false"
+        )
+    ).scalar()
+
+    role_rows = db.execute(
+        text(
+            """
+            SELECT cu.role AS role,
+                   COUNT(DISTINCT cu.user_id) AS total_users,
+                   COUNT(DISTINCT lc.user_id) AS users_with_completions
+            FROM clinic_users cu
+            LEFT JOIN learning_completions lc
+              ON lc.user_id = cu.user_id AND lc.is_voided = false
+            GROUP BY cu.role
+            """
+        )
+    ).mappings().all()
+
+    completion_rate_by_role: Dict[str, float] = {}
+    for r in role_rows:
+        total_users = int(r["total_users"] or 0)
+        with_completions = int(r["users_with_completions"] or 0)
+        rate = round(with_completions / total_users, 4) if total_users else 0.0
+        completion_rate_by_role[str(r["role"])] = rate
+
+    return TrustPackLearningDelta(
+        total_staff_with_completions=staff_with_completions,
+        total_cpd_minutes_delivered=total_minutes,
+        completion_rate_by_role=completion_rate_by_role,
+        bias_detection_completions=bias_detection_completions,
+        module_catalogue_count=module_catalogue_count,
+        last_completion_at=last_completion_at,
+    )
+
+
+@router.get("/posture/learning-delta", response_model=TrustPackLearningDelta)
+def trust_posture_learning_delta(
+    ctx: Any = Depends(require_clinic_user),
+) -> TrustPackLearningDelta:
+    clinic_id, clinic_user_id = _ctx_ids(ctx)
+    with SessionLocal() as db:
+        try:
+            set_rls_context(db, clinic_id=clinic_id, user_id=clinic_user_id)
+            return _build_learning_delta(db)
+        finally:
+            try:
+                clear_rls_context(db)
+            except Exception:
+                pass
