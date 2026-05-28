@@ -17,3 +17,6 @@ __pycache__/
 # Node (if/when you add UI)
 node_modules/
 .next/
+
+# ANCHOR canonical strategy docs
+docs/canonical/
