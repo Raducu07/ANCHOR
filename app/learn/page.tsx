@@ -332,6 +332,15 @@ function ModuleCard({ module }: { module: LearningModule }) {
           items={module.eu_ai_act_article_mappings.map(formatTag)}
         />
       ) : null}
+
+      <div className="mt-4">
+        <Link
+          href={`/learn/${module.module_slug}`}
+          className="text-sm font-medium text-slate-900 underline underline-offset-4"
+        >
+          Open module
+        </Link>
+      </div>
     </div>
   );
 }
