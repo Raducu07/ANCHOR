@@ -27,7 +27,17 @@ export function AppShell({ children }: { children: ReactNode }) {
   // Effect handles ONLY the redirect side-effect — no local setState.
   useEffect(() => {
     if (!user) {
-      router.replace("/login");
+      // Build a same-origin returnTo from the current browser location so
+      // LoginForm can send the user back to the page they requested. Reading
+      // window here (effect-only, client-only) avoids useSearchParams/
+      // usePathname and the Suspense/prerender constraints those impose.
+      const here =
+        window.location.pathname + window.location.search + window.location.hash;
+      const target =
+        here && here !== "/login"
+          ? `/login?returnTo=${encodeURIComponent(here)}`
+          : "/login";
+      router.replace(target);
     }
   }, [user, router]);
 
