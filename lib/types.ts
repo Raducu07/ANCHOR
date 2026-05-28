@@ -653,3 +653,123 @@ export type AssistantIntelligenceSummaryResponse = {
   usage_limits: AssistantIntelligenceUsageLimits;
   governance_note: string;
 };
+
+// ---------------------------------------------------------------------
+// Phase 2A-1 — CPD-Recordable AI Literacy (Learn). Metadata-only.
+// Mirrors the backend Pydantic models in Engineering Brief v1.1 §2.2.
+// Known enum values are surfaced as string-literal unions to help the
+// UI, but kept open with `| string` so a backend catalogue addition does
+// not break the client (same tolerance pattern as Assistant run_status).
+// ---------------------------------------------------------------------
+
+export type LearningModuleCategory =
+  | "literacy"
+  | "bias_detection"
+  | "ethical_use"
+  | "confidentiality"
+  | "transparency"
+  | "preparation_for_practice"
+  | string;
+
+export type LearningRole =
+  | "vet"
+  | "nurse"
+  | "practice_manager"
+  | "admin"
+  | "reception"
+  | "locum"
+  | string;
+
+// ANCHOR-curated global catalogue entry (not clinic-scoped).
+export type LearningModule = {
+  module_id: string;
+  module_slug: string;
+  version: string;
+  title: string;
+  summary: string;
+  learning_objectives: string[];
+  role_applicability: LearningRole[];
+  cpd_minutes: number;
+  category: LearningModuleCategory;
+  rcvs_principle_mappings: string[];
+  eu_ai_act_article_mappings: string[];
+  content_reference: string;
+  is_active: boolean;
+};
+
+// Per-user per-clinic completion record. Corrections use the void fields;
+// completions are never silently deleted or overwritten.
+export type LearningCompletion = {
+  completion_id: string;
+  user_id: string;
+  module_id: string;
+  module_version: string;
+  completed_at: string;
+  acknowledgement_provided: boolean;
+  cpd_minutes_credited: number;
+  is_voided: boolean;
+  void_reason?: string | null;
+  voided_at?: string | null;
+  voided_by_user_id?: string | null;
+};
+
+export type LearningCompletionCreate = {
+  module_id: string;
+  acknowledgement_provided?: boolean;
+};
+
+export type LearningCompletionVoid = {
+  void_reason: string;
+};
+
+// Derived per-user CPD record (aggregation of non-voided completions).
+export type CPDRecord = {
+  user_id: string;
+  total_modules_completed: number;
+  total_cpd_minutes: number;
+  first_completion_at: string | null;
+  most_recent_completion_at: string | null;
+  completions: LearningCompletion[];
+};
+
+// Immutable export artefact metadata. The payload itself is served
+// separately via the payload endpoint and is NOT carried on this type.
+export type CPDExport = {
+  export_id: string;
+  user_id: string;
+  generated_by_user_id: string;
+  export_version: string;
+  export_hash: string;
+  generated_at: string;
+};
+
+// The immutable JSON snapshot returned by the payload endpoint. Strictly
+// metadata-only — no raw learning content, no clinical content. The index
+// signature tolerates additive backend fields without weakening to `any`
+// (same pattern as ReceiptPayload).
+export type CPDExportPayload = {
+  export_version: string;
+  clinic_id: string;
+  user_id: string;
+  generated_by_user_id: string;
+  generated_at: string;
+  cpd_summary: {
+    total_modules_completed: number;
+    total_cpd_minutes: number;
+    first_completion_at: string | null;
+    most_recent_completion_at: string | null;
+  };
+  completions: LearningCompletion[];
+  [key: string]: unknown;
+};
+
+// Aggregated learning evidence for the Trust Pack. Aggregates only — no
+// per-user data is surfaced here.
+export type TrustPackLearningDelta = {
+  total_staff_with_completions: number;
+  total_cpd_minutes_delivered: number;
+  completion_rate_by_role: Record<string, number>;
+  bias_detection_completions: number;
+  module_catalogue_count: number;
+  last_completion_at: string | null;
+};
