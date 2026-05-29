@@ -1965,9 +1965,35 @@ function AssistantPolicyCard({
       onPolicyUpdated(result.policy);
       setIsEditing(false);
     } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Unable to save policy metadata.";
-      setSaveError(message);
+      // Surface enough signal for an admin to diagnose without leaking
+      // the bearer token, payload, or any raw content. ApiError.status
+      // distinguishes a real HTTP rejection (status > 0, includes
+      // backend detail) from a true network/CORS failure (status === 0,
+      // fetch threw before a response was received).
+      let userMessage = "Unable to save policy metadata.";
+      let logName = "Error";
+      let logStatus: number | undefined;
+      let logRawMessage = "";
+      if (err instanceof ApiError) {
+        logName = err.name;
+        logStatus = err.status;
+        logRawMessage = err.message;
+        userMessage =
+          err.status > 0
+            ? `Save failed (HTTP ${err.status}): ${err.message}`
+            : err.message;
+      } else if (err instanceof Error) {
+        logName = err.name;
+        logRawMessage = err.message;
+        userMessage = err.message;
+      }
+      // Diagnostic-only log; no token, payload, or content fields.
+      console.error("assistant_policy_metadata_save", {
+        name: logName,
+        status: logStatus,
+        message: logRawMessage,
+      });
+      setSaveError(userMessage);
     } finally {
       setSaving(false);
     }
