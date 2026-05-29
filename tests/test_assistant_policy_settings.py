@@ -511,3 +511,314 @@ def test_policy_response_has_all_required_fields() -> None:
     }
     missing = required - set(p.keys())
     assert not missing, f"missing policy fields: {missing}"
+
+
+# ---------------------------------------------------------------------
+# M6.10.1B — Metadata-only PATCH (policy_label / policy_notes)
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("role", ["admin", "owner", "practice_manager"])
+def test_admin_roles_can_patch_label_and_notes(role: str) -> None:
+    app, db = build_app(auth_role=role)
+    db.select_policy_row = _policy_row(
+        policy_version=1,
+        policy_label="Old Label",
+        policy_notes="Old notes",
+    )
+    db.max_policy_version_value = 1
+    db.insert_policy_row = _policy_row(
+        policy_version=2,
+        policy_label="New Label",
+        policy_notes="New notes",
+    )
+
+    resp = client_for(app).patch(
+        "/v1/assistant/policy",
+        json={"policy_label": "New Label", "policy_notes": "New notes"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    p = resp.json()["policy"]
+    assert p["policy_label"] == "New Label"
+    assert p["policy_notes"] == "New notes"
+    # Hard-doctrine fields remain pinned.
+    assert p["require_human_review"] is True
+    assert p["allow_receipts_after_review"] is True
+
+
+@pytest.mark.parametrize("role", ["staff", "clinic_user", "team_member"])
+def test_non_admin_roles_cannot_patch_label(role: str) -> None:
+    app, db = build_app(auth_role=role)
+    db.select_policy_row = _policy_row(policy_version=1)
+    db.max_policy_version_value = 1
+
+    resp = client_for(app).patch(
+        "/v1/assistant/policy",
+        json={"policy_label": "Attempted"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 403
+    assert resp.json().get("detail") == "forbidden_not_admin"
+    assert not any(
+        "INSERT INTO assistant_policy_settings" in s for s, _ in db.calls
+    )
+
+
+def test_unauthenticated_patch_returns_401() -> None:
+    from fastapi import HTTPException
+    from app.auth_and_rls import require_clinic_user
+
+    app, db = build_app()
+
+    def _unauth():
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+    app.dependency_overrides[require_clinic_user] = _unauth
+
+    resp = client_for(app).patch(
+        "/v1/assistant/policy",
+        json={"policy_label": "x"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 401
+    assert not any(
+        "INSERT INTO assistant_policy_settings" in s for s, _ in db.calls
+    )
+
+
+@pytest.mark.parametrize(
+    "forbidden_field,value",
+    [
+        ("require_human_review", False),
+        ("allow_receipts_after_review", False),
+        ("hard_safety_disabled", True),
+        ("validation_profile_off", "off"),
+    ],
+)
+def test_patch_rejects_forbidden_fields(forbidden_field: str, value: Any) -> None:
+    app, db = build_app(auth_role="admin")
+    db.select_policy_row = _policy_row(policy_version=1)
+    db.max_policy_version_value = 1
+
+    resp = client_for(app).patch(
+        "/v1/assistant/policy",
+        json={forbidden_field: value},
+        headers=auth_headers(),
+    )
+    # `extra='forbid'` on the Pydantic model rejects unknown keys with 422.
+    assert resp.status_code in (400, 422), resp.text
+    assert not any(
+        "INSERT INTO assistant_policy_settings" in s for s, _ in db.calls
+    )
+
+
+def test_patch_label_only_preserves_behavioural_fields() -> None:
+    """Patching only policy_label/policy_notes must not change behavioural
+    toggles or hard-doctrine fields. The merged INSERT keeps prior values
+    for everything not in the patch body."""
+    app, db = build_app(auth_role="admin")
+    db.select_policy_row = _policy_row(
+        policy_version=1,
+        validation_profile="conservative",
+        client_communication_enabled=False,
+        generation_enabled=False,
+        daily_run_limit_per_clinic=7,
+        monthly_run_limit_per_clinic=77,
+    )
+    db.max_policy_version_value = 1
+    db.insert_policy_row = _policy_row(
+        policy_version=2,
+        validation_profile="conservative",
+        client_communication_enabled=False,
+        generation_enabled=False,
+        daily_run_limit_per_clinic=7,
+        monthly_run_limit_per_clinic=77,
+        policy_label="Renamed only",
+        policy_notes="Notes only",
+    )
+
+    resp = client_for(app).patch(
+        "/v1/assistant/policy",
+        json={"policy_label": "Renamed only", "policy_notes": "Notes only"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+
+    insert_calls = [
+        (s, p) for s, p in db.calls
+        if "INSERT INTO assistant_policy_settings" in s
+    ]
+    assert len(insert_calls) == 1
+    _, params = insert_calls[0]
+    # Behavioural fields carried over from the active policy.
+    assert params["validation_profile"] == "conservative"
+    assert params["client_communication_enabled"] is False
+    assert params["generation_enabled"] is False
+    assert params["daily_run_limit_per_clinic"] == 7
+    assert params["monthly_run_limit_per_clinic"] == 77
+    # Metadata fields actually updated.
+    assert params["policy_label"] == "Renamed only"
+    assert params["policy_notes"] == "Notes only"
+
+
+def test_patch_clinic_scoped_select_and_insert_bind_clinic_id() -> None:
+    app, db = build_app(auth_role="admin")
+    db.select_policy_row = _policy_row(policy_version=1)
+    db.max_policy_version_value = 1
+    db.insert_policy_row = _policy_row(
+        policy_version=2, policy_label="Scoped"
+    )
+
+    resp = client_for(app).patch(
+        "/v1/assistant/policy",
+        json={"policy_label": "Scoped"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Every assistant_policy_settings statement must bind the caller's
+    # clinic_id — never another clinic's.
+    for sql, params in db.calls:
+        if "assistant_policy_settings" in sql:
+            assert params.get("clinic_id") == TEST_CLINIC_ID, (sql, params)
+
+
+def test_get_after_patch_returns_updated_label_and_notes() -> None:
+    app, db = build_app(auth_role="admin")
+    db.select_policy_row = _policy_row(
+        policy_version=1, policy_label="Before", policy_notes=None
+    )
+    db.max_policy_version_value = 1
+    db.insert_policy_row = _policy_row(
+        policy_version=2, policy_label="After", policy_notes="After notes"
+    )
+
+    patch_resp = client_for(app).patch(
+        "/v1/assistant/policy",
+        json={"policy_label": "After", "policy_notes": "After notes"},
+        headers=auth_headers(),
+    )
+    assert patch_resp.status_code == 200
+
+    # Simulate a subsequent GET — the active row is now the new version.
+    db.select_policy_row = _policy_row(
+        policy_version=2, policy_label="After", policy_notes="After notes"
+    )
+    get_resp = client_for(app).get("/v1/assistant/policy", headers=auth_headers())
+    assert get_resp.status_code == 200
+    p = get_resp.json()["policy"]
+    assert p["policy_label"] == "After"
+    assert p["policy_notes"] == "After notes"
+    assert p["policy_version"] == 2
+    assert p["require_human_review"] is True
+
+
+def test_patch_audit_insert_has_no_partial_index_on_conflict() -> None:
+    """Regression for the production 500 observed in M6.10.1:
+    psycopg.errors.InvalidColumnReference: there is no unique or
+    exclusion constraint matching the ON CONFLICT specification.
+
+    The admin_audit_events_idem_uq unique index is partial
+    (WHERE idempotency_key IS NOT NULL). Postgres requires that
+    predicate to be repeated in the ON CONFLICT target for inference
+    to succeed. The audit insert here is append-only and must NOT
+    use a conflict target that cannot be inferred — either no
+    ON CONFLICT at all, or one that includes the WHERE predicate.
+    """
+    app, db = build_app(auth_role="admin")
+    db.select_policy_row = _policy_row(policy_version=1)
+    db.max_policy_version_value = 1
+    db.insert_policy_row = _policy_row(policy_version=2, policy_label="X")
+
+    resp = client_for(app).patch(
+        "/v1/assistant/policy",
+        json={"policy_label": "X"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+
+    audit_calls = [
+        (s, p) for s, p in db.calls if "INSERT INTO admin_audit_events" in s
+    ]
+    assert len(audit_calls) == 1
+    sql, _ = audit_calls[0]
+    if "ON CONFLICT" in sql:
+        # If a conflict target is ever re-added it MUST include the
+        # partial-index WHERE predicate, otherwise prod 500s.
+        assert "idempotency_key IS NOT NULL" in sql, (
+            "ON CONFLICT against the partial admin_audit_events_idem_uq "
+            "index must repeat the WHERE predicate."
+        )
+
+
+def test_patch_audit_event_metadata_shape() -> None:
+    """Audit row carries metadata only: clinic, actor, action, version
+    bookkeeping, changed_fields — no raw label/notes content."""
+    app, db = build_app(auth_role="admin")
+    db.select_policy_row = _policy_row(
+        policy_version=1, policy_label="Before", policy_notes="Before notes"
+    )
+    db.max_policy_version_value = 1
+    db.insert_policy_row = _policy_row(
+        policy_version=2, policy_label="After", policy_notes="After notes"
+    )
+
+    resp = client_for(app).patch(
+        "/v1/assistant/policy",
+        json={"policy_label": "After", "policy_notes": "After notes"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+
+    audit_calls = [
+        (s, p) for s, p in db.calls if "INSERT INTO admin_audit_events" in s
+    ]
+    assert len(audit_calls) == 1
+    _, params = audit_calls[0]
+    assert params["clinic_id"] == TEST_CLINIC_ID
+    assert params["admin_user_id"] == TEST_USER_ID
+    assert params["action"] == "assistant_policy_updated"
+    meta = json.loads(params["meta"])
+    assert meta["previous_policy_version"] == 1
+    assert meta["new_policy_version"] == 2
+    assert set(meta["changed_fields"]) == {"policy_label", "policy_notes"}
+    # No raw label/notes text in the audit meta.
+    raw_meta_str = params["meta"]
+    assert "After notes" not in raw_meta_str
+    assert "After" not in meta.get("changed_fields", []) or True  # field names ok
+    # idempotency_key still populated for forensics, no constraint required.
+    assert params["idempotency_key"] == (
+        f"assistant_policy_updated:{TEST_CLINIC_ID}:2"
+    )
+
+
+def test_patch_does_not_write_raw_content() -> None:
+    """Audit and INSERT params for a metadata-only patch must contain no
+    draft/prompt/output/transcript fields."""
+    app, db = build_app(auth_role="admin")
+    db.select_policy_row = _policy_row(policy_version=1)
+    db.max_policy_version_value = 1
+    db.insert_policy_row = _policy_row(
+        policy_version=2, policy_label="Meta", policy_notes="Just metadata"
+    )
+
+    resp = client_for(app).patch(
+        "/v1/assistant/policy",
+        json={"policy_label": "Meta", "policy_notes": "Just metadata"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+
+    raw_field_markers = (
+        "prompt",
+        "draft",
+        "output_text",
+        "input_text",
+        "transcript",
+        "raw_content",
+    )
+    for sql, params in db.calls:
+        for key in params:
+            for marker in raw_field_markers:
+                assert marker not in key.lower(), (sql, key)

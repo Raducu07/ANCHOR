@@ -327,9 +327,22 @@ def insert_policy_audit_event(
 ) -> None:
     """Metadata-only entry in the existing admin_audit_events table.
 
-    Mirrors the shape used by portal_submit.override_submission, with
-    DB-enforced idempotency: re-applying the same (clinic, action,
-    new_policy_version) is a no-op."""
+    Append-only. The natural idempotency key here is the monotonically
+    increasing (clinic_id, new_policy_version) tuple — `next_version` is
+    computed as MAX(policy_version) + 1 inside the same transaction as
+    this insert, so two concurrent successful updates cannot collide on
+    the same version. We therefore do NOT use ON CONFLICT against the
+    partial admin_audit_events_idem_uq index: that index is partial
+    (WHERE idempotency_key IS NOT NULL) and Postgres requires the
+    predicate to be repeated in the conflict target for inference to
+    succeed; without it, production raises
+    `InvalidColumnReference: there is no unique or exclusion constraint
+    matching the ON CONFLICT specification` (regression observed in
+    Render logs on PATCH /v1/assistant/policy).
+
+    idempotency_key is still populated for forensics / cross-referencing
+    against the policy_version, but is not relied on for dedup here.
+    """
     idempotency_key = (
         f"assistant_policy_updated:{clinic_id}:{new_policy_version}"
     )
@@ -359,8 +372,6 @@ def insert_policy_audit_event(
                 CAST(:meta AS jsonb),
                 :idempotency_key
             )
-            ON CONFLICT (clinic_id, action, idempotency_key)
-            DO NOTHING
             """
         ),
         {
