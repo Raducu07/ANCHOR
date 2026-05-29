@@ -1,7 +1,13 @@
 ﻿"use client";
 
 import Link from "next/link";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import {
   ASSISTANT_MODE_CLIENT_COMMUNICATION,
   createAssistantRunReceipt,
@@ -11,9 +17,15 @@ import {
   getAssistantRunReceipt,
   listAssistantRuns,
   submitAssistantRun,
+  updateAssistantPolicy,
   updateAssistantRunReview,
 } from "@/lib/assistant";
 import { ApiError } from "@/lib/api";
+import {
+  SESSION_SERVER_SNAPSHOT,
+  getSessionUserSnapshot,
+  subscribeSessionStorage,
+} from "@/lib/auth";
 import type {
   AssistantContractResponse,
   AssistantPolicySettings,
@@ -47,6 +59,12 @@ const PROHIBITED_USE_CASES = [
   "Replace veterinary judgement",
   "Autonomous clinical decision-making",
 ] as const;
+
+// Clinic-admin roles permitted to edit Assistant policy metadata
+// (policy_label, policy_notes only). Mirrors the same admin set used for
+// the Learn CPD export gate. Hard clinical safety rules and the
+// human-review requirement are NOT editable from the UI at any role.
+const POLICY_ADMIN_ROLES = new Set(["admin", "owner", "practice_manager"]);
 
 type RunState =
   | { kind: "idle" }
@@ -408,6 +426,7 @@ export function AssistantSurface() {
         loading={policyLoading}
         error={policyError}
         onRefresh={() => void loadPolicy(true)}
+        onPolicyUpdated={(next) => setPolicy(next)}
       />
 
       <div className="grid gap-4 xl:grid-cols-2">
@@ -1884,26 +1903,76 @@ function ReviewEvidenceCard({
 }
 
 // ---------------------------------------------------------------------
-// M6.7 — Assistant policy card (read-only in this PR)
+// M6.7 — Assistant policy card
+// M6.10.1 — Adds an admin-only edit affordance for policy METADATA only
+// (policy_label, policy_notes). Hard clinical safety rules, the
+// human-review requirement, validation profile, generation/communication
+// toggles, and run limits remain read-only display. The backend PATCH
+// endpoint is admin-only; this frontend gate is UX hardening so
+// non-admin users do not see edit controls.
 // ---------------------------------------------------------------------
-//
-// Editing controls are intentionally not exposed here yet: the portal
-// does not surface clinic role cleanly to this component, so we keep
-// this card read-only and direct admins to the backend PATCH endpoint
-// via the governance note. The backend admin endpoint exists and is
-// covered by tests.
 
 function AssistantPolicyCard({
   policy,
   loading,
   error,
   onRefresh,
+  onPolicyUpdated,
 }: {
   policy: AssistantPolicySettings | null;
   loading: boolean;
   error: string | null;
   onRefresh: () => void;
+  onPolicyUpdated: (next: AssistantPolicySettings) => void;
 }) {
+  // Session is read here (not at the parent) so the policy card stays
+  // self-contained. Pattern mirrors AppShell's session subscription.
+  const sessionUser = useSyncExternalStore(
+    subscribeSessionStorage,
+    getSessionUserSnapshot,
+    SESSION_SERVER_SNAPSHOT,
+  );
+  const isPolicyAdmin = Boolean(
+    sessionUser?.role && POLICY_ADMIN_ROLES.has(sessionUser.role),
+  );
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [editLabel, setEditLabel] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  function openEdit() {
+    setEditLabel(policy?.policy_label ?? "");
+    setEditNotes(policy?.policy_notes ?? "");
+    setSaveError(null);
+    setIsEditing(true);
+  }
+
+  function cancelEdit() {
+    setIsEditing(false);
+    setSaveError(null);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const result = await updateAssistantPolicy({
+        policy_label: editLabel,
+        policy_notes: editNotes,
+      });
+      onPolicyUpdated(result.policy);
+      setIsEditing(false);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Unable to save policy metadata.";
+      setSaveError(message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <NativeCard>
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -1911,6 +1980,17 @@ function AssistantPolicyCard({
           title="Assistant policy"
           description="Metadata-only governance configuration. Hard clinical safety rules cannot be disabled."
         />
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {isPolicyAdmin && !isEditing ? (
+            <button
+              type="button"
+              onClick={openEdit}
+              disabled={loading || !policy}
+              className="inline-flex shrink-0 items-center rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm transition hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Edit policy metadata
+            </button>
+          ) : null}
         <button
           type="button"
           onClick={onRefresh}
@@ -1919,6 +1999,7 @@ function AssistantPolicyCard({
         >
           {loading ? "Loading…" : "Refresh policy"}
         </button>
+        </div>
       </div>
 
       {error ? (
@@ -1991,6 +2072,68 @@ function AssistantPolicyCard({
               />
             ) : null}
           </div>
+
+          {isPolicyAdmin && isEditing ? (
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs leading-5 text-slate-600">
+                Update the policy label and notes shown on this clinic&apos;s
+                policy snapshot. Hard clinical safety rules and human-review
+                requirements are not configurable here.
+              </p>
+
+              <label className="mt-3 block text-xs font-medium text-slate-500">
+                Policy label
+                <input
+                  type="text"
+                  value={editLabel}
+                  onChange={(event) => setEditLabel(event.target.value)}
+                  disabled={saving}
+                  className="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+              </label>
+
+              <label className="mt-3 block text-xs font-medium text-slate-500">
+                Policy notes
+                <textarea
+                  value={editNotes}
+                  onChange={(event) => setEditNotes(event.target.value)}
+                  rows={3}
+                  disabled={saving}
+                  className="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+              </label>
+
+              {saveError ? (
+                <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                  <p className="text-sm font-semibold text-amber-900">
+                    Policy metadata could not be saved
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-amber-800">
+                    {saveError}
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleSave()}
+                  disabled={saving}
+                  className="inline-flex shrink-0 items-center rounded-xl border border-slate-900 bg-slate-900 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {saving ? "Saving…" : "Save metadata"}
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelEdit}
+                  disabled={saving}
+                  className="inline-flex shrink-0 items-center rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm transition hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
             <p className="text-xs leading-5 text-slate-700">
