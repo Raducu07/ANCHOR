@@ -159,3 +159,4 @@ Located in `/docs/canonical/` in this repo:
 - `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1.docx` — §2 wording controls (operative for all clinic-facing copy); §3 RCVS principles; §4 EU AI Act articles
 - `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` — Phase 2A ordering; buyer conversations parallel-not-blocking; §5 Phase 2A-1 scope; §10 wording controls for 2A-1
 - `Phase_2A_1_Engineering_Brief_v1_1.md` — Phase 2A-1 implementation contract; confirmed implementation decisions; backend/frontend scope
+- `Official_EU_AI_Act_Source_Note_v1.md` — source-discipline document for any EU AI Act reference; EUR-Lex is the only acceptable primary source; cite Article 113 for all applicability dates.
