@@ -948,6 +948,19 @@ function AssistantReceiptsSection({
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsError, setRunsError] = useState<string | null>(null);
 
+  // M6.11.1 — light client-side filters over the latest 25 fetched runs
+  // only. These do NOT page or query the backend; they narrow what is
+  // already on screen. The footer helper text makes that scope explicit
+  // so admins do not mistake "no filtered results" for "no matching
+  // receipts in clinic history".
+  const [filterReview, setFilterReview] = useState<
+    "any" | "reviewed" | "unreviewed"
+  >("any");
+  const [filterStatus, setFilterStatus] = useState<
+    "any" | "succeeded" | "refused" | "blocked" | "failed"
+  >("any");
+  const [filterPii, setFilterPii] = useState<"any" | "detected">("any");
+
   // Pre-populate the lookup with whichever identifier was provided via
   // deep link. Either resolves through the same /receipts/{identifier}
   // backend route.
@@ -1056,12 +1069,10 @@ function AssistantReceiptsSection({
     loadReceiptByIdentifier,
   ]);
 
-  const headingTitle = priority
-    ? "Assistant governance receipt"
-    : "Assistant governance receipts";
+  const headingTitle = priority ? "Assistant receipt" : "Assistant receipts";
   const headingBody = priority
     ? "Metadata-only Assistant evidence. This is not a chat transcript or clinical record."
-    : "Assistant receipts are metadata-only governance evidence. They are not chat transcripts and not clinical records. They confirm governance metadata, not clinical correctness.";
+    : "Metadata-only governance receipts for governed Assistant runs. Not chat transcripts; not clinical records.";
 
   return (
     <NativeCard>
@@ -1078,7 +1089,7 @@ function AssistantReceiptsSection({
           loading={runsLoading}
           className="rounded-md px-4 py-2"
         >
-          Refresh
+          Refresh receipts
         </Button>
       </div>
 
@@ -1182,59 +1193,169 @@ function AssistantReceiptsSection({
         <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
           Recent Assistant receipts
         </p>
-        {runsError ? (
-          <p className="mt-3 text-sm text-rose-700">{runsError}</p>
-        ) : runsLoading && runs === null ? (
-          <EmptyState text="Loading recent Assistant receipts..." />
-        ) : runs && runs.length > 0 ? (
-          <ul className="mt-3 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white">
-            {runs.map((r) => {
-              const receiptShort = r.receipt_id ? shortenAssistantId(r.receipt_id) : "—";
-              const runShort = shortenAssistantId(r.run_id);
-              const isActive = activeRunId === r.run_id;
-              return (
-                <li
-                  key={r.run_id}
-                  className={[
-                    "flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between",
-                    isActive ? "bg-slate-50" : "",
-                  ].join(" ")}
-                >
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                      <span className="font-mono font-semibold text-slate-900">
-                        Receipt {receiptShort}
-                      </span>
-                      <ReceiptPill
-                        label={humanizeAssistantStatus(r.run_status)}
-                        tone={assistantRunTone(r.run_status)}
-                      />
-                      <ReceiptPill
-                        label={humanizeAssistantReview(r.review_status)}
-                        tone={assistantReviewTone(r.review_status)}
-                      />
-                    </div>
-                    <p className="mt-1 font-mono text-[11px] text-slate-500">
-                      Run {runShort} · {formatTimestamp(r.created_at)}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setLookupInput(r.run_id);
-                      void loadReceiptByIdentifier(r.run_id, true);
-                    }}
-                    className="self-start whitespace-nowrap text-xs font-semibold text-slate-900 underline underline-offset-4 hover:text-slate-700 sm:self-auto"
-                  >
-                    Open receipt
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        ) : (
-          <EmptyState text="No Assistant receipts have been created yet for this clinic." />
-        )}
+
+        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <div className="flex flex-wrap gap-3">
+            <label className="flex flex-col text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+              Review
+              <select
+                value={filterReview}
+                onChange={(e) =>
+                  setFilterReview(
+                    e.target.value as "any" | "reviewed" | "unreviewed",
+                  )
+                }
+                className="mt-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-slate-900"
+              >
+                <option value="any">Any</option>
+                <option value="reviewed">Reviewed</option>
+                <option value="unreviewed">Unreviewed</option>
+              </select>
+            </label>
+
+            <label className="flex flex-col text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+              Run status
+              <select
+                value={filterStatus}
+                onChange={(e) =>
+                  setFilterStatus(
+                    e.target.value as
+                      | "any"
+                      | "succeeded"
+                      | "refused"
+                      | "blocked"
+                      | "failed",
+                  )
+                }
+                className="mt-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-slate-900"
+              >
+                <option value="any">Any</option>
+                <option value="succeeded">Succeeded</option>
+                <option value="refused">Refused</option>
+                <option value="blocked">Blocked</option>
+                <option value="failed">Failed</option>
+              </select>
+            </label>
+
+            <label className="flex flex-col text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+              PII
+              <select
+                value={filterPii}
+                onChange={(e) =>
+                  setFilterPii(e.target.value as "any" | "detected")
+                }
+                className="mt-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-slate-900"
+              >
+                <option value="any">Any</option>
+                <option value="detected">PII detected</option>
+              </select>
+            </label>
+          </div>
+          <p className="mt-2 text-[11px] leading-5 text-slate-500">
+            Filters apply to the latest 25 shown here.
+          </p>
+        </div>
+
+        {(() => {
+          if (runsError) {
+            return <p className="mt-3 text-sm text-rose-700">{runsError}</p>;
+          }
+          if (runsLoading && runs === null) {
+            return <EmptyState text="Loading recent Assistant receipts..." />;
+          }
+          if (!runs || runs.length === 0) {
+            return (
+              <EmptyState text="No Assistant receipts in the latest 25 runs. Create one from a governed Assistant run, or look one up by ID below." />
+            );
+          }
+          const filteredRuns = runs.filter((r) => {
+            const isReviewed =
+              typeof r.review_status === "string" &&
+              r.review_status.startsWith("reviewed_");
+            if (filterReview === "reviewed" && !isReviewed) return false;
+            if (filterReview === "unreviewed" && isReviewed) return false;
+            if (filterStatus !== "any") {
+              const want =
+                filterStatus === "succeeded"
+                  ? "generation_succeeded"
+                  : filterStatus === "refused"
+                    ? "generation_refused"
+                    : filterStatus === "blocked"
+                      ? "output_blocked"
+                      : "generation_failed";
+              if (r.run_status !== want) return false;
+            }
+            if (filterPii === "detected" && !r.pii_detected) return false;
+            return true;
+          });
+          if (filteredRuns.length === 0) {
+            return (
+              <EmptyState text="No Assistant receipts in the latest 25 match these filters." />
+            );
+          }
+          return (
+            <>
+              <ul className="mt-3 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white">
+                {filteredRuns.map((r) => {
+                  const receiptShort = r.receipt_id
+                    ? shortenAssistantId(r.receipt_id)
+                    : "—";
+                  const runShort = shortenAssistantId(r.run_id);
+                  const isActive = activeRunId === r.run_id;
+                  return (
+                    <li
+                      key={r.run_id}
+                      className={[
+                        "flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between",
+                        isActive ? "bg-slate-50" : "",
+                      ].join(" ")}
+                    >
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="font-mono font-semibold text-slate-900">
+                            Receipt {receiptShort}
+                          </span>
+                          <ReceiptPill
+                            label={humanizeAssistantStatus(r.run_status)}
+                            tone={assistantRunTone(r.run_status)}
+                          />
+                          <ReceiptPill
+                            label={humanizeAssistantReview(r.review_status)}
+                            tone={assistantReviewTone(r.review_status)}
+                          />
+                        </div>
+                        <p className="mt-1 font-mono text-[11px] text-slate-500">
+                          Run {runShort} · {formatTimestamp(r.created_at)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLookupInput(r.run_id);
+                          void loadReceiptByIdentifier(r.run_id, true);
+                        }}
+                        className="self-start whitespace-nowrap text-xs font-semibold text-slate-900 underline underline-offset-4 hover:text-slate-700 sm:self-auto"
+                      >
+                        Open receipt
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="mt-3 text-[11px] leading-5 text-slate-500">
+                Showing latest 25 Assistant receipts. More may exist — look up a
+                specific receipt or run ID below.
+              </p>
+            </>
+          );
+        })()}
+      </div>
+
+      <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <p className="text-xs leading-5 text-slate-700">
+          Assistant receipts are governance metadata for review. Human review of
+          AI-assisted work remains required.
+        </p>
       </div>
     </NativeCard>
   );
