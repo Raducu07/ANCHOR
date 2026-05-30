@@ -2301,79 +2301,105 @@ function AssistantPolicyHistoryCard({
 
       {hasItems ? (
         <div className="mt-4 space-y-3">
-          {items!.map((item) => (
-            <div
-              key={`${item.policy_version}-${item.created_at}`}
-              className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-slate-900">
-                  v{item.policy_version}
+          {items!.map((item) => {
+            const lifecycleLabel = item.is_active ? "Current" : "Previous";
+            const actor = item.created_by_user_id
+              ? formatShortId(item.created_by_user_id)
+              : "—";
+            return (
+              <div
+                key={`${item.policy_version}-${item.created_at}`}
+                className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-slate-900">
+                    Version v{item.policy_version} — {lifecycleLabel}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {item.is_active ? (
+                      <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                        Active
+                      </span>
+                    ) : null}
+                    {item.superseded_at ? (
+                      <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-slate-600">
+                        Superseded
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  Created {formatDateTime(item.created_at)} &middot; by {actor}
                 </p>
-                {item.is_active ? (
-                  <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                    Active
-                  </span>
-                ) : null}
-              </div>
 
-              <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                <MetricCell
-                  label="Validation profile"
-                  value={item.validation_profile}
-                  tone="default"
-                />
-                <MetricCell
-                  label="Generation enabled"
-                  value={item.generation_enabled ? "Yes" : "No"}
-                  tone={item.generation_enabled ? "success" : "default"}
-                />
-                <MetricCell
-                  label="Client communication"
-                  value={
-                    item.client_communication_enabled ? "Enabled" : "Disabled"
-                  }
-                  tone={item.client_communication_enabled ? "success" : "default"}
-                />
-              </div>
+                <div className="mt-3">
+                  <DetailRow label="Policy label" value={item.policy_label} />
+                </div>
 
-              <div className="mt-3 space-y-2">
-                <DetailRow label="Policy label" value={item.policy_label} />
-                <DetailRow
-                  label="Daily run limit (per clinic)"
-                  value={String(item.daily_run_limit_per_clinic)}
-                />
-                <DetailRow
-                  label="Monthly run limit (per clinic)"
-                  value={String(item.monthly_run_limit_per_clinic)}
-                />
-                <DetailRow
-                  label="Created at"
-                  value={formatDateTime(item.created_at)}
-                />
-                <DetailRow
-                  label="Activated at"
-                  value={
-                    item.activated_at ? formatDateTime(item.activated_at) : "—"
-                  }
-                />
-                <DetailRow
-                  label="Superseded at"
-                  value={
-                    item.superseded_at ? formatDateTime(item.superseded_at) : "—"
-                  }
-                />
-                <DetailRow
-                  label="Created by"
-                  value={
-                    item.created_by_user_id
-                      ? formatShortId(item.created_by_user_id)
-                      : "—"
-                  }
-                />
+                <p className="mt-4 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  Behavioural metadata
+                </p>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  <MetricCell
+                    label="Validation profile"
+                    value={item.validation_profile}
+                    tone="default"
+                  />
+                  <MetricCell
+                    label="Generation enabled"
+                    value={item.generation_enabled ? "Yes" : "No"}
+                    tone={item.generation_enabled ? "success" : "default"}
+                  />
+                  <MetricCell
+                    label="Client communication"
+                    value={
+                      item.client_communication_enabled ? "Enabled" : "Disabled"
+                    }
+                    tone={
+                      item.client_communication_enabled ? "success" : "default"
+                    }
+                  />
+                </div>
+
+                <p className="mt-4 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  Limits
+                </p>
+                <div className="mt-2 space-y-2">
+                  <DetailRow
+                    label="Daily run limit (per clinic)"
+                    value={String(item.daily_run_limit_per_clinic)}
+                  />
+                  <DetailRow
+                    label="Monthly run limit (per clinic)"
+                    value={String(item.monthly_run_limit_per_clinic)}
+                  />
+                </div>
+
+                <p className="mt-4 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  Lifecycle
+                </p>
+                <div className="mt-2 space-y-2">
+                  <DetailRow
+                    label="Activated at"
+                    value={
+                      item.activated_at
+                        ? formatDateTime(item.activated_at)
+                        : "—"
+                    }
+                  />
+                  <DetailRow
+                    label="Superseded at"
+                    value={
+                      item.superseded_at
+                        ? formatDateTime(item.superseded_at)
+                        : "—"
+                    }
+                  />
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : null}
 
