@@ -48,13 +48,14 @@ from app.portal_assistant import router as portal_assistant_router
 from app.portal_intelligence import router as portal_intelligence_router
 from app.assistant import router as assistant_router
 from app.learn_v1 import router as learn_v1_router
+from app.governance_policy import router as governance_policy_router
 
 ensure_logging_configured()
 
 
-# ============================================================
+# ------------------------------------------------------------
 # Env helpers / edge middleware
-# ============================================================
+# ------------------------------------------------------------
 
 def _parse_csv_env(name: str) -> List[str]:
     raw = (os.getenv(name, "") or "").strip()
@@ -118,9 +119,9 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
         log_event(logging.INFO, "cors_disabled")
 
 
-# ============================================================
-# Lifespan — migrations
-# ============================================================
+# ------------------------------------------------------------
+# Lifespan - migrations
+# ------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -154,9 +155,9 @@ async def lifespan(app: FastAPI):
     log_event(logging.INFO, "shutdown")
 
 
-# ============================================================
+# ------------------------------------------------------------
 # App
-# ============================================================
+# ------------------------------------------------------------
 
 app = FastAPI(title="ANCHOR API", lifespan=lifespan)
 _configure_edge_middlewares(app)
@@ -184,6 +185,7 @@ app.include_router(portal_assistant_router)
 app.include_router(portal_intelligence_router)
 app.include_router(assistant_router)
 app.include_router(learn_v1_router)
+app.include_router(governance_policy_router)
 app.include_router(public_intake_router)
 
 # Routers (platform admin)
@@ -193,9 +195,9 @@ app.include_router(admin_ops_router)
 app.include_router(admin_intake_router)
 
 
-# ============================================================
+# ------------------------------------------------------------
 # Exception handlers (include request_id)
-# ============================================================
+# ------------------------------------------------------------
 
 def _get_request_id(request: Request) -> str:
     rid = getattr(request.state, "request_id", None)
@@ -224,9 +226,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
-# ============================================================
-# Request middleware — request-id + safe logs
-# ============================================================
+# ------------------------------------------------------------
+# Request middleware - request-id + safe logs
+# ------------------------------------------------------------
 
 _SKIP_LOG_PATHS = {"/health", "/openapi.json", "/docs", "/redoc"}
 
@@ -383,9 +385,9 @@ async def request_logging_middleware(request: Request, call_next):
         )
 
 
-# ============================================================
+# ------------------------------------------------------------
 # Root/Health/Version/DB checks
-# ============================================================
+# ------------------------------------------------------------
 
 @app.head("/")
 def root_head():
@@ -428,3 +430,4 @@ def version():
 @app.get("/")
 def root():
     return {"name": "ANCHOR API", "status": "live"}
+
