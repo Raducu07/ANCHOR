@@ -536,8 +536,25 @@ def get_receipt(request_id: uuid.UUID, request: Request, db: Session = Depends(g
 # ---------------------------------------------------------------------
 # POST /override/{request_id}   (R3 -> hardened)
 # - Admin can override ANY submission in the clinic
-# - Idempotent via DB unique index on (clinic_id, action, idempotency_key)
-# - Append-only: does NOT mutate clinic_governance_events
+# - Append-only audit: does NOT mutate clinic_governance_events
+# - Effective override is computed via "latest per request" LATERAL join
+#   on admin_audit_events, so multiple audit rows for the same request
+#   are safe — the most recent one wins.
+#
+# Historical note (TD-BE):
+#   This statement previously carried
+#     `ON CONFLICT (clinic_id, action, idempotency_key) DO NOTHING`
+#   against the partial unique index `admin_audit_events_idem_uq`
+#   (which is `WHERE idempotency_key IS NOT NULL`). Postgres requires
+#   the partial-index predicate to be repeated in the conflict target;
+#   without it, production raises
+#   `psycopg.errors.InvalidColumnReference: there is no unique or
+#   exclusion constraint matching the ON CONFLICT specification`
+#   (same root cause as the M6.10.1 Assistant policy audit fix).
+#   The audit is append-only by doctrine, so the ON CONFLICT was
+#   removed entirely. `idempotency_key` is still populated as forensic
+#   metadata so repeated admin clicks (same reason on the same
+#   request_id) remain correlatable in the audit log.
 # ---------------------------------------------------------------------
 
 SQL_INSERT_OVERRIDE_AUDIT = text(
@@ -560,8 +577,6 @@ SQL_INSERT_OVERRIDE_AUDIT = text(
       CAST(:meta AS jsonb),
       :idempotency_key
     )
-    ON CONFLICT (clinic_id, action, idempotency_key)
-    DO NOTHING
     RETURNING event_id;
     """
 )
