@@ -12,6 +12,10 @@ import {
   listAssistantRuns,
 } from "@/lib/assistant";
 import { ApiError } from "@/lib/api";
+import {
+  RelevantLearnGuidance,
+  getAssistantLearnLinks,
+} from "@/lib/assistantLearnGuidance";
 import type {
   AssistantRunReceipt,
   AssistantRunTraceItem,
@@ -1592,6 +1596,18 @@ function AssistantReceiptDetail({
           }
         />
       </ReceiptGroup>
+
+      <RelevantLearnGuidance
+        links={getAssistantLearnLinks({
+          pii_detected: receipt.pii_detected,
+          pii_types: receipt.pii_types,
+          safety_flags: receipt.safety_flags,
+          refusal_reason_codes: receipt.refusal_reason_codes,
+          run_status: receipt.run_status,
+          review_status: receipt.review_status,
+          mode: receipt.mode,
+        })}
+      />
 
       <p className="mt-3 text-[11px] leading-5 text-emerald-700">
         Policy context is metadata only. Hard clinical safety rules cannot be disabled.
