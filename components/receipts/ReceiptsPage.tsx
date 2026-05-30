@@ -948,11 +948,19 @@ function AssistantReceiptsSection({
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsError, setRunsError] = useState<string | null>(null);
 
-  // M6.11.1 — light client-side filters over the latest 25 fetched runs
-  // only. These do NOT page or query the backend; they narrow what is
-  // already on screen. The footer helper text makes that scope explicit
-  // so admins do not mistake "no filtered results" for "no matching
-  // receipts in clinic history".
+  // M6.11.3 — cursor pagination state. nextCursor is hydrated from the
+  // backend response; hasMore is the gate for the Load more affordance.
+  // runsLoadingMore is kept separate from runsLoading so the first-page
+  // spinner and the Load more spinner do not collide.
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState<boolean>(false);
+  const [runsLoadingMore, setRunsLoadingMore] = useState(false);
+
+  // M6.11.1 — light client-side filters over the loaded receipts only.
+  // These do NOT page or query the backend; they narrow what is already
+  // on screen across whatever pages have been loaded. The footer helper
+  // text makes that scope explicit so admins do not mistake "no
+  // filtered results" for "no matching receipts in clinic history".
   const [filterReview, setFilterReview] = useState<
     "any" | "reviewed" | "unreviewed"
   >("any");
@@ -978,22 +986,79 @@ function AssistantReceiptsSection({
     setRunsLoading(true);
     setRunsError(null);
     try {
-      const result = await listAssistantRuns({ limit: 25 });
+      // M6.11.3 — backend supplies receipt-bearing rows directly via
+      // has_receipt=true. No client-side has_receipt filter needed.
+      const result = await listAssistantRuns({
+        limit: 25,
+        has_receipt: true,
+      });
       const items = result.runs ?? [];
-      // Keep only runs that actually have a linked Assistant receipt —
-      // this section is about receipts as governance evidence, not raw runs.
-      setRuns(items.filter((r) => Boolean(r.has_receipt || r.receipt_id)));
+      setRuns(items);
+      const cursor = result.next_cursor ?? null;
+      // Defensive: only advertise more pages when the backend explicitly
+      // says has_more === true AND has handed us a cursor to follow.
+      setNextCursor(cursor);
+      setHasMore(Boolean(result.has_more && cursor));
     } catch (err) {
       const message =
         err instanceof ApiError
           ? err.message
           : "Unable to load recent Assistant receipts.";
       setRuns(null);
+      setNextCursor(null);
+      setHasMore(false);
       setRunsError(message);
     } finally {
       setRunsLoading(false);
     }
   }, []);
+
+  const loadMore = useCallback(async () => {
+    if (runsLoadingMore) return;
+    if (!hasMore || !nextCursor) return;
+    setRunsLoadingMore(true);
+    try {
+      const result = await listAssistantRuns({
+        limit: 25,
+        has_receipt: true,
+        cursor: nextCursor,
+      });
+      const newItems = result.runs ?? [];
+      setRuns((existing) => {
+        const base = existing ?? [];
+        const seen = new Set(base.map((r) => r.run_id));
+        const appended: AssistantRunTraceItem[] = [];
+        for (const item of newItems) {
+          if (seen.has(item.run_id)) continue;
+          seen.add(item.run_id);
+          appended.push(item);
+        }
+        return base.concat(appended);
+      });
+      const cursor = result.next_cursor ?? null;
+      const claimsMore = Boolean(result.has_more);
+      if (claimsMore && !cursor) {
+        // Defensive: backend says more is available but did not hand us
+        // a cursor. Stop here rather than loop; log for diagnostic.
+        console.warn("assistant_receipts_pagination", {
+          reason: "has_more_without_cursor",
+        });
+        setNextCursor(null);
+        setHasMore(false);
+        return;
+      }
+      setNextCursor(cursor);
+      setHasMore(Boolean(claimsMore && cursor));
+    } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : "Unable to load more Assistant receipts.";
+      setRunsError(message);
+    } finally {
+      setRunsLoadingMore(false);
+    }
+  }, [hasMore, nextCursor, runsLoadingMore]);
 
   const loadReceiptByIdentifier = useCallback(
     async (
@@ -1252,7 +1317,7 @@ function AssistantReceiptsSection({
             </label>
           </div>
           <p className="mt-2 text-[11px] leading-5 text-slate-500">
-            Filters apply to the latest 25 shown here.
+            Filters apply to the receipts loaded here.
           </p>
         </div>
 
@@ -1265,7 +1330,7 @@ function AssistantReceiptsSection({
           }
           if (!runs || runs.length === 0) {
             return (
-              <EmptyState text="No Assistant receipts in the latest 25 runs. Create one from a governed Assistant run, or look one up by ID below." />
+              <EmptyState text="No Assistant receipts available for this clinic. Create one from a governed Assistant run, or look one up by ID below." />
             );
           }
           const filteredRuns = runs.filter((r) => {
@@ -1290,7 +1355,7 @@ function AssistantReceiptsSection({
           });
           if (filteredRuns.length === 0) {
             return (
-              <EmptyState text="No Assistant receipts in the latest 25 match these filters." />
+              <EmptyState text="No Assistant receipts in the loaded view match these filters." />
             );
           }
           return (
@@ -1325,7 +1390,10 @@ function AssistantReceiptsSection({
                           />
                         </div>
                         <p className="mt-1 font-mono text-[11px] text-slate-500">
-                          Run {runShort} · {formatTimestamp(r.created_at)}
+                          Run {runShort} ·{" "}
+                          {formatTimestamp(
+                            r.receipt_created_at ?? r.created_at,
+                          )}
                         </p>
                       </div>
                       <button
@@ -1342,10 +1410,30 @@ function AssistantReceiptsSection({
                   );
                 })}
               </ul>
-              <p className="mt-3 text-[11px] leading-5 text-slate-500">
-                Showing latest 25 Assistant receipts. More may exist — look up a
-                specific receipt or run ID below.
-              </p>
+              {hasMore ? (
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-[11px] leading-5 text-slate-500">
+                    Showing {runs.length} Assistant receipts. More are
+                    available — use Load more, or look up a specific receipt or
+                    run ID below.
+                  </p>
+                  <Button
+                    variant="ghost"
+                    onClick={() => void loadMore()}
+                    loading={runsLoadingMore}
+                    disabled={runsLoadingMore}
+                    className="rounded-md px-4 py-2"
+                  >
+                    Load more receipts
+                  </Button>
+                </div>
+              ) : (
+                <p className="mt-3 text-[11px] leading-5 text-slate-500">
+                  Showing {runs.length} Assistant receipts. No further receipts
+                  to load. You can still look up a specific receipt or run ID
+                  below.
+                </p>
+              )}
             </>
           );
         })()}

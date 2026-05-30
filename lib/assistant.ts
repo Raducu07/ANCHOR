@@ -72,6 +72,9 @@ export type ListAssistantRunsParams = {
     | "generation_refused"
     | "generation_failed";
   mode?: typeof ASSISTANT_MODE_CLIENT_COMMUNICATION;
+  // M6.11.2 — cursor pagination and receipt-bearing filter.
+  cursor?: string;
+  has_receipt?: boolean;
 };
 
 export async function listAssistantRuns(
@@ -81,6 +84,10 @@ export async function listAssistantRuns(
   if (typeof params.limit === "number") query.set("limit", String(params.limit));
   if (params.run_status) query.set("run_status", params.run_status);
   if (params.mode) query.set("mode", params.mode);
+  if (params.cursor) query.set("cursor", params.cursor);
+  if (typeof params.has_receipt === "boolean") {
+    query.set("has_receipt", params.has_receipt ? "true" : "false");
+  }
   const qs = query.toString();
   const url = qs ? `/v1/assistant/runs?${qs}` : "/v1/assistant/runs";
   return apiFetch<AssistantRunListResponse>(url);
