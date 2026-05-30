@@ -13,6 +13,7 @@ import {
   createAssistantRunReceipt,
   getAssistantContract,
   getAssistantPolicy,
+  getAssistantPolicyHistory,
   getAssistantRun,
   getAssistantRunReceipt,
   listAssistantRuns,
@@ -28,6 +29,7 @@ import {
 } from "@/lib/auth";
 import type {
   AssistantContractResponse,
+  AssistantPolicyHistoryItem,
   AssistantPolicySettings,
   AssistantReviewStatusInput,
   AssistantRunDetailResponse,
@@ -273,10 +275,56 @@ export function AssistantSurface() {
     }
   }
 
+  // M6.10.2 — Assistant policy version history. Admin-only at the
+  // frontend (UX hardening; backend remains source of truth). Failure
+  // to load history must not block the rest of the Assistant flow.
+  const [policyHistory, setPolicyHistory] = useState<
+    AssistantPolicyHistoryItem[] | null
+  >(null);
+  const [policyHistoryError, setPolicyHistoryError] = useState<string | null>(
+    null,
+  );
+  const [policyHistoryLoading, setPolicyHistoryLoading] = useState(false);
+
+  async function loadPolicyHistory(isRefresh = false) {
+    try {
+      if (!isRefresh) setPolicyHistoryLoading(true);
+      setPolicyHistoryError(null);
+      const result = await getAssistantPolicyHistory(25);
+      setPolicyHistory(result.items);
+    } catch (err) {
+      setPolicyHistory(null);
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : "Unable to load Assistant policy history.";
+      setPolicyHistoryError(message);
+    } finally {
+      setPolicyHistoryLoading(false);
+    }
+  }
+
+  // Parent-side session read: lets us skip the history fetch entirely
+  // for non-admins and avoid rendering the history card for them.
+  // The existing policy edit card reads session independently — both
+  // subscribe to the same external store.
+  const parentSessionUser = useSyncExternalStore(
+    subscribeSessionStorage,
+    getSessionUserSnapshot,
+    SESSION_SERVER_SNAPSHOT,
+  );
+  const isPolicyAdmin = Boolean(
+    parentSessionUser?.role && POLICY_ADMIN_ROLES.has(parentSessionUser.role),
+  );
+
   useEffect(() => {
     void loadContract(false);
     void loadPolicy(false);
   }, []);
+
+  useEffect(() => {
+    if (isPolicyAdmin) void loadPolicyHistory(false);
+  }, [isPolicyAdmin]);
 
   async function handleRunSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -428,6 +476,15 @@ export function AssistantSurface() {
         onRefresh={() => void loadPolicy(true)}
         onPolicyUpdated={(next) => setPolicy(next)}
       />
+
+      {isPolicyAdmin ? (
+        <AssistantPolicyHistoryCard
+          items={policyHistory}
+          loading={policyHistoryLoading}
+          error={policyHistoryError}
+          onRefresh={() => void loadPolicyHistory(true)}
+        />
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-2">
         <NativeCard>
@@ -2177,6 +2234,155 @@ function AssistantPolicyCard({
           description="Click Refresh policy to load the current Assistant policy."
         />
       ) : null}
+    </NativeCard>
+  );
+}
+
+// ---------------------------------------------------------------------
+// M6.10.2 — Assistant policy version history (read-only, admin-only).
+// Renders the metadata-only history returned by
+// GET /v1/assistant/policy/history. No edit/rollback/diff controls; no
+// raw prompts, outputs, drafts, or clinical content. The parent gates
+// rendering by admin role and only fetches when an admin is present.
+// ---------------------------------------------------------------------
+function AssistantPolicyHistoryCard({
+  items,
+  loading,
+  error,
+  onRefresh,
+}: {
+  items: AssistantPolicyHistoryItem[] | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  const hasItems = Array.isArray(items) && items.length > 0;
+
+  return (
+    <NativeCard>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <SectionTitle
+          title="Policy version history"
+          description="Read-only record of Assistant policy versions for this clinic. Metadata only — no raw prompts, outputs, drafts, or clinical content."
+        />
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="inline-flex shrink-0 items-center rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm transition hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loading ? "Loading…" : "Refresh history"}
+        </button>
+      </div>
+
+      {error ? (
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-semibold text-amber-900">
+            Policy history could not be loaded
+          </p>
+          <p className="mt-1 text-sm leading-6 text-amber-800">{error}</p>
+          <p className="mt-2 text-xs leading-5 text-amber-700">
+            The active Assistant policy above remains unaffected. Try Refresh history.
+          </p>
+        </div>
+      ) : null}
+
+      {!error && loading && !hasItems ? (
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          Loading policy history…
+        </div>
+      ) : null}
+
+      {!error && !loading && !hasItems ? (
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          No prior policy versions are recorded for this clinic yet.
+        </div>
+      ) : null}
+
+      {hasItems ? (
+        <div className="mt-4 space-y-3">
+          {items!.map((item) => (
+            <div
+              key={`${item.policy_version}-${item.created_at}`}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-slate-900">
+                  v{item.policy_version}
+                </p>
+                {item.is_active ? (
+                  <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                    Active
+                  </span>
+                ) : null}
+              </div>
+
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <MetricCell
+                  label="Validation profile"
+                  value={item.validation_profile}
+                  tone="default"
+                />
+                <MetricCell
+                  label="Generation enabled"
+                  value={item.generation_enabled ? "Yes" : "No"}
+                  tone={item.generation_enabled ? "success" : "default"}
+                />
+                <MetricCell
+                  label="Client communication"
+                  value={
+                    item.client_communication_enabled ? "Enabled" : "Disabled"
+                  }
+                  tone={item.client_communication_enabled ? "success" : "default"}
+                />
+              </div>
+
+              <div className="mt-3 space-y-2">
+                <DetailRow label="Policy label" value={item.policy_label} />
+                <DetailRow
+                  label="Daily run limit (per clinic)"
+                  value={String(item.daily_run_limit_per_clinic)}
+                />
+                <DetailRow
+                  label="Monthly run limit (per clinic)"
+                  value={String(item.monthly_run_limit_per_clinic)}
+                />
+                <DetailRow
+                  label="Created at"
+                  value={formatDateTime(item.created_at)}
+                />
+                <DetailRow
+                  label="Activated at"
+                  value={
+                    item.activated_at ? formatDateTime(item.activated_at) : "—"
+                  }
+                />
+                <DetailRow
+                  label="Superseded at"
+                  value={
+                    item.superseded_at ? formatDateTime(item.superseded_at) : "—"
+                  }
+                />
+                <DetailRow
+                  label="Created by"
+                  value={
+                    item.created_by_user_id
+                      ? formatShortId(item.created_by_user_id)
+                      : "—"
+                  }
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <p className="text-xs leading-5 text-slate-700">
+          Policy history is governance metadata for review. It is not a legally
+          complete audit record and is not a compliance certification.
+        </p>
+      </div>
     </NativeCard>
   );
 }
