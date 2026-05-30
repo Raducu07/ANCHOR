@@ -88,6 +88,13 @@ _CPV_COLS = (
     "activated_at, superseded_at, created_at, updated_at"
 )
 
+_ATTESTATION_COLS = (
+    "attestation_id, clinic_id, clinic_policy_version_id, user_id, "
+    "attestation_statement_version, acknowledged_at, "
+    "acknowledgement_method, policy_content_sha256_snapshot, "
+    "is_voided, void_reason, voided_at, voided_by_user_id, created_at"
+)
+
 
 # ---------------------------------------------------------------------
 # Pydantic response / request models
@@ -174,6 +181,86 @@ class ClinicPolicyCreateRequest(BaseModel):
 
     template_slug: str = Field(..., min_length=1, max_length=200)
     template_version: Optional[str] = Field(default=None, max_length=64)
+
+
+# ---------------------------------------------------------------------
+# Phase 2A-2.3 - Staff Attestation models
+# ---------------------------------------------------------------------
+
+DEFAULT_ATTESTATION_STATEMENT_VERSION = "attestation_statement_v1"
+DEFAULT_ACKNOWLEDGEMENT_METHOD = "in_app_button_click"
+
+
+class PolicyAttestation(BaseModel):
+    """Metadata-only view of a policy_attestations row.
+
+    Carries no policy body text and no free-text staff reflection. The
+    optional `template_slug` / `policy_title_snapshot` /
+    `policy_clinic_policy_version` fields are populated by the admin
+    listing endpoint via a JOIN; the self-listing and attest endpoints
+    leave them null (the caller already knows which policy they acted
+    on).
+    """
+
+    attestation_id: _uuid.UUID
+    clinic_policy_version_id: _uuid.UUID
+    user_id: _uuid.UUID
+    attestation_statement_version: str
+    acknowledged_at: datetime
+    acknowledgement_method: str
+    policy_content_sha256_snapshot: Optional[str] = None
+    is_voided: bool
+    void_reason: Optional[str] = None
+    voided_at: Optional[datetime] = None
+    voided_by_user_id: Optional[_uuid.UUID] = None
+    created_at: datetime
+
+    # Optional joined policy metadata (admin listing only).
+    template_slug: Optional[str] = None
+    policy_title_snapshot: Optional[str] = None
+    policy_clinic_policy_version: Optional[int] = None
+
+
+class PolicyAttestationResponse(BaseModel):
+    attestation: PolicyAttestation
+    governance_note: str = _GOVERNANCE_NOTE
+
+
+class PolicyAttestationListResponse(BaseModel):
+    attestations: List[PolicyAttestation]
+    limit: int
+    governance_note: str = _GOVERNANCE_NOTE
+
+
+class OutstandingPolicyListResponse(BaseModel):
+    policies: List[ClinicPolicyVersion]
+    count: int
+    governance_note: str = _GOVERNANCE_NOTE
+
+
+class PolicyAttestationCreateRequest(BaseModel):
+    """Bounded attest body. `extra='forbid'` rejects any attempt to
+    send `policy_body`, `policy_text`, `competence_grade`, `score`,
+    `pass_fail`, `staff_reflection`, `compliance_status`,
+    `staff_certified`, `clinical_safety_proof`, `legal_approval`, etc.
+    The attestation surface CANNOT carry those concepts.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    attestation_statement_version: Optional[str] = Field(
+        default=None, max_length=64
+    )
+    acknowledgement_method: Optional[str] = Field(default=None, max_length=64)
+
+
+class PolicyAttestationVoidRequest(BaseModel):
+    """Bounded void body. Requires a non-empty `void_reason`. Other
+    fields are rejected at the parser level."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    void_reason: str = Field(..., min_length=1, max_length=1000)
 
 
 # ---------------------------------------------------------------------
@@ -811,3 +898,449 @@ def archive_clinic_policy(
         },
     )
     return ClinicPolicyVersionResponse(policy=_cpv_from_row(new_row_d))
+
+
+# ---------------------------------------------------------------------
+# Phase 2A-2.3 - Staff Attestation endpoints
+# ---------------------------------------------------------------------
+#
+# Doctrine recap for this section:
+#   * Self-attestation is per-user evidence. It is NOT an admin action,
+#     so the attest endpoint does NOT write admin_audit_events. Only
+#     the admin-side void writes an audit event.
+#   * Attestation is separate from Learn / CPD. Attesting to a policy
+#     does NOT mark a Learn module complete and does NOT accrue CPD
+#     minutes. Neither path is imported or invoked here.
+#   * The DB unique constraint `(clinic_id, clinic_policy_version_id,
+#     user_id)` (defined in 20260530_01) means re-attestation after a
+#     void requires a fresh `clinic_policy_version`. We do NOT migrate
+#     the schema in this slice; attesting against a previously-voided
+#     row returns 409 attestation_previously_voided so admin can issue
+#     a new clinic policy version to require re-acknowledgement.
+#   * `GET /me/outstanding` defines "outstanding" as "active policies
+#     for which this user has NO row in policy_attestations" - voided
+#     or not. That keeps the user out of a 409 deadlock and makes
+#     admin-initiated re-attestation an explicit ops step (issue a new
+#     clinic policy version).
+
+
+def _attestation_from_row(row: Dict[str, Any]) -> PolicyAttestation:
+    return PolicyAttestation(
+        attestation_id=row["attestation_id"],
+        clinic_policy_version_id=row["clinic_policy_version_id"],
+        user_id=row["user_id"],
+        attestation_statement_version=row["attestation_statement_version"],
+        acknowledged_at=row["acknowledged_at"],
+        acknowledgement_method=row["acknowledgement_method"],
+        policy_content_sha256_snapshot=row.get("policy_content_sha256_snapshot"),
+        is_voided=bool(row["is_voided"]),
+        void_reason=row.get("void_reason"),
+        voided_at=row.get("voided_at"),
+        voided_by_user_id=row.get("voided_by_user_id"),
+        created_at=row["created_at"],
+        template_slug=row.get("template_slug"),
+        policy_title_snapshot=row.get("policy_title_snapshot"),
+        policy_clinic_policy_version=(
+            int(row["policy_clinic_policy_version"])
+            if row.get("policy_clinic_policy_version") is not None
+            else None
+        ),
+    )
+
+
+def _select_attestation_for_clinic(
+    db: Session, *, clinic_id: str, attestation_id: str
+) -> Optional[Dict[str, Any]]:
+    row = db.execute(
+        text(
+            f"""
+            SELECT {_ATTESTATION_COLS}
+            FROM policy_attestations
+            WHERE clinic_id = CAST(:clinic_id AS uuid)
+              AND attestation_id = CAST(:attestation_id AS uuid)
+            LIMIT 1
+            """
+        ),
+        {"clinic_id": clinic_id, "attestation_id": attestation_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+# A. GET /me/outstanding ----------------------------------------------
+
+
+@router.get(
+    "/me/outstanding",
+    response_model=OutstandingPolicyListResponse,
+)
+def list_outstanding_policies_for_me(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> OutstandingPolicyListResponse:
+    """Active clinic policy versions the caller has NOT yet attested
+    to. "Not yet attested" means no policy_attestations row exists at
+    all - a previously-voided row counts as "user already had a turn"
+    (see module doctrine note)."""
+    ctx = _ctx(request)
+    rows = db.execute(
+        text(
+            f"""
+            SELECT {_CPV_COLS}
+            FROM clinic_policy_versions cpv
+            WHERE cpv.clinic_id = CAST(:clinic_id AS uuid)
+              AND cpv.status = 'active'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM policy_attestations pa
+                  WHERE pa.clinic_id = cpv.clinic_id
+                    AND pa.clinic_policy_version_id = cpv.clinic_policy_version_id
+                    AND pa.user_id = CAST(:user_id AS uuid)
+              )
+            ORDER BY cpv.activated_at DESC
+            """
+        ),
+        {
+            "clinic_id": ctx["clinic_id"],
+            "user_id": ctx["clinic_user_id"],
+        },
+    ).mappings().all()
+    items = [_cpv_from_row(dict(r)) for r in rows]
+    return OutstandingPolicyListResponse(policies=items, count=len(items))
+
+
+# B. POST /clinic-policies/{cpv_id}/attest ----------------------------
+
+
+@router.post(
+    "/clinic-policies/{cpv_id}/attest",
+    response_model=PolicyAttestationResponse,
+    status_code=201,
+)
+def attest_to_clinic_policy(
+    cpv_id: _uuid.UUID,
+    payload: PolicyAttestationCreateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> PolicyAttestationResponse:
+    """Self-attestation by the authenticated user. Idempotent if the
+    user has already attested (non-voided). Returns 409 if a prior
+    attestation exists but is voided (see module doctrine)."""
+    ctx = _ctx(request)
+
+    # Fetch the target clinic policy version (clinic-scoped).
+    target = _fetch_cpv_for_clinic(
+        db, clinic_id=ctx["clinic_id"], cpv_id=str(cpv_id)
+    )
+    if not target:
+        raise HTTPException(
+            status_code=404, detail="governance_policy_version_not_found"
+        )
+    if target["status"] != _STATUS_ACTIVE:
+        raise HTTPException(
+            status_code=400, detail="governance_policy_not_active"
+        )
+
+    # Idempotency: look up existing row for (clinic, cpv, user).
+    existing = db.execute(
+        text(
+            f"""
+            SELECT {_ATTESTATION_COLS}
+            FROM policy_attestations
+            WHERE clinic_id = CAST(:clinic_id AS uuid)
+              AND clinic_policy_version_id = CAST(:cpv_id AS uuid)
+              AND user_id = CAST(:user_id AS uuid)
+            LIMIT 1
+            """
+        ),
+        {
+            "clinic_id": ctx["clinic_id"],
+            "cpv_id": str(cpv_id),
+            "user_id": ctx["clinic_user_id"],
+        },
+    ).mappings().first()
+    if existing:
+        existing_d = dict(existing)
+        if existing_d.get("is_voided"):
+            raise HTTPException(
+                status_code=409, detail="attestation_previously_voided"
+            )
+        # Non-voided row present: idempotent 201 with existing.
+        return PolicyAttestationResponse(
+            attestation=_attestation_from_row(existing_d),
+        )
+
+    statement_version = (
+        payload.attestation_statement_version
+        or DEFAULT_ATTESTATION_STATEMENT_VERSION
+    )
+    method = payload.acknowledgement_method or DEFAULT_ACKNOWLEDGEMENT_METHOD
+
+    new_row = db.execute(
+        text(
+            f"""
+            INSERT INTO policy_attestations (
+                clinic_id,
+                clinic_policy_version_id,
+                user_id,
+                attestation_statement_version,
+                acknowledgement_method,
+                policy_content_sha256_snapshot,
+                ip_hash
+            )
+            VALUES (
+                CAST(:clinic_id AS uuid),
+                CAST(:cpv_id AS uuid),
+                CAST(:user_id AS uuid),
+                :attestation_statement_version,
+                :acknowledgement_method,
+                :policy_content_sha256_snapshot,
+                :ip_hash
+            )
+            RETURNING {_ATTESTATION_COLS}
+            """
+        ),
+        {
+            "clinic_id": ctx["clinic_id"],
+            "cpv_id": str(cpv_id),
+            "user_id": ctx["clinic_user_id"],
+            "attestation_statement_version": statement_version,
+            "acknowledgement_method": method,
+            "policy_content_sha256_snapshot": target.get(
+                "content_sha256_snapshot"
+            ),
+            "ip_hash": ctx["ip_hash"] or None,
+        },
+    ).mappings().first()
+    if not new_row:
+        raise HTTPException(status_code=500, detail="internal_server_error")
+
+    new_row_d = dict(new_row)
+    logger.info(
+        "governance_policy_attested",
+        extra={
+            "clinic_id": ctx["clinic_id"],
+            "clinic_policy_version_id": str(cpv_id),
+            "attestation_id": str(new_row_d["attestation_id"]),
+        },
+    )
+    return PolicyAttestationResponse(
+        attestation=_attestation_from_row(new_row_d),
+    )
+
+
+# C. GET /me/attestations ---------------------------------------------
+
+
+@router.get(
+    "/me/attestations",
+    response_model=PolicyAttestationListResponse,
+)
+def list_my_attestations(
+    request: Request,
+    db: Session = Depends(get_db),
+    include_voided: bool = Query(default=False),
+    limit: int = Query(default=25, ge=1, le=100),
+) -> PolicyAttestationListResponse:
+    """Caller's own policy attestations. Self-only - the user_id bind
+    is taken from request.state.clinic_user_id, never from a query
+    parameter."""
+    ctx = _ctx(request)
+    clauses = [
+        "clinic_id = CAST(:clinic_id AS uuid)",
+        "user_id = CAST(:user_id AS uuid)",
+    ]
+    params: Dict[str, Any] = {
+        "clinic_id": ctx["clinic_id"],
+        "user_id": ctx["clinic_user_id"],
+        "limit": int(limit),
+    }
+    if not include_voided:
+        clauses.append("is_voided = false")
+
+    rows = db.execute(
+        text(
+            f"""
+            SELECT {_ATTESTATION_COLS}
+            FROM policy_attestations
+            WHERE {' AND '.join(clauses)}
+            ORDER BY acknowledged_at DESC
+            LIMIT :limit
+            """
+        ),
+        params,
+    ).mappings().all()
+    return PolicyAttestationListResponse(
+        attestations=[_attestation_from_row(dict(r)) for r in rows],
+        limit=int(limit),
+    )
+
+
+# D. GET /attestations (admin) ----------------------------------------
+
+
+@router.get(
+    "/attestations",
+    response_model=PolicyAttestationListResponse,
+)
+def list_clinic_attestations(
+    request: Request,
+    db: Session = Depends(get_db),
+    clinic_policy_version_id: Optional[_uuid.UUID] = Query(default=None),
+    template_slug: Optional[str] = Query(default=None, max_length=200),
+    user_id: Optional[_uuid.UUID] = Query(default=None),
+    include_voided: bool = Query(default=False),
+    limit: int = Query(default=25, ge=1, le=100),
+) -> PolicyAttestationListResponse:
+    """Admin-tier clinic-wide attestation listing. Metadata only - the
+    response carries `user_id` UUIDs but no email/name; resolving them
+    is a frontend concern."""
+    ctx = _ctx(request)
+    _require_admin(ctx["role"])
+
+    clauses = ["pa.clinic_id = CAST(:clinic_id AS uuid)"]
+    params: Dict[str, Any] = {
+        "clinic_id": ctx["clinic_id"],
+        "limit": int(limit),
+    }
+    if clinic_policy_version_id is not None:
+        clauses.append("pa.clinic_policy_version_id = CAST(:cpv_id AS uuid)")
+        params["cpv_id"] = str(clinic_policy_version_id)
+    if template_slug is not None:
+        clauses.append("pt.template_slug = :template_slug")
+        params["template_slug"] = template_slug
+    if user_id is not None:
+        clauses.append("pa.user_id = CAST(:user_id AS uuid)")
+        params["user_id"] = str(user_id)
+    if not include_voided:
+        clauses.append("pa.is_voided = false")
+
+    where_clause = " AND ".join(clauses)
+    rows = db.execute(
+        text(
+            f"""
+            SELECT
+                pa.attestation_id, pa.clinic_id,
+                pa.clinic_policy_version_id, pa.user_id,
+                pa.attestation_statement_version, pa.acknowledged_at,
+                pa.acknowledgement_method,
+                pa.policy_content_sha256_snapshot,
+                pa.is_voided, pa.void_reason, pa.voided_at,
+                pa.voided_by_user_id, pa.created_at,
+                pt.template_slug AS template_slug,
+                cpv.title_snapshot AS policy_title_snapshot,
+                cpv.clinic_policy_version AS policy_clinic_policy_version
+            FROM policy_attestations pa
+            JOIN clinic_policy_versions cpv
+                ON cpv.clinic_policy_version_id = pa.clinic_policy_version_id
+               AND cpv.clinic_id = pa.clinic_id
+            LEFT JOIN policy_templates pt
+                ON pt.template_id = cpv.policy_template_id
+            WHERE {where_clause}
+            ORDER BY pa.acknowledged_at DESC
+            LIMIT :limit
+            """
+        ),
+        params,
+    ).mappings().all()
+
+    return PolicyAttestationListResponse(
+        attestations=[_attestation_from_row(dict(r)) for r in rows],
+        limit=int(limit),
+    )
+
+
+# E. POST /attestations/{attestation_id}/void --------------------------
+
+
+@router.post(
+    "/attestations/{attestation_id}/void",
+    response_model=PolicyAttestationResponse,
+)
+def void_attestation(
+    attestation_id: _uuid.UUID,
+    payload: PolicyAttestationVoidRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> PolicyAttestationResponse:
+    """Admin-tier void with reason. Append-only audit row written.
+    Idempotent for an already-voided attestation (no duplicate audit
+    event)."""
+    ctx = _ctx(request)
+    _require_admin(ctx["role"])
+
+    reason = (payload.void_reason or "").strip()
+    if not reason:
+        raise HTTPException(
+            status_code=400, detail="attestation_void_reason_required"
+        )
+
+    target = _select_attestation_for_clinic(
+        db,
+        clinic_id=ctx["clinic_id"],
+        attestation_id=str(attestation_id),
+    )
+    if not target:
+        raise HTTPException(
+            status_code=404, detail="attestation_not_found"
+        )
+
+    if bool(target.get("is_voided")):
+        # Idempotent no-op: do NOT write a duplicate audit event.
+        return PolicyAttestationResponse(
+            attestation=_attestation_from_row(target),
+        )
+
+    new_row = db.execute(
+        text(
+            f"""
+            UPDATE policy_attestations
+            SET is_voided = true,
+                void_reason = :void_reason,
+                voided_at = now(),
+                voided_by_user_id = CAST(:actor AS uuid)
+            WHERE clinic_id = CAST(:clinic_id AS uuid)
+              AND attestation_id = CAST(:attestation_id AS uuid)
+              AND is_voided = false
+            RETURNING {_ATTESTATION_COLS}
+            """
+        ),
+        {
+            "clinic_id": ctx["clinic_id"],
+            "attestation_id": str(attestation_id),
+            "void_reason": reason,
+            "actor": ctx["clinic_user_id"],
+        },
+    ).mappings().first()
+    if not new_row:
+        # Concurrent state change between read and write.
+        raise HTTPException(
+            status_code=409, detail="attestation_state_changed"
+        )
+
+    new_row_d = dict(new_row)
+    _insert_audit_event(
+        db,
+        clinic_id=ctx["clinic_id"],
+        admin_user_id=ctx["clinic_user_id"],
+        action="governance_policy_attestation_voided",
+        target_id=str(new_row_d["attestation_id"]),
+        ip_hash=ctx["ip_hash"],
+        meta={
+            "attestation_id": str(new_row_d["attestation_id"]),
+            "clinic_policy_version_id": str(
+                new_row_d["clinic_policy_version_id"]
+            ),
+            "user_id": str(new_row_d["user_id"]),
+            "void_reason_present": True,
+        },
+    )
+    logger.info(
+        "governance_policy_attestation_voided",
+        extra={
+            "clinic_id": ctx["clinic_id"],
+            "attestation_id": str(new_row_d["attestation_id"]),
+        },
+    )
+    return PolicyAttestationResponse(
+        attestation=_attestation_from_row(new_row_d),
+    )
