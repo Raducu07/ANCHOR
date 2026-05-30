@@ -314,7 +314,7 @@ export type IntelligenceRecommendationsResponse = {
   window: "7d" | "30d";
   items: IntelligenceRecommendation[];
 };
-// Assistant types â€” M6.1 Assistant Foundation
+// Assistant types — M6.1 Assistant Foundation
 export type AssistantContractResponse = {
   contract_id?: string;
   contract_version?: string;
@@ -506,6 +506,16 @@ export type AssistantRunReviewUpdateResponse = AssistantRunDetailResponse;
 export type AssistantRunListResponse = {
   runs: AssistantRunTraceItem[];
   limit: number;
+  // M6.11.2 — cursor pagination + filter echo. Optional for forward
+  // compatibility: a backend that has not yet deployed the new fields
+  // simply omits them, and the UI degrades to a single-page view.
+  next_cursor?: string | null;
+  has_more?: boolean;
+  applied_filters?: {
+    run_status?: string | null;
+    mode?: string | null;
+    has_receipt?: boolean | null;
+  };
 };
 
 export type AssistantRunDetailResponse = {
@@ -773,3 +783,4 @@ export type TrustPackLearningDelta = {
   module_catalogue_count: number;
   last_completion_at: string | null;
 };
+
