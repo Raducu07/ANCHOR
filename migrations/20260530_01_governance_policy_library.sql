@@ -1,4 +1,4 @@
--- ============================================================
+-- ------------------------------------------------------------
 -- 20260530_01_governance_policy_library.sql
 --
 -- Phase 2A-2.1 - Governance Policy Library + Staff Attestation schema.
@@ -63,7 +63,7 @@
 --     anywhere in this file (see TD-BE / M6.10.1B postmortem).
 --
 -- This migration must remain idempotent and boot-safe.
--- ============================================================
+-- ------------------------------------------------------------
 
 BEGIN;
 

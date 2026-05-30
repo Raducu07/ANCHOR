@@ -1,4 +1,4 @@
--- ============================================================
+-- ------------------------------------------------------------
 -- 20260530_02_governance_policy_template_seed.sql
 --
 -- Phase 2A-2.1 - initial v1 Governance Policy Library template seed.
@@ -23,7 +23,7 @@
 -- explicit UNIQUE constraint on policy_templates.template_slug created
 -- in 20260530_01 - NOT a partial index, so no production
 -- InvalidColumnReference risk (cf. M6.10.1B / TD-BE).
--- ============================================================
+-- ------------------------------------------------------------
 
 BEGIN;
 

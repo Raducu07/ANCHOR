@@ -48,15 +48,20 @@ POLICY_MD_FILES = [
 # stubs. These are the canonical disallowed claims for ANCHOR public-
 # facing artefacts (Readiness Map Section 2 / Phase 2A-1 wording
 # controls). Case-insensitive.
+#
+# Each pattern is assembled from fragments so the full forbidden
+# phrase does NOT appear as a literal string in this test source.
+# That prevents broad repo-wide artefact scans from flagging this
+# test file itself as a wording violation.
 FORBIDDEN_WORDING_PATTERNS = [
-    r"EU AI Act compliant",
-    r"RCVS[- ]certified",
-    r"RCVS[- ]approved",
-    r"guarantees compliance",
-    r"proof of competence",
-    r"clinical safety proof",
-    r"certified CPD",
-    r"compliance guarantee",
+    "EU AI Act " + "compliant",
+    "RCVS[- ]" + "certified",
+    "RCVS[- ]" + "approved",
+    "guarantees " + "compliance",
+    "proof of " + "competence",
+    "clinical safety " + "proof",
+    "certified " + "CPD",
+    "compliance " + "guarantee",
 ]
 
 
@@ -295,15 +300,28 @@ def test_markdown_stub_has_no_forbidden_wording(md_path: Path, pattern: str) -> 
     )
 
 
+# Common mojibake byte-pair markers from bad UTF-8 -> latin-1
+# round-trips. Defined via codepoints so this test source contains no
+# literal mojibake glyphs (which would otherwise trip broader artefact
+# scans across the repo).
+#   chr(0x00E2) + chr(0x20AC)  -> the two-codepoint sequence that
+#                                  appears when smart-quote-style
+#                                  UTF-8 is decoded as latin-1
+#   chr(0x00C2) + chr(0x00A0)  -> the no-break-space mojibake pair
+MOJIBAKE_MARKERS = (
+    chr(0x00E2) + chr(0x20AC),
+    chr(0x00C2) + chr(0x00A0),
+)
+
+
 @pytest.mark.parametrize("md_path", POLICY_MD_FILES, ids=lambda p: p.name)
 def test_markdown_stub_has_no_mojibake(md_path: Path) -> None:
-    # Common mojibake artefacts from bad encoding round-trips - the
-    # `â`/`Â` sequence frequently appears when UTF-8 is decoded as
-    # latin-1. Catch these so we don't ship corrupted clinic-facing
-    # content.
     text = md_path.read_text(encoding="utf-8")
-    for marker in ("â€", "Â "):
-        assert marker not in text, f"mojibake marker {marker!r} in {md_path.name}"
+    for marker in MOJIBAKE_MARKERS:
+        assert marker not in text, (
+            f"mojibake byte-pair (U+{ord(marker[0]):04X} U+{ord(marker[1]):04X}) "
+            f"found in {md_path.name}"
+        )
 
 
 # ---------------------------------------------------------------------
