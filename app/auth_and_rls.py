@@ -40,7 +40,7 @@ JWT_MAX_TOKEN_LEN = int(os.getenv("ANCHOR_JWT_MAX_TOKEN_LEN", "8192"))
 # Strict role allowlist (editable via env)
 # Example: ANCHOR_ROLE_ALLOWLIST="admin,staff,reader"
 _ROLE_ENV = (os.getenv("ANCHOR_ROLE_ALLOWLIST", "") or "").strip()
-DEFAULT_ROLE_ALLOWLIST = {"admin", "staff", "reader", "readonly", "owner"}
+DEFAULT_ROLE_ALLOWLIST = {"admin", "staff", "reader", "readonly", "owner", "practice_manager"}
 ROLE_ALLOWLIST: Set[str] = (
     {x.strip() for x in _ROLE_ENV.split(",") if x.strip()}
     if _ROLE_ENV

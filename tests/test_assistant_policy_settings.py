@@ -714,6 +714,86 @@ def test_get_after_patch_returns_updated_label_and_notes() -> None:
     assert p["require_human_review"] is True
 
 
+# ---------------------------------------------------------------------
+# M6.10.4 — Endpoint visibility / gating hardening
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("role", ["staff", "clinic_user", "reader"])
+def test_non_admin_roles_can_get_active_policy(role: str) -> None:
+    """GET /v1/assistant/policy is intentionally visible to ALL
+    authenticated clinic users — staff need to understand the active
+    constraints the Assistant runs under. This codifies that visibility
+    so it cannot regress to admin-only without an explicit decision."""
+    app, db = build_app(auth_role=role)
+    db.select_policy_row = _policy_row(policy_version=1, policy_label="Active")
+
+    resp = client_for(app).get("/v1/assistant/policy", headers=auth_headers())
+    assert resp.status_code == 200, resp.text
+    p = resp.json()["policy"]
+    assert p["policy_label"] == "Active"
+    assert p["require_human_review"] is True
+
+
+def test_unauthenticated_get_policy_returns_401() -> None:
+    from fastapi import HTTPException
+    from app.auth_and_rls import require_clinic_user
+
+    app, db = build_app()
+
+    def _unauth():
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+    app.dependency_overrides[require_clinic_user] = _unauth
+
+    resp = client_for(app).get("/v1/assistant/policy", headers=auth_headers())
+    assert resp.status_code == 401
+
+
+@pytest.mark.parametrize("role", ["admin", "owner", "practice_manager"])
+def test_admin_tier_roles_can_get_policy_history(role: str) -> None:
+    app, db = build_app(auth_role=role)
+    db.select_policy_history_rows = [
+        _policy_row(policy_version=2, validation_profile="conservative"),
+        _policy_row(policy_version=1, is_active=False),
+    ]
+    resp = client_for(app).get(
+        "/v1/assistant/policy/history", headers=auth_headers()
+    )
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    assert len(items) == 2
+    assert items[0]["policy_version"] == 2
+
+
+@pytest.mark.parametrize("role", ["staff", "clinic_user", "team_member", "reader"])
+def test_non_admin_roles_cannot_get_policy_history(role: str) -> None:
+    app, db = build_app(auth_role=role)
+    db.select_policy_history_rows = []
+    resp = client_for(app).get(
+        "/v1/assistant/policy/history", headers=auth_headers()
+    )
+    assert resp.status_code == 403
+    assert resp.json().get("detail") == "forbidden_not_admin"
+
+
+def test_unauthenticated_get_policy_history_returns_401() -> None:
+    from fastapi import HTTPException
+    from app.auth_and_rls import require_clinic_user
+
+    app, db = build_app()
+
+    def _unauth():
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+    app.dependency_overrides[require_clinic_user] = _unauth
+
+    resp = client_for(app).get(
+        "/v1/assistant/policy/history", headers=auth_headers()
+    )
+    assert resp.status_code == 401
+
+
 def test_patch_audit_insert_has_no_partial_index_on_conflict() -> None:
     """Regression for the production 500 observed in M6.10.1:
     psycopg.errors.InvalidColumnReference: there is no unique or
