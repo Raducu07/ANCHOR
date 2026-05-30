@@ -27,6 +27,10 @@ import {
   getSessionUserSnapshot,
   subscribeSessionStorage,
 } from "@/lib/auth";
+import {
+  RelevantLearnGuidance,
+  getAssistantLearnLinks,
+} from "@/lib/assistantLearnGuidance";
 import type {
   AssistantContractResponse,
   AssistantPolicyHistoryItem,
@@ -1542,6 +1546,17 @@ function RunDetailBody({
         <DetailRow
           label="Refusal codes"
           value={r.refusal_reason_codes.length ? r.refusal_reason_codes.join(", ") : "None"}
+        />
+        <RelevantLearnGuidance
+          links={getAssistantLearnLinks({
+            pii_detected: r.pii_detected,
+            pii_types: r.pii_types,
+            safety_flags: r.safety_flags,
+            refusal_reason_codes: r.refusal_reason_codes,
+            run_status: r.run_status,
+            review_status: r.review_status,
+            mode: r.mode,
+          })}
         />
         <DetailRow
           label="Input hash"
