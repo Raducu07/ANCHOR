@@ -122,11 +122,12 @@ def test_list_recent_assistant_runs_limit_default_and_cap() -> None:
     resp = client_for(app).get("/v1/assistant/runs", headers=auth_headers())
     assert resp.status_code == 200
     assert resp.json()["limit"] == 25
-    # SQL params reflect the default.
+    # SQL params reflect the default. M6.11.2 binds `fetch_limit = limit + 1`
+    # to support has_more detection without a COUNT round-trip.
     select_calls = [
         (s, p) for s, p in db.calls if "FROM assistant_runs" in s and "ORDER BY" in s
     ]
-    assert select_calls and select_calls[-1][1]["limit"] == 25
+    assert select_calls and select_calls[-1][1]["fetch_limit"] == 26
 
     # explicit limit honoured
     app, db = build_app()
@@ -338,7 +339,9 @@ def test_list_recent_assistant_runs_sorted_by_created_at_desc() -> None:
     sql = [
         s for s, _ in db.calls if "FROM assistant_runs" in s and "ORDER BY" in s
     ][-1]
-    assert "ORDER BY created_at DESC" in sql
+    # M6.11.2 — stable total order: tiebreaker on id keeps cursor
+    # pagination correct when many rows share a created_at timestamp.
+    assert "ORDER BY ar.created_at DESC, ar.id DESC" in sql
 
 
 # ---------------------------------------------------------------------

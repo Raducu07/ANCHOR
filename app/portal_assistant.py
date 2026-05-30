@@ -418,9 +418,29 @@ class AssistantRunTraceItem(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class AssistantRunListAppliedFilters(BaseModel):
+    """Echo of which list filters the backend actually applied. Lets the
+    frontend render an accurate filter chip strip without having to
+    reverse-engineer its own query string."""
+
+    run_status: Optional[str] = None
+    mode: Optional[str] = None
+    has_receipt: Optional[bool] = None
+
+
 class AssistantRunListResponse(BaseModel):
     runs: List[AssistantRunTraceItem]
     limit: int
+    # M6.11.2 — cursor pagination. `next_cursor` is the opaque (to
+    # callers) string to pass as `?cursor=…` for the next page; null
+    # when no more rows. `has_more` is true iff a next page exists.
+    # `applied_filters` echoes the filters that were applied (after
+    # parsing/validation).
+    # All three fields are additive and backwards-compatible: legacy
+    # consumers that ignore them keep working.
+    next_cursor: Optional[str] = None
+    has_more: bool = False
+    applied_filters: Optional[AssistantRunListAppliedFilters] = None
 
 
 class AssistantRunDetailResponse(BaseModel):
@@ -826,17 +846,65 @@ _TRACE_SELECT_COLUMNS = """
 """
 
 
+# ---------------------------------------------------------------------
+# M6.11.2 — Cursor pagination helpers for GET /v1/assistant/runs
+# ---------------------------------------------------------------------
+#
+# Cursor format mirrors the existing pattern in
+# portal_submit._parse_cursor (used by /v1/clinic/submissions):
+#
+#     "<created_at_iso>|<run_id>"
+#
+# The pair (created_at, id) provides a total order that's stable under
+# concurrent inserts — unlike numeric offsets, which can skip or
+# duplicate rows when new runs land between page fetches.
+
+
+def _encode_assistant_runs_cursor(created_at: datetime, run_id: uuid.UUID) -> str:
+    """Encode the (created_at, run_id) cursor for the next page.
+
+    Mirrors portal_submit's plaintext cursor convention so the project
+    has a single house style. No raw content goes into the cursor —
+    only the row's existing public identifiers."""
+    return f"{created_at.isoformat()}|{str(run_id)}"
+
+
+def _parse_assistant_runs_cursor(
+    cursor: str,
+) -> Tuple[datetime, uuid.UUID]:
+    """Parse `"<created_at_iso>|<run_id>"`. Raises HTTPException(400)
+    on malformed cursors so the caller doesn't need to."""
+    if not cursor or "|" not in cursor:
+        raise HTTPException(status_code=400, detail="invalid_cursor")
+    try:
+        created_at_str, run_id_str = cursor.split("|", 1)
+        cursor_created_at = datetime.fromisoformat(created_at_str)
+        cursor_run_id = uuid.UUID(run_id_str)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid_cursor")
+    return cursor_created_at, cursor_run_id
+
+
 @router.get("/runs", response_model=AssistantRunListResponse)
 def list_assistant_runs(
     request: Request,
     db: Session = Depends(get_db),
     limit: int = Query(default=25, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
     run_status: Optional[str] = Query(default=None),
     mode: Optional[str] = Query(default=None),
+    has_receipt: Optional[bool] = Query(default=None),
 ) -> AssistantRunListResponse:
     """List recent Assistant run metadata for the authenticated clinic.
 
-    Metadata-only — never includes raw input, prompts, or draft output."""
+    Metadata-only — never includes raw input, prompts, or draft output.
+
+    M6.11.2 — supports cursor pagination via `cursor` and
+    `has_receipt=true` for receipt-bearing runs only. The response adds
+    `next_cursor`, `has_more`, and `applied_filters` alongside the
+    existing `runs` / `limit` keys (additive, backwards-compatible).
+    Visibility is unchanged: all authenticated clinic users see
+    clinic-wide runs."""
     clinic_id = getattr(request.state, "clinic_id", None)
     clinic_user_id = getattr(request.state, "clinic_user_id", None)
     if not clinic_id or not clinic_user_id:
@@ -849,38 +917,114 @@ def list_assistant_runs(
         raise HTTPException(status_code=400, detail="invalid_mode")
 
     filters: List[str] = []
-    params: Dict[str, Any] = {"clinic_id": str(clinic_id), "limit": int(limit)}
+    # NB: bind `fetch_limit = limit + 1` so we can detect `has_more`
+    # without a separate COUNT query. The response still surfaces the
+    # caller's `limit` unchanged.
+    fetch_limit = int(limit) + 1
+    params: Dict[str, Any] = {
+        "clinic_id": str(clinic_id),
+        "fetch_limit": fetch_limit,
+    }
     if run_status is not None:
-        filters.append("run_status = :run_status")
+        filters.append("ar.run_status = :run_status")
         params["run_status"] = run_status
     if mode is not None:
-        filters.append("mode = :mode")
+        filters.append("ar.mode = :mode")
         params["mode"] = mode
+    if has_receipt is True:
+        filters.append("ar.receipt_id IS NOT NULL")
+    if cursor is not None:
+        cursor_created_at, cursor_run_id = _parse_assistant_runs_cursor(cursor)
+        # Total-order keyset: strictly older `created_at`, OR same
+        # `created_at` with a strictly smaller `id`. Both halves are
+        # required for stability when many rows share a timestamp.
+        filters.append(
+            "(ar.created_at < :cursor_created_at "
+            "OR (ar.created_at = :cursor_created_at "
+            "AND ar.id < :cursor_run_id))"
+        )
+        params["cursor_created_at"] = cursor_created_at
+        params["cursor_run_id"] = str(cursor_run_id)
 
     where_extra = ""
     if filters:
         where_extra = " AND " + " AND ".join(filters)
 
-    rows = (
-        db.execute(
-            text(
-                f"""
-                SELECT {_TRACE_SELECT_COLUMNS}
-                FROM assistant_runs
-                WHERE clinic_id = CAST(:clinic_id AS uuid)
-                {where_extra}
-                ORDER BY created_at DESC
-                LIMIT :limit
-                """
-            ),
-            params,
-        )
-        .mappings()
-        .all()
-    )
+    # LEFT JOIN assistant_run_receipts to hydrate `receipt_created_at`
+    # in the list path. Cheap: the receipts table is indexed on
+    # `(assistant_run_id)`, and the join is by-PK on the right side.
+    # The join is bound by `arr.clinic_id = ar.clinic_id` so RLS on
+    # both tables independently enforces tenant isolation.
+    list_sql = f"""
+        SELECT
+            ar.id AS run_id,
+            ar.clinic_id,
+            ar.clinic_user_id,
+            ar.mode,
+            ar.contract_version,
+            ar.workflow_origin,
+            ar.input_sha256,
+            ar.output_sha256,
+            ar.input_field_keys,
+            ar.pii_detected,
+            ar.pii_types,
+            ar.safety_flags,
+            ar.refusal_reason_codes,
+            ar.review_status,
+            ar.run_status,
+            ar.receipt_id,
+            ar.governance_event_id,
+            ar.model_provider,
+            ar.model_name,
+            ar.review_decision,
+            ar.reviewed_at,
+            ar.reviewed_by_user_id,
+            ar.assistant_policy_id,
+            ar.assistant_policy_version,
+            ar.assistant_validation_profile,
+            ar.created_at,
+            ar.updated_at,
+            arr.created_at AS receipt_created_at
+        FROM assistant_runs ar
+        LEFT JOIN assistant_run_receipts arr
+            ON arr.assistant_run_id = ar.id
+           AND arr.clinic_id = ar.clinic_id
+        WHERE ar.clinic_id = CAST(:clinic_id AS uuid)
+        {where_extra}
+        ORDER BY ar.created_at DESC, ar.id DESC
+        LIMIT :fetch_limit
+    """
 
-    items = [_row_to_trace_item(dict(r)) for r in rows]
-    return AssistantRunListResponse(runs=items, limit=int(limit))
+    rows = db.execute(text(list_sql), params).mappings().all()
+
+    # Detect has_more by overflow: we asked for limit+1 rows; if we got
+    # them all, there's another page after this one. Drop the extra
+    # before mapping to response models.
+    row_dicts = [dict(r) for r in rows]
+    has_more = len(row_dicts) > int(limit)
+    if has_more:
+        row_dicts = row_dicts[: int(limit)]
+
+    items = [_row_to_trace_item(r) for r in row_dicts]
+
+    next_cursor: Optional[str] = None
+    if has_more and row_dicts:
+        last = row_dicts[-1]
+        next_cursor = _encode_assistant_runs_cursor(
+            last["created_at"], last["run_id"]
+        )
+
+    return AssistantRunListResponse(
+        runs=items,
+        limit=int(limit),
+        next_cursor=next_cursor,
+        has_more=has_more,
+        applied_filters=AssistantRunListAppliedFilters(
+            run_status=run_status,
+            mode=mode,
+            has_receipt=has_receipt,
+        ),
+    )
 
 
 @router.get("/runs/{run_id}", response_model=AssistantRunDetailResponse)
