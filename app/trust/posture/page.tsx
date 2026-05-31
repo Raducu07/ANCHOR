@@ -12,6 +12,7 @@ import type {
   GovernancePolicyTrustBlock,
   TrustPackLearningDelta,
   TrustPostureResponse,
+  TrustSelfAssessmentBlock,
 } from "@/lib/types";
 
 function formatDate(value?: string) {
@@ -276,6 +277,10 @@ export default function TrustPosturePage() {
 
             <GovernancePolicyEvidenceCard
               block={data.governance_policy ?? data.snapshot.governance_policy ?? null}
+            />
+
+            <SelfAssessmentEvidenceCard
+              block={data.snapshot.self_assessment ?? null}
             />
 
             <div className="grid gap-6 xl:grid-cols-2">
@@ -725,5 +730,229 @@ function GovernancePolicyEvidenceRow({
         </span>
       </div>
     </li>
+  );
+}
+
+// Phase 2A-3.6 - RCVS-aligned self-assessment evidence tile. Aggregate
+// metadata only; no raw answers, no staff identifiers, no scoring, no
+// pass/fail. Sourced from the existing Trust posture snapshot block.
+function SelfAssessmentEvidenceCard({
+  block,
+}: {
+  block: TrustSelfAssessmentBlock | null;
+}) {
+  if (!block) {
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          Evidence
+        </p>
+        <h2 className="mt-1 text-lg font-semibold text-slate-900">
+          RCVS-aligned AI Governance Self-Assessment
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-slate-600">
+          Self-assessment evidence is not available yet.
+        </p>
+      </div>
+    );
+  }
+
+  const firstTemplate = block.templates?.[0] ?? null;
+  const status = firstTemplate?.assessment_status ?? "none";
+  const isNone = status === "none";
+
+  const readinessRows: { key: keyof TrustSelfAssessmentBlock["templates"][number]["readiness_summary_counts"]; label: string }[] = [
+    { key: "yes", label: "Yes" },
+    { key: "partial", label: "Partial" },
+    { key: "planned", label: "Planned" },
+    { key: "no", label: "No" },
+    { key: "not_applicable", label: "Not applicable" },
+  ];
+
+  const evidenceRows: { key: keyof TrustSelfAssessmentBlock["templates"][number]["linked_evidence_counts"]; label: string }[] = [
+    { key: "policy_library", label: "Policy library" },
+    { key: "staff_attestation", label: "Staff attestation" },
+    { key: "learn_cpd", label: "Learn / CPD activity" },
+    { key: "assistant_receipts", label: "Assistant receipts" },
+    { key: "trust_posture", label: "Trust posture" },
+    { key: "manual_review", label: "Manual review" },
+  ];
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            Evidence
+          </p>
+          <h2 className="mt-1 text-lg font-semibold text-slate-900">
+            RCVS-aligned AI Governance Self-Assessment
+          </h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+            Metadata-only self-assessment evidence supporting governance review
+            and readiness evidence. Human review remains required.
+          </p>
+        </div>
+        <Link
+          href="/settings/self-assessment"
+          className="rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+        >
+          Open self-assessment
+        </Link>
+      </div>
+
+      <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Assessment status
+          </div>
+          <div className="mt-2 text-sm font-semibold capitalize text-slate-900">
+            {status.replaceAll("_", " ")}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Latest submitted
+          </div>
+          <div className="mt-2 text-sm font-medium text-slate-900">
+            {block.latest_submitted_at
+              ? formatDate(block.latest_submitted_at)
+              : "Not submitted yet"}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Submitted records
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {block.submitted_assessment_count}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Answered
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {firstTemplate
+              ? `${firstTemplate.answered_questions} of ${firstTemplate.total_questions}`
+              : "—"}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Gap count
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {firstTemplate?.gap_count ?? 0}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Raw answers included
+          </div>
+          <div className="mt-2 text-sm font-medium text-slate-900">No</div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Staff identifiers included
+          </div>
+          <div className="mt-2 text-sm font-medium text-slate-900">No</div>
+        </div>
+      </div>
+
+      {firstTemplate ? (
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900">
+                {firstTemplate.title}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Template v{firstTemplate.template_version}
+                {firstTemplate.clinic_assessment_version != null
+                  ? ` - clinic version v${firstTemplate.clinic_assessment_version}`
+                  : ""}
+              </p>
+            </div>
+            <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium capitalize text-slate-700">
+              {firstTemplate.assessment_status.replaceAll("_", " ")}
+            </span>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-600">
+            <span>
+              Answered: {firstTemplate.answered_questions} of{" "}
+              {firstTemplate.total_questions}
+            </span>
+            <span>Gap count: {firstTemplate.gap_count}</span>
+            <span>
+              Last updated: {formatDate(firstTemplate.last_updated_at ?? undefined)}
+            </span>
+          </div>
+        </div>
+      ) : null}
+
+      {isNone ? (
+        <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          No submitted self-assessment yet.
+        </p>
+      ) : null}
+
+      {firstTemplate ? (
+        <div className="mt-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            Readiness summary
+          </p>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            {readinessRows.map((row) => (
+              <div
+                key={row.key}
+                className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
+              >
+                <div className="text-xs text-slate-500">{row.label}</div>
+                <div className="mt-1 text-sm font-semibold text-slate-900">
+                  {firstTemplate.readiness_summary_counts[row.key] ?? 0}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {firstTemplate ? (
+        <div className="mt-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            Linked evidence
+          </p>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {evidenceRows.map((row) => (
+              <div
+                key={row.key}
+                className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
+              >
+                <div className="text-xs text-slate-500">{row.label}</div>
+                <div className="mt-1 text-sm font-semibold text-slate-900">
+                  {firstTemplate.linked_evidence_counts[row.key] ?? 0}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {block.templates && block.templates.length > 1 ? (
+        <p className="mt-3 text-[11px] leading-5 text-slate-500">
+          {block.templates.length} self-assessment templates available. Summary
+          above reflects the first template.
+        </p>
+      ) : null}
+
+      <p className="mt-3 text-[11px] leading-5 text-slate-500">
+        {block.governance_note ||
+          "Self-assessment evidence is metadata-only and supports governance review and readiness evidence. Human review remains required."}
+      </p>
+    </div>
   );
 }
