@@ -107,6 +107,22 @@ export default function SettingsPage() {
           </p>
         </Card>
 
+        {user && POLICY_ADMIN_ROLES.has(user.role) ? (
+          <Card variant="native">
+            <SectionTitle
+              title="AI Governance Self-Assessment"
+              description="Complete a metadata-only RCVS-aligned governance self-assessment for clinic review and readiness evidence. Human review remains required."
+            />
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <QuickLink
+                href="/settings/self-assessment"
+                title="AI Governance Self-Assessment"
+                description="Open the RCVS-aligned self-assessment workflow and submit a dated metadata-only governance record."
+              />
+            </div>
+          </Card>
+        ) : null}
+
         <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
           <Card variant="native">
             <SectionTitle
