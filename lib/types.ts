@@ -189,6 +189,9 @@ export type TrustSnapshot = {
       reason: string;
     };
   };
+  // Phase 2A-2.4 - governance policy aggregate block. Optional for
+  // backward compatibility with older snapshots that pre-date the block.
+  governance_policy?: GovernancePolicyTrustBlock;
   limitations: string[];
 };
 
@@ -223,6 +226,10 @@ export type TrustPostureResponse = {
     items: string[];
   }[];
   snapshot: TrustSnapshot;
+  // Phase 2A-2.4 - also accepted at the response top level for backends
+  // that emit governance_policy as a sibling of snapshot rather than
+  // inside it. Optional in both locations so either shape compiles.
+  governance_policy?: GovernancePolicyTrustBlock;
 };
 
 export type TrustPackResponse = {
@@ -782,5 +789,158 @@ export type TrustPackLearningDelta = {
   bias_detection_completions: number;
   module_catalogue_count: number;
   last_completion_at: string | null;
+};
+
+// ---------------------------------------------------------------------
+// Phase 2A-2 - Governance Policy Library + Staff Attestation.
+// Metadata-only. The frontend never carries raw policy body text,
+// clinical content, staff reflections, names, emails, or any scoring /
+// pass-fail / competence grading. Endpoints live under
+// /v1/governance/policy.
+// ---------------------------------------------------------------------
+
+export type PolicyTemplate = {
+  template_id: string;
+  template_slug: string;
+  template_version: string;
+  title: string;
+  summary: string;
+  category: string;
+  role_applicability: string[];
+  jurisdiction_tags: string[];
+  source_basis: string[];
+  content_reference: string;
+  content_sha256: string | null;
+  is_active: boolean;
+  superseded_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PolicyTemplateListResponse = {
+  templates: PolicyTemplate[];
+  governance_note: string;
+};
+
+export type ClinicPolicyStatus =
+  | "draft"
+  | "active"
+  | "superseded"
+  | "archived"
+  | string;
+
+export type ClinicPolicyVersion = {
+  clinic_policy_version_id: string;
+  policy_template_id: string;
+  template_version_snapshot: string;
+  clinic_policy_version: number;
+  status: ClinicPolicyStatus;
+  title_snapshot: string;
+  summary_snapshot: string;
+  content_sha256_snapshot: string | null;
+  effective_from: string | null;
+  created_by_user_id: string;
+  activated_by_user_id: string | null;
+  activated_at: string | null;
+  superseded_at: string | null;
+  created_at: string;
+  updated_at: string;
+  template_slug?: string | null;
+};
+
+export type ClinicPolicyVersionResponse = {
+  policy: ClinicPolicyVersion;
+  governance_note: string;
+};
+
+export type ClinicPolicyVersionListResponse = {
+  policies: ClinicPolicyVersion[];
+  limit: number;
+  governance_note: string;
+};
+
+export type CreateClinicPolicyInput = {
+  template_slug: string;
+  template_version?: string;
+};
+
+export type PolicyAttestation = {
+  attestation_id: string;
+  clinic_policy_version_id: string;
+  user_id: string;
+  attestation_statement_version: string;
+  acknowledged_at: string;
+  acknowledgement_method: string;
+  policy_content_sha256_snapshot: string | null;
+  is_voided: boolean;
+  void_reason: string | null;
+  voided_at: string | null;
+  voided_by_user_id: string | null;
+  created_at: string;
+  template_slug?: string | null;
+  policy_title_snapshot?: string | null;
+  policy_clinic_policy_version?: number | null;
+};
+
+export type PolicyAttestationResponse = {
+  attestation: PolicyAttestation;
+  governance_note: string;
+};
+
+export type PolicyAttestationListResponse = {
+  attestations: PolicyAttestation[];
+  limit: number;
+  governance_note: string;
+};
+
+export type OutstandingPolicyListResponse = {
+  policies: ClinicPolicyVersion[];
+  count: number;
+  governance_note: string;
+};
+
+export type CreatePolicyAttestationInput = {
+  attestation_statement_version?: string;
+  acknowledgement_method?: string;
+};
+
+export type VoidPolicyAttestationInput = {
+  void_reason: string;
+};
+
+// Aggregate metadata for the Trust posture governance-policy block.
+// Aggregates only; no per-user names, emails, or raw policy content.
+export type GovernancePolicyTrustAttestationCoverage = {
+  attestation_count: number;
+  distinct_user_count: number;
+  expected_user_count: number;
+  outstanding_user_count: number;
+  coverage_rate: number;
+  most_recent_acknowledged_at: string | null;
+};
+
+export type GovernancePolicyTrustActivePolicy = {
+  policy_template_id: string;
+  clinic_policy_version_id: string;
+  clinic_policy_version: number;
+  title: string;
+  template_slug: string | null;
+  activated_at: string | null;
+  attestation_coverage: GovernancePolicyTrustAttestationCoverage;
+};
+
+export type GovernancePolicyTrustBlock = {
+  active_policy_count: number;
+  active_policies: GovernancePolicyTrustActivePolicy[];
+  total_attestation_count: number;
+  total_distinct_users_attested: number;
+  expected_user_count: number;
+  outstanding_user_count: number;
+  average_coverage_rate: number;
+  last_policy_update_at: string | null;
+  most_recent_acknowledged_at: string | null;
+  // Honest disclosure: this block never carries raw policy body text.
+  raw_policy_body_included: false;
+  governance_note: string;
 };
 
