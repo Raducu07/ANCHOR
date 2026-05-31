@@ -510,20 +510,26 @@ export function SelfAssessmentAdminPage() {
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Pill label={`v${template.template_version}`} />
-              <Pill label={`${template.total_questions} questions`} />
+              <Pill label={`${questions?.length ?? 0} questions`} />
             </div>
-            {template.source_basis.length > 0 ? (
-              <PillGroup
-                label="Source basis"
-                items={template.source_basis.map(formatTag)}
-              />
-            ) : null}
-            {template.jurisdiction_tags.length > 0 ? (
-              <PillGroup
-                label="Jurisdiction"
-                items={template.jurisdiction_tags.map(formatTag)}
-              />
-            ) : null}
+            {(() => {
+              const rcvsMappings = template.rcvs_principle_mappings ?? [];
+              return rcvsMappings.length > 0 ? (
+                <PillGroup
+                  label="RCVS mappings"
+                  items={rcvsMappings.map(formatTag)}
+                />
+              ) : null;
+            })()}
+            {(() => {
+              const euMappings = template.eu_ai_act_article_mappings ?? [];
+              return euMappings.length > 0 ? (
+                <PillGroup
+                  label="AI Act article mappings"
+                  items={euMappings.map(formatTag)}
+                />
+              ) : null;
+            })()}
           </div>
         )}
       </Card>
@@ -631,29 +637,44 @@ export function SelfAssessmentAdminPage() {
                 >
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <p className="text-sm font-semibold text-slate-900">
-                      {q.question_order}. {q.question_text}
+                      {q.question_order}. {q.prompt_text}
                     </p>
-                    {q.rcvs_theme ? (
-                      <Pill label={`Theme: ${formatTag(q.rcvs_theme)}`} />
+                    {q.theme ? (
+                      <Pill label={`Theme: ${formatTag(q.theme)}`} />
                     ) : null}
                   </div>
-                  {q.guidance ? (
+                  {q.guidance_reference ? (
                     <p className="mt-2 text-sm leading-6 text-slate-600">
-                      {q.guidance}
+                      {q.guidance_reference}
                     </p>
                   ) : null}
-                  {q.source_basis.length > 0 ? (
-                    <PillGroup
-                      label="Source basis"
-                      items={q.source_basis.map(formatTag)}
-                    />
-                  ) : null}
-                  {q.suggested_evidence_links.length > 0 ? (
-                    <PillGroup
-                      label="Suggested evidence"
-                      items={q.suggested_evidence_links.map(formatTag)}
-                    />
-                  ) : null}
+                  {(() => {
+                    const rcvsMappings = q.rcvs_principle_mappings ?? [];
+                    return rcvsMappings.length > 0 ? (
+                      <PillGroup
+                        label="RCVS mappings"
+                        items={rcvsMappings.map(formatTag)}
+                      />
+                    ) : null;
+                  })()}
+                  {(() => {
+                    const euMappings = q.eu_ai_act_article_mappings ?? [];
+                    return euMappings.length > 0 ? (
+                      <PillGroup
+                        label="AI Act article mappings"
+                        items={euMappings.map(formatTag)}
+                      />
+                    ) : null;
+                  })()}
+                  {(() => {
+                    const evidenceHints = q.evidence_link_hints ?? [];
+                    return evidenceHints.length > 0 ? (
+                      <PillGroup
+                        label="Evidence hints"
+                        items={evidenceHints.map(formatTag)}
+                      />
+                    ) : null;
+                  })()}
 
                   <fieldset className="mt-3">
                     <legend className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">

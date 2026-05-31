@@ -981,11 +981,10 @@ export type SelfAssessmentTemplate = {
   template_version: string;
   title: string;
   summary: string;
-  source_basis: string[];
-  jurisdiction_tags: string[];
+  rcvs_principle_mappings: string[];
+  eu_ai_act_article_mappings: string[];
   is_active: boolean;
   superseded_by: string | null;
-  total_questions: number;
   created_at: string;
   updated_at: string;
 };
@@ -995,11 +994,13 @@ export type SelfAssessmentQuestion = {
   template_id: string;
   question_slug: string;
   question_order: number;
-  question_text: string;
-  guidance: string;
-  rcvs_theme: string | null;
-  source_basis: string[];
-  suggested_evidence_links: SelfAssessmentEvidenceLink[];
+  theme: string;
+  prompt_text: string;
+  guidance_reference: string;
+  evidence_link_hints: string[];
+  rcvs_principle_mappings: string[];
+  eu_ai_act_article_mappings: string[];
+  created_at: string;
 };
 
 export type SelfAssessmentAnswer = {
