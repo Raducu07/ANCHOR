@@ -192,6 +192,9 @@ export type TrustSnapshot = {
   // Phase 2A-2.4 - governance policy aggregate block. Optional for
   // backward compatibility with older snapshots that pre-date the block.
   governance_policy?: GovernancePolicyTrustBlock;
+  // Phase 2A-3.4 — RCVS-aligned self-assessment aggregate block. Optional
+  // for backward compatibility with snapshots that pre-date the block.
+  self_assessment?: TrustSelfAssessmentBlock;
   limitations: string[];
 };
 
@@ -941,6 +944,193 @@ export type GovernancePolicyTrustBlock = {
   most_recent_acknowledged_at: string | null;
   // Honest disclosure: this block never carries raw policy body text.
   raw_policy_body_included: false;
+  governance_note: string;
+};
+
+// ---------------------------------------------------------------------
+// Phase 2A-3 — RCVS-aligned self-assessment.
+// Metadata-only. The frontend never carries raw assessment answers in
+// Trust evidence; staff identifiers are not surfaced in the Trust block.
+// Endpoints live under /v1/governance/self-assessment.
+// ---------------------------------------------------------------------
+
+export type SelfAssessmentAnswerValue =
+  | "yes"
+  | "partial"
+  | "planned"
+  | "no"
+  | "not_applicable";
+
+export type SelfAssessmentEvidenceLink =
+  | "policy_library"
+  | "staff_attestation"
+  | "learn_cpd"
+  | "assistant_receipts"
+  | "trust_posture"
+  | "manual_review";
+
+export type ClinicSelfAssessmentStatus =
+  | "draft"
+  | "submitted"
+  | "superseded"
+  | "archived";
+
+export type SelfAssessmentTemplate = {
+  template_id: string;
+  template_slug: string;
+  template_version: string;
+  title: string;
+  summary: string;
+  source_basis: string[];
+  jurisdiction_tags: string[];
+  is_active: boolean;
+  superseded_by: string | null;
+  total_questions: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SelfAssessmentQuestion = {
+  question_id: string;
+  template_id: string;
+  question_slug: string;
+  question_order: number;
+  question_text: string;
+  guidance: string;
+  rcvs_theme: string | null;
+  source_basis: string[];
+  suggested_evidence_links: SelfAssessmentEvidenceLink[];
+};
+
+export type SelfAssessmentAnswer = {
+  answer_id: string;
+  assessment_id: string;
+  question_id: string;
+  question_slug: string;
+  answer_value: SelfAssessmentAnswerValue;
+  evidence_links: SelfAssessmentEvidenceLink[];
+  answered_by_user_id: string;
+  answered_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ClinicSelfAssessment = {
+  assessment_id: string;
+  clinic_id: string;
+  template_id: string;
+  template_slug: string;
+  template_version_snapshot: string;
+  clinic_assessment_version: number;
+  status: ClinicSelfAssessmentStatus;
+  title_snapshot: string;
+  summary_snapshot: string;
+  total_questions: number;
+  answered_questions: number;
+  readiness_summary_counts: TrustSelfAssessmentReadinessSummaryCounts;
+  linked_evidence_counts: TrustSelfAssessmentLinkedEvidenceCounts;
+  gap_count: number;
+  created_by_user_id: string;
+  submitted_by_user_id: string | null;
+  submitted_at: string | null;
+  superseded_at: string | null;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+  answers?: SelfAssessmentAnswer[];
+};
+
+export type LatestSelfAssessmentEntry = {
+  template_slug: string;
+  template_version: string;
+  title: string;
+  assessment: ClinicSelfAssessment | null;
+};
+
+export type SelfAssessmentTemplateListResponse = {
+  templates: SelfAssessmentTemplate[];
+  governance_note: string;
+};
+
+export type SelfAssessmentTemplateDetailResponse = {
+  template: SelfAssessmentTemplate;
+  questions: SelfAssessmentQuestion[];
+  governance_note: string;
+};
+
+export type SelfAssessmentQuestionListResponse = {
+  questions: SelfAssessmentQuestion[];
+  governance_note: string;
+};
+
+export type ClinicSelfAssessmentListResponse = {
+  assessments: ClinicSelfAssessment[];
+  limit: number;
+  governance_note: string;
+};
+
+export type ClinicSelfAssessmentResponse = {
+  assessment: ClinicSelfAssessment;
+  governance_note: string;
+};
+
+export type LatestSelfAssessmentResponse = {
+  latest: LatestSelfAssessmentEntry[];
+  governance_note: string;
+};
+
+export type SelfAssessmentCreateRequest = {
+  template_slug: string;
+  template_version?: string;
+};
+
+export type SelfAssessmentAnswerUpsertRequest = {
+  answer_value: SelfAssessmentAnswerValue;
+  evidence_links: SelfAssessmentEvidenceLink[];
+};
+
+// Aggregate self-assessment block exposed via Trust posture. Metadata
+// only; no raw answers, no staff identifiers, no per-user data.
+export type TrustSelfAssessmentReadinessSummaryCounts = {
+  yes: number;
+  partial: number;
+  planned: number;
+  no: number;
+  not_applicable: number;
+};
+
+export type TrustSelfAssessmentLinkedEvidenceCounts = {
+  policy_library: number;
+  staff_attestation: number;
+  learn_cpd: number;
+  assistant_receipts: number;
+  trust_posture: number;
+  manual_review: number;
+};
+
+export type TrustSelfAssessmentTemplateEntry = {
+  template_slug: string;
+  template_version: string;
+  title: string;
+  assessment_status: "submitted" | "superseded" | "none";
+  latest_submitted_at: string | null;
+  last_updated_at: string | null;
+  clinic_assessment_version: number | null;
+  total_questions: number;
+  answered_questions: number;
+  readiness_summary_counts: TrustSelfAssessmentReadinessSummaryCounts;
+  linked_evidence_counts: TrustSelfAssessmentLinkedEvidenceCounts;
+  gap_count: number;
+};
+
+export type TrustSelfAssessmentBlock = {
+  templates: TrustSelfAssessmentTemplateEntry[];
+  latest_submitted_at: string | null;
+  submitted_assessment_count: number;
+  // Honest disclosure: this block never carries raw answers or staff
+  // identifiers. Both flags are always false in the live contract.
+  raw_answers_included: false;
+  staff_identifiers_included: false;
   governance_note: string;
 };
 
