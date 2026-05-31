@@ -8,6 +8,8 @@ import { getAssistantIntelligenceSummary } from "@/lib/assistant";
 import { getTrustLearningDelta } from "@/lib/learn";
 import type {
   AssistantIntelligenceSummaryResponse,
+  GovernancePolicyTrustActivePolicy,
+  GovernancePolicyTrustBlock,
   TrustPackLearningDelta,
   TrustPostureResponse,
 } from "@/lib/types";
@@ -270,6 +272,10 @@ export default function TrustPosturePage() {
             <LearningEvidenceCard
               delta={learningDelta}
               error={learningDeltaError}
+            />
+
+            <GovernancePolicyEvidenceCard
+              block={data.governance_policy ?? data.snapshot.governance_policy ?? null}
             />
 
             <div className="grid gap-6 xl:grid-cols-2">
@@ -553,5 +559,162 @@ function LearningEvidenceCard({
         <p className="mt-4 text-sm text-slate-500">Loading learning evidence…</p>
       )}
     </div>
+  );
+}
+
+// Phase 2A-2.8 Part B - Governance policy evidence tile. Aggregate
+// metadata only; no policy body, no user-level rows, no void reasons.
+function GovernancePolicyEvidenceCard({
+  block,
+}: {
+  block: GovernancePolicyTrustBlock | null;
+}) {
+  if (!block) {
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          Evidence
+        </p>
+        <h2 className="mt-1 text-lg font-semibold text-slate-900">
+          Governance policy evidence
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-slate-600">
+          Governance policy evidence is not available yet.
+        </p>
+      </div>
+    );
+  }
+
+  const coveragePct = Math.round((block.average_coverage_rate ?? 0) * 100);
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div>
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          Evidence
+        </p>
+        <h2 className="mt-1 text-lg font-semibold text-slate-900">
+          Governance policy evidence
+        </h2>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+          Active AI-use policy versions and staff acknowledgement coverage,
+          shown as metadata-only governance evidence.
+        </p>
+      </div>
+
+      <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Active policies
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {block.active_policy_count}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Acknowledgements
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {block.total_attestation_count}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Average coverage
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {coveragePct}%
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Outstanding users
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {block.outstanding_user_count} of {block.expected_user_count}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Last policy update
+          </div>
+          <div className="mt-2 text-sm font-medium text-slate-900">
+            {formatDate(block.last_policy_update_at ?? undefined)}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Most recent acknowledgement
+          </div>
+          <div className="mt-2 text-sm font-medium text-slate-900">
+            {formatDate(block.most_recent_acknowledged_at ?? undefined)}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+        <div className="text-xs uppercase tracking-wide text-slate-500">
+          Raw policy body stored in this Trust view
+        </div>
+        <div className="mt-2 text-sm font-medium text-slate-900">No</div>
+      </div>
+
+      {block.active_policies && block.active_policies.length > 0 ? (
+        <div className="mt-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            Active policies
+          </p>
+          <ul className="mt-2 space-y-2">
+            {block.active_policies.map((policy) => (
+              <GovernancePolicyEvidenceRow
+                key={policy.clinic_policy_version_id}
+                policy={policy}
+              />
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <p className="mt-4 text-[11px] leading-5 text-slate-500">
+        Policy evidence is metadata-only. It supports review of governance
+        posture and staff acknowledgement coverage.
+      </p>
+    </div>
+  );
+}
+
+function GovernancePolicyEvidenceRow({
+  policy,
+}: {
+  policy: GovernancePolicyTrustActivePolicy;
+}) {
+  const coveragePct = Math.round(
+    (policy.attestation_coverage?.coverage_rate ?? 0) * 100,
+  );
+  return (
+    <li className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-900">{policy.title}</p>
+          <p className="mt-1 text-xs text-slate-500">
+            Version v{policy.clinic_policy_version}
+            {policy.template_slug ? ` - ${policy.template_slug}` : ""}
+          </p>
+        </div>
+        <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+          {coveragePct}% coverage
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-600">
+        <span>Activated: {formatDate(policy.activated_at ?? undefined)}</span>
+        <span>
+          Outstanding users: {policy.attestation_coverage?.outstanding_user_count ?? 0}
+        </span>
+      </div>
+    </li>
   );
 }
