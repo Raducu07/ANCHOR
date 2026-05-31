@@ -361,6 +361,230 @@ def _build_governance_policy_block(
     }
 
 
+_SELF_ASSESSMENT_NOTE = (
+    "Self-assessment evidence is metadata-only and supports governance "
+    "review and readiness evidence. It does not replace professional "
+    "judgement and should be reviewed by the clinic."
+)
+
+_SELF_ASSESSMENT_ANSWER_KEYS = (
+    "yes", "partial", "planned", "no", "not_applicable",
+)
+_SELF_ASSESSMENT_EVIDENCE_KEYS = (
+    "policy_library", "staff_attestation", "learn_cpd",
+    "assistant_receipts", "trust_posture", "manual_review",
+)
+
+
+def _coerce_count_dict(value: Any, expected_keys: tuple) -> Dict[str, int]:
+    """Defensive jsonb snapshot coercion. Returns a dict that always
+    contains every expected key (missing -> 0). A malformed payload
+    (non-dict, JSON-string that won't parse, non-integer values) is
+    treated as empty - the block must not crash the Trust snapshot.
+    """
+    if isinstance(value, str):
+        try:
+            import json as _json
+            value = _json.loads(value)
+        except Exception:
+            value = None
+    out: Dict[str, int] = {k: 0 for k in expected_keys}
+    if not isinstance(value, dict):
+        return out
+    for k in expected_keys:
+        try:
+            raw = value.get(k, 0)
+            if raw is None:
+                continue
+            out[k] = int(raw)
+        except Exception:
+            out[k] = 0
+    return out
+
+
+def _build_self_assessment_block(
+    db: Session,
+    clinic_id: str,
+) -> Dict[str, Any]:
+    """Aggregate metadata-only RCVS-aligned self-assessment evidence
+    for the Trust posture surface.
+
+    Reads only ANCHOR-curated catalogue metadata (self_assessment_templates,
+    self_assessment_questions COUNT) and frozen snapshot columns from
+    v_clinic_latest_self_assessment. NEVER reads
+    clinic_self_assessment_answers - aggregates are taken from the
+    submitted snapshot only. No staff identifiers, no raw answer rows,
+    no prompt text.
+    """
+    try:
+        rows = list(
+            db.execute(
+                text(
+                    """
+                    SELECT
+                        t.template_id,
+                        t.template_slug,
+                        t.template_version,
+                        t.title,
+                        v.assessment_id,
+                        v.clinic_assessment_version,
+                        v.status,
+                        v.template_version_snapshot,
+                        v.submitted_at,
+                        v.superseded_at,
+                        v.updated_at,
+                        v.total_questions_snapshot,
+                        v.answered_questions_snapshot,
+                        v.readiness_summary_snapshot,
+                        v.linked_evidence_counts_snapshot
+                    FROM public.self_assessment_templates t
+                    LEFT JOIN public.v_clinic_latest_self_assessment v
+                        ON v.template_id = t.template_id
+                       AND v.clinic_id = CAST(:clinic_id AS uuid)
+                    WHERE t.is_active = true
+                    ORDER BY t.title
+                    """
+                ),
+                {"clinic_id": clinic_id},
+            ).mappings().all()
+        )
+    except Exception:
+        logger.exception(
+            "trust_snapshot query failed: self_assessment_latest"
+        )
+        rows = []
+
+    # Question counts per template (catalogue-level, no clinic data).
+    question_counts: Dict[str, int] = {}
+    try:
+        qrows = list(
+            db.execute(
+                text(
+                    """
+                    SELECT template_id, COUNT(*)::int AS question_count
+                    FROM public.self_assessment_questions
+                    GROUP BY template_id
+                    """
+                ),
+                {},
+            ).mappings().all()
+        )
+        for qr in qrows:
+            qd = dict(qr)
+            question_counts[str(qd["template_id"])] = int(qd["question_count"])
+    except Exception:
+        logger.exception(
+            "trust_snapshot query failed: self_assessment_question_counts"
+        )
+
+    templates: List[Dict[str, Any]] = []
+    submitted_count = 0
+    top_latest_submitted: Optional[datetime] = None
+
+    for raw in rows:
+        r = dict(raw)
+        template_id = str(r["template_id"])
+        status = r.get("status")
+        catalogue_q_count = question_counts.get(template_id, 0)
+
+        if status not in ("submitted", "superseded"):
+            # No latest record - emit a "none" stub so the clinic can
+            # see this template is awaiting evidence.
+            templates.append(
+                {
+                    "template_slug": str(r.get("template_slug") or ""),
+                    "template_version": str(r.get("template_version") or ""),
+                    "title": str(r.get("title") or ""),
+                    "assessment_status": "none",
+                    "latest_submitted_at": None,
+                    "last_updated_at": None,
+                    "clinic_assessment_version": None,
+                    "total_questions": int(catalogue_q_count),
+                    "answered_questions": 0,
+                    "readiness_summary_counts": {
+                        k: 0 for k in _SELF_ASSESSMENT_ANSWER_KEYS
+                    },
+                    "linked_evidence_counts": {
+                        k: 0 for k in _SELF_ASSESSMENT_EVIDENCE_KEYS
+                    },
+                    "gap_count": 0,
+                }
+            )
+            continue
+
+        submitted_count += 1
+
+        readiness = _coerce_count_dict(
+            r.get("readiness_summary_snapshot"),
+            _SELF_ASSESSMENT_ANSWER_KEYS,
+        )
+        evidence = _coerce_count_dict(
+            r.get("linked_evidence_counts_snapshot"),
+            _SELF_ASSESSMENT_EVIDENCE_KEYS,
+        )
+
+        total_questions = _to_int(
+            r.get("total_questions_snapshot"), default=catalogue_q_count
+        )
+        answered_questions = _to_int(r.get("answered_questions_snapshot"))
+
+        gap_count = (
+            int(readiness.get("partial", 0))
+            + int(readiness.get("planned", 0))
+            + int(readiness.get("no", 0))
+        )
+
+        submitted_at = r.get("submitted_at")
+        updated_at = r.get("updated_at")
+        if submitted_at is not None and (
+            top_latest_submitted is None
+            or submitted_at > top_latest_submitted
+        ):
+            top_latest_submitted = submitted_at
+
+        templates.append(
+            {
+                "template_slug": str(r.get("template_slug") or ""),
+                "template_version": str(
+                    r.get("template_version_snapshot")
+                    or r.get("template_version")
+                    or ""
+                ),
+                "title": str(r.get("title") or ""),
+                "assessment_status": str(status),
+                "latest_submitted_at": (
+                    submitted_at.isoformat() if submitted_at else None
+                ),
+                "last_updated_at": (
+                    updated_at.isoformat() if updated_at else None
+                ),
+                "clinic_assessment_version": (
+                    int(r["clinic_assessment_version"])
+                    if r.get("clinic_assessment_version") is not None
+                    else None
+                ),
+                "total_questions": int(total_questions),
+                "answered_questions": int(answered_questions),
+                "readiness_summary_counts": readiness,
+                "linked_evidence_counts": evidence,
+                "gap_count": gap_count,
+            }
+        )
+
+    return {
+        "templates": templates,
+        "latest_submitted_at": (
+            top_latest_submitted.isoformat()
+            if top_latest_submitted
+            else None
+        ),
+        "submitted_assessment_count": submitted_count,
+        "raw_answers_included": False,
+        "staff_identifiers_included": False,
+        "governance_note": _SELF_ASSESSMENT_NOTE,
+    }
+
+
 def build_trust_snapshot(
     db: Session,
     clinic_id: str,
@@ -488,6 +712,10 @@ def build_trust_snapshot(
         db=db, clinic_id=clinic_id,
     )
 
+    self_assessment_block = _build_self_assessment_block(
+        db=db, clinic_id=clinic_id,
+    )
+
     recommended_learning = _derive_recommended_learning(
         top_mode_24h=top_mode_24h,
         intervention_rate_24h=intervention_rate_24h,
@@ -558,6 +786,7 @@ def build_trust_snapshot(
             "recommended_learning": recommended_learning,
         },
         "governance_policy": governance_policy_block,
+        "self_assessment": self_assessment_block,
         "limitations": _build_limitations(signal_quality=signal_quality),
     }
 
