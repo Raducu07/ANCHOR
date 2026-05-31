@@ -172,6 +172,195 @@ def _resolve_policy_version(db: Session, clinic_id: str) -> int:
     return 1
 
 
+_GOVERNANCE_POLICY_NOTE = (
+    "Governance policy evidence is metadata-only. It records active "
+    "AI-use policy versions and staff acknowledgement coverage. It is "
+    "not legal advice, a certification mark, a competence assessment, "
+    "or a guarantee of regulatory compliance."
+)
+
+
+def _build_governance_policy_block(
+    db: Session,
+    clinic_id: str,
+) -> Dict[str, Any]:
+    """Aggregate metadata-only governance policy + staff attestation
+    evidence for the Trust posture surface.
+
+    No policy body text. No staff names/emails. No void reasons.
+    """
+    expected_row = _safe_row_mapping(
+        db,
+        """
+        SELECT COUNT(*)::int AS c
+        FROM public.clinic_users
+        WHERE clinic_id = CAST(:clinic_id AS uuid)
+          AND active_status = true
+        """,
+        {"clinic_id": clinic_id},
+        "governance_policy_expected_users",
+    )
+    expected_user_count = _to_int(expected_row.get("c"), default=0)
+
+    try:
+        rows = list(
+            db.execute(
+                text(
+                    """
+                    SELECT
+                        cpv.clinic_policy_version_id,
+                        cpv.policy_template_id,
+                        cpv.clinic_policy_version,
+                        cpv.title_snapshot,
+                        cpv.activated_at,
+                        cpv.updated_at,
+                        pt.template_slug,
+                        COUNT(pa.attestation_id)
+                            FILTER (WHERE pa.is_voided = false)::int
+                            AS attestation_count,
+                        COUNT(DISTINCT pa.user_id)
+                            FILTER (WHERE pa.is_voided = false)::int
+                            AS distinct_user_count,
+                        MAX(pa.acknowledged_at)
+                            FILTER (WHERE pa.is_voided = false)
+                            AS most_recent_acknowledged_at
+                    FROM public.clinic_policy_versions cpv
+                    LEFT JOIN public.policy_templates pt
+                        ON pt.template_id = cpv.policy_template_id
+                    LEFT JOIN public.policy_attestations pa
+                        ON pa.clinic_policy_version_id
+                                = cpv.clinic_policy_version_id
+                        AND pa.clinic_id = cpv.clinic_id
+                    WHERE cpv.clinic_id = CAST(:clinic_id AS uuid)
+                      AND cpv.status = 'active'
+                    GROUP BY
+                        cpv.clinic_policy_version_id,
+                        cpv.policy_template_id,
+                        cpv.clinic_policy_version,
+                        cpv.title_snapshot,
+                        cpv.activated_at,
+                        cpv.updated_at,
+                        pt.template_slug
+                    ORDER BY cpv.activated_at DESC NULLS LAST
+                    """
+                ),
+                {"clinic_id": clinic_id},
+            ).mappings().all()
+        )
+    except Exception:
+        logger.exception("trust_snapshot query failed: governance_policy_active")
+        rows = []
+
+    active_policies: List[Dict[str, Any]] = []
+    coverage_rates: List[float] = []
+    total_attestation_count = 0
+    last_policy_update_at: Optional[datetime] = None
+    most_recent_acknowledged_at: Optional[datetime] = None
+
+    for raw in rows:
+        r = dict(raw)
+        attestation_count = _to_int(r.get("attestation_count"))
+        distinct_user_count = _to_int(r.get("distinct_user_count"))
+        outstanding = max(expected_user_count - distinct_user_count, 0)
+        coverage_rate = (
+            (distinct_user_count / expected_user_count)
+            if expected_user_count > 0
+            else 0.0
+        )
+        coverage_rates.append(coverage_rate)
+        total_attestation_count += attestation_count
+
+        activated_at = r.get("activated_at")
+        updated_at = r.get("updated_at")
+        candidate_update = activated_at or updated_at
+        if candidate_update is not None and (
+            last_policy_update_at is None
+            or candidate_update > last_policy_update_at
+        ):
+            last_policy_update_at = candidate_update
+
+        row_mra = r.get("most_recent_acknowledged_at")
+        if row_mra is not None and (
+            most_recent_acknowledged_at is None
+            or row_mra > most_recent_acknowledged_at
+        ):
+            most_recent_acknowledged_at = row_mra
+
+        active_policies.append(
+            {
+                "policy_template_id": str(r["policy_template_id"]),
+                "clinic_policy_version_id": str(
+                    r["clinic_policy_version_id"]
+                ),
+                "clinic_policy_version": int(r["clinic_policy_version"]),
+                "title": str(r.get("title_snapshot") or ""),
+                "template_slug": r.get("template_slug"),
+                "activated_at": (
+                    activated_at.isoformat() if activated_at else None
+                ),
+                "attestation_coverage": {
+                    "attestation_count": attestation_count,
+                    "distinct_user_count": distinct_user_count,
+                    "expected_user_count": expected_user_count,
+                    "outstanding_user_count": outstanding,
+                    "coverage_rate": coverage_rate,
+                    "most_recent_acknowledged_at": (
+                        row_mra.isoformat() if row_mra else None
+                    ),
+                },
+            }
+        )
+
+    distinct_row = _safe_row_mapping(
+        db,
+        """
+        SELECT COUNT(DISTINCT pa.user_id)::int AS c
+        FROM public.policy_attestations pa
+        JOIN public.clinic_policy_versions cpv
+            ON cpv.clinic_policy_version_id = pa.clinic_policy_version_id
+           AND cpv.clinic_id = pa.clinic_id
+        WHERE pa.clinic_id = CAST(:clinic_id AS uuid)
+          AND pa.is_voided = false
+          AND cpv.status = 'active'
+        """,
+        {"clinic_id": clinic_id},
+        "governance_policy_distinct_users",
+    )
+    total_distinct_users_attested = _to_int(distinct_row.get("c"), default=0)
+
+    active_policy_count = len(active_policies)
+    average_coverage_rate = (
+        sum(coverage_rates) / active_policy_count
+        if active_policy_count > 0
+        else 0.0
+    )
+    total_outstanding_user_count = max(
+        expected_user_count - total_distinct_users_attested, 0
+    )
+
+    return {
+        "active_policy_count": active_policy_count,
+        "active_policies": active_policies,
+        "total_attestation_count": total_attestation_count,
+        "total_distinct_users_attested": total_distinct_users_attested,
+        "expected_user_count": expected_user_count,
+        "outstanding_user_count": total_outstanding_user_count,
+        "average_coverage_rate": average_coverage_rate,
+        "last_policy_update_at": (
+            last_policy_update_at.isoformat()
+            if last_policy_update_at
+            else None
+        ),
+        "most_recent_acknowledged_at": (
+            most_recent_acknowledged_at.isoformat()
+            if most_recent_acknowledged_at
+            else None
+        ),
+        "raw_policy_body_included": False,
+        "governance_note": _GOVERNANCE_POLICY_NOTE,
+    }
+
+
 def build_trust_snapshot(
     db: Session,
     clinic_id: str,
@@ -295,6 +484,10 @@ def build_trust_snapshot(
         events_24h=events_24h,
     )
 
+    governance_policy_block = _build_governance_policy_block(
+        db=db, clinic_id=clinic_id,
+    )
+
     recommended_learning = _derive_recommended_learning(
         top_mode_24h=top_mode_24h,
         intervention_rate_24h=intervention_rate_24h,
@@ -364,6 +557,7 @@ def build_trust_snapshot(
             "receipts_related_learning": True,
             "recommended_learning": recommended_learning,
         },
+        "governance_policy": governance_policy_block,
         "limitations": _build_limitations(signal_quality=signal_quality),
     }
 
