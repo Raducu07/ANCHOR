@@ -13,6 +13,7 @@
 //     real authorization control.
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import Link from "next/link";
 import { ApiError } from "@/lib/api";
 import {
   SESSION_SERVER_SNAPSHOT,
@@ -508,6 +509,24 @@ export function GovernancePolicyAdminPage() {
             ))}
           </ul>
         )}
+      </Card>
+
+      <Card variant="native">
+        <SectionTitle title="Related governance policy surfaces" />
+        <div className="mt-4 flex flex-wrap gap-3">
+          <Link
+            href="/settings/policy-acknowledgements"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm transition hover:border-slate-300"
+          >
+            View policy acknowledgements
+          </Link>
+          <Link
+            href="/settings/policy-attestations"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm transition hover:border-slate-300"
+          >
+            View attestation status
+          </Link>
+        </div>
       </Card>
     </div>
   );

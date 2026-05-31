@@ -13,6 +13,7 @@
 //   * Admin gate is UX hardening only; backend is the authority.
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import Link from "next/link";
 import { ApiError } from "@/lib/api";
 import {
   SESSION_SERVER_SNAPSHOT,
@@ -454,6 +455,24 @@ export function PolicyAttestationStatusPage() {
             })}
           </ul>
         )}
+      </Card>
+
+      <Card variant="native">
+        <SectionTitle title="Related governance policy surfaces" />
+        <div className="mt-4 flex flex-wrap gap-3">
+          <Link
+            href="/settings/policies"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm transition hover:border-slate-300"
+          >
+            Manage policy library
+          </Link>
+          <Link
+            href="/trust/posture"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm transition hover:border-slate-300"
+          >
+            View Trust posture
+          </Link>
+        </div>
       </Card>
     </div>
   );

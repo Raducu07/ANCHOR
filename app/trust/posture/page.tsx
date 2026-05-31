@@ -679,7 +679,16 @@ function GovernancePolicyEvidenceCard({
         </div>
       ) : null}
 
-      <p className="mt-4 text-[11px] leading-5 text-slate-500">
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Link
+          href="/settings/policy-acknowledgements"
+          className="rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+        >
+          My acknowledgements
+        </Link>
+      </div>
+
+      <p className="mt-3 text-[11px] leading-5 text-slate-500">
         Policy evidence is metadata-only. It supports review of governance
         posture and staff acknowledgement coverage.
       </p>

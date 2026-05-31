@@ -18,8 +18,14 @@
 //     access via its redirect-to-login behaviour, so no additional role
 //     gate is added here.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import Link from "next/link";
 import { ApiError } from "@/lib/api";
+import {
+  SESSION_SERVER_SNAPSHOT,
+  getSessionUserSnapshot,
+  subscribeSessionStorage,
+} from "@/lib/auth";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -36,6 +42,9 @@ import type {
 
 const ATTESTATION_STATEMENT_VERSION = "attestation_statement_v1";
 const ACKNOWLEDGEMENT_METHOD = "in_app_button_click";
+
+// Frontend-only navigation gate; backend remains the real authority.
+const POLICY_ADMIN_ROLES = new Set(["admin", "owner", "practice_manager"]);
 
 function formatDateTime(value?: string | null): string {
   if (!value) return "Not set";
@@ -77,6 +86,15 @@ function mapAttestErrorMessage(err: unknown): string {
 type Feedback = { kind: "success" | "error"; message: string } | null;
 
 export function PolicyAcknowledgementsPage() {
+  const sessionUser = useSyncExternalStore(
+    subscribeSessionStorage,
+    getSessionUserSnapshot,
+    SESSION_SERVER_SNAPSHOT,
+  );
+  const isAdmin = Boolean(
+    sessionUser?.role && POLICY_ADMIN_ROLES.has(sessionUser.role),
+  );
+
   const [outstanding, setOutstanding] = useState<ClinicPolicyVersion[] | null>(
     null,
   );
@@ -435,6 +453,26 @@ export function PolicyAcknowledgementsPage() {
             ))}
           </ul>
         )}
+      </Card>
+
+      <Card variant="native">
+        <SectionTitle title="Related governance surfaces" />
+        <div className="mt-4 flex flex-wrap gap-3">
+          <Link
+            href="/trust/posture"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm transition hover:border-slate-300"
+          >
+            View Trust posture
+          </Link>
+          {isAdmin ? (
+            <Link
+              href="/settings/policies"
+              className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm transition hover:border-slate-300"
+            >
+              Manage policy library
+            </Link>
+          ) : null}
+        </div>
       </Card>
     </div>
   );
