@@ -11,6 +11,10 @@ import {
   subscribeSessionStorage,
 } from "@/lib/auth";
 
+// Phase 2A-2.10 - frontend-only navigation gate, mirrors the admin set
+// used by the policy admin pages. Backend remains the real authority.
+const POLICY_ADMIN_ROLES = new Set(["admin", "owner", "practice_manager"]);
+
 function roleLabel(role: string) {
   return role
     .replace(/_/g, " ")
@@ -69,6 +73,39 @@ export default function SettingsPage() {
             </dl>
           </Card>
         </div>
+
+        <Card variant="native">
+          <SectionTitle
+            title="Governance policy workflows"
+            description="Manage clinic AI-use policy versions, staff acknowledgements, and metadata-only attestation evidence."
+          />
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            {user && POLICY_ADMIN_ROLES.has(user.role) ? (
+              <QuickLink
+                href="/settings/policies"
+                title="Governance Policy Library"
+                description="Create and activate clinic AI-use policy versions from ANCHOR templates."
+              />
+            ) : null}
+            <QuickLink
+              href="/settings/policy-acknowledgements"
+              title="Policy Acknowledgements"
+              description="Review active clinic AI-use policy metadata and record your acknowledgement."
+            />
+            {user && POLICY_ADMIN_ROLES.has(user.role) ? (
+              <QuickLink
+                href="/settings/policy-attestations"
+                title="Policy Attestation Status"
+                description="Review clinic-wide acknowledgement coverage and void records when correction is needed."
+              />
+            ) : null}
+          </div>
+          <p className="mt-4 max-w-3xl text-xs leading-5 text-slate-500">
+            Policy workflow records metadata-only governance evidence. It is not
+            CPD completion, legal advice, regulatory certification, evidence of
+            professional competence, or a guarantee of regulatory compliance.
+          </p>
+        </Card>
 
         <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
           <Card variant="native">
