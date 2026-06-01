@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
@@ -9,8 +9,30 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { buildSessionFromLoginResponse, getAccessToken, saveAuthState } from "@/lib/auth";
 import type { LoginResponse } from "@/lib/types";
 
+// Validate an optional ?returnTo= target. Only same-origin absolute paths are
+// allowed; anything that could redirect off-site falls back to /workspace.
+function safeReturnTo(value: string | null): string {
+  if (!value) return "/workspace";
+  if (!value.startsWith("/")) return "/workspace";
+  if (value.startsWith("//")) return "/workspace";
+  if (value.includes("://")) return "/workspace";
+  return value;
+}
+
 export function LoginForm() {
+  // useSearchParams() must sit inside a Suspense boundary so the /login route
+  // can still be statically prerendered.
+  return (
+    <Suspense fallback={null}>
+      <LoginFormInner />
+    </Suspense>
+  );
+}
+
+function LoginFormInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnTo = safeReturnTo(searchParams.get("returnTo"));
   const [clinicSlug, setClinicSlug] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -19,9 +41,9 @@ export function LoginForm() {
 
   useEffect(() => {
     if (getAccessToken()) {
-      router.replace("/workspace");
+      router.replace(returnTo);
     }
-  }, [router]);
+  }, [router, returnTo]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -46,7 +68,7 @@ export function LoginForm() {
       );
 
       saveAuthState(session.token, session.user);
-      router.replace("/workspace");
+      router.replace(returnTo);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.message);

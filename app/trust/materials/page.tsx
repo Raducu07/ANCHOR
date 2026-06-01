@@ -182,8 +182,10 @@ export default function TrustMaterialsPage() {
       setError(null);
       const response = await getTrustMaterials();
       setData(response);
-    } catch (err: any) {
-      setError(err?.message || "Failed to load trust materials.");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to load trust materials.";
+      setError(message);
     } finally {
       setLoading(false);
       setRefreshing(false);

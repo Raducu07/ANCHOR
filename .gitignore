@@ -42,3 +42,7 @@ next-env.d.ts
 
 # Claude agent state and nested worktrees
 .claude/
+
+# ANCHOR canonical strategy docs: ignore heavy/binary artefacts only;
+# markdown source-discipline notes are tracked.
+docs/canonical/*.docx
