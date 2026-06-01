@@ -9,7 +9,7 @@
 //   * Frontend admin gate is UX hardening only; the backend remains the
 //     real authorization control.
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ApiError } from "@/lib/api";
 import {
   SESSION_SERVER_SNAPSHOT,
@@ -99,9 +99,11 @@ function buildAnswerMapFromDraft(
   }
   if (!draft?.answers) return map;
   for (const a of draft.answers) {
-    map[a.question_slug] = {
+    const slug = a.question_slug_snapshot;
+    if (!slug) continue;
+    map[slug] = {
       answerValue: a.answer_value,
-      evidenceLinks: [...a.evidence_links],
+      evidenceLinks: Array.isArray(a.evidence_links) ? [...a.evidence_links] : [],
       saving: false,
     };
   }
@@ -131,6 +133,7 @@ export function SelfAssessmentAdminPage() {
   const [draftCreating, setDraftCreating] = useState(false);
 
   const [answerStates, setAnswerStates] = useState<Record<string, DraftAnswerState>>({});
+  const hydratedAssessmentIdRef = useRef<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [feedback, setFeedback] = useState<ActionFeedback>(null);
@@ -211,7 +214,14 @@ export function SelfAssessmentAdminPage() {
 
   useEffect(() => {
     if (!questions) return;
-    setAnswerStates(buildAnswerMapFromDraft(draft, questions));
+    const newId = draft?.assessment_id ?? null;
+    // Only rebuild answer state on first load of a draft or when the
+    // active draft identity changes (start / resume / clear). Save
+    // responses that update the same draft must not wipe local state.
+    if (newId !== hydratedAssessmentIdRef.current) {
+      setAnswerStates(buildAnswerMapFromDraft(draft, questions));
+      hydratedAssessmentIdRef.current = newId;
+    }
   }, [draft, questions]);
 
   const handleStartDraft = useCallback(async () => {
@@ -279,14 +289,32 @@ export function SelfAssessmentAdminPage() {
         [question.question_slug]: { ...state, saving: true },
       }));
       setFeedback(null);
+      const submittedAnswerValue = state.answerValue;
+      const submittedEvidenceLinks = [...state.evidenceLinks];
       try {
         const result = await upsertSelfAssessmentAnswer({
           assessmentId: draft.assessment_id,
           questionSlug: question.question_slug,
-          answerValue: state.answerValue,
-          evidenceLinks: state.evidenceLinks,
+          answerValue: submittedAnswerValue,
+          evidenceLinks: submittedEvidenceLinks,
         });
-        setDraft(result.assessment);
+        // Persist the just-saved answer in local state explicitly so the
+        // UI does not depend on whether the PUT response envelope echoes
+        // the full answers array back.
+        setAnswerStates((prev) => ({
+          ...prev,
+          [question.question_slug]: {
+            answerValue: submittedAnswerValue,
+            evidenceLinks: submittedEvidenceLinks,
+            saving: false,
+          },
+        }));
+        // Update the active draft (counts, timestamps) without changing
+        // its identity, so the rehydration effect does not fire and the
+        // user stays on the same draft.
+        if (result?.assessment?.assessment_id === draft.assessment_id) {
+          setDraft(result.assessment);
+        }
         setFeedback({
           kind: "success",
           message: "Answer saved.",
@@ -360,12 +388,24 @@ export function SelfAssessmentAdminPage() {
     }
   }, [draft]);
 
-  const allAnswered = useMemo(() => {
-    if (!draft || !questions || questions.length === 0) return false;
-    return questions.every(
-      (q) => answerStates[q.question_slug]?.answerValue != null,
+  // Draft progress is computed locally from the question catalogue and
+  // the saved-answer state, because draft envelopes do not always carry
+  // answered_questions / total_questions counts.
+  const draftTotalQuestions = questions?.length ?? 0;
+  const draftAnsweredQuestions = useMemo(() => {
+    if (!questions || questions.length === 0) return 0;
+    return questions.reduce(
+      (n, q) =>
+        answerStates[q.question_slug]?.answerValue != null ? n + 1 : n,
+      0,
     );
-  }, [answerStates, draft, questions]);
+  }, [answerStates, questions]);
+
+  const allAnswered = useMemo(() => {
+    if (!draft) return false;
+    if (draftTotalQuestions === 0) return false;
+    return draftAnsweredQuestions === draftTotalQuestions;
+  }, [draft, draftAnsweredQuestions, draftTotalQuestions]);
 
   if (!isAdmin) {
     return (
@@ -577,7 +617,7 @@ export function SelfAssessmentAdminPage() {
               <div className="mt-3 space-y-1">
                 <DetailLine
                   label="Answered"
-                  value={`${draft.answered_questions} of ${draft.total_questions}`}
+                  value={`${draftAnsweredQuestions} of ${draftTotalQuestions}`}
                 />
                 <DetailLine
                   label="Created"

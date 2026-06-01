@@ -1007,7 +1007,7 @@ export type SelfAssessmentAnswer = {
   answer_id: string;
   assessment_id: string;
   question_id: string;
-  question_slug: string;
+  question_slug_snapshot: string;
   answer_value: SelfAssessmentAnswerValue;
   evidence_links: SelfAssessmentEvidenceLink[];
   answered_by_user_id: string;
