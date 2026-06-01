@@ -478,8 +478,7 @@ export function SelfAssessmentAdminPage() {
             {latestError}
           </p>
         ) : (() => {
-            const entry = latest?.find((l) => l.template_slug === TEMPLATE_SLUG);
-            const submitted = entry?.assessment ?? null;
+            const submitted = latest && latest.length > 0 ? latest[0] : null;
             if (!submitted) {
               return (
                 <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
@@ -487,12 +486,29 @@ export function SelfAssessmentAdminPage() {
                 </p>
               );
             }
+            const total = submitted.total_questions_snapshot ?? 0;
+            const answered = submitted.answered_questions_snapshot ?? 0;
+            const readiness = submitted.readiness_summary_snapshot ?? {
+              yes: 0,
+              partial: 0,
+              planned: 0,
+              no: 0,
+              not_applicable: 0,
+            };
+            const evidence = submitted.linked_evidence_counts_snapshot ?? {
+              policy_library: 0,
+              staff_attestation: 0,
+              learn_cpd: 0,
+              assistant_receipts: 0,
+              trust_posture: 0,
+              manual_review: 0,
+            };
             return (
               <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     <p className="text-sm font-semibold text-slate-900">
-                      {submitted.title_snapshot}
+                      RCVS-aligned AI Governance Self-Assessment
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
                       Template v{submitted.template_version_snapshot} - clinic version v
@@ -508,12 +524,55 @@ export function SelfAssessmentAdminPage() {
                   />
                   <DetailLine
                     label="Answered"
-                    value={`${submitted.answered_questions} of ${submitted.total_questions}`}
+                    value={`${answered} of ${total}`}
                   />
-                  <DetailLine
-                    label="Gap count"
-                    value={String(submitted.gap_count)}
-                  />
+                </div>
+                <div className="mt-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                    Readiness summary
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-700">
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                      Yes: {readiness.yes ?? 0}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                      Partial: {readiness.partial ?? 0}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                      Planned: {readiness.planned ?? 0}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                      No: {readiness.no ?? 0}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                      Not applicable: {readiness.not_applicable ?? 0}
+                    </span>
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                    Linked evidence
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-700">
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                      Policy library: {evidence.policy_library ?? 0}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                      Staff attestation: {evidence.staff_attestation ?? 0}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                      Learn / CPD: {evidence.learn_cpd ?? 0}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                      Assistant receipts: {evidence.assistant_receipts ?? 0}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                      Trust posture: {evidence.trust_posture ?? 0}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                      Manual review: {evidence.manual_review ?? 0}
+                    </span>
+                  </div>
                 </div>
               </div>
             );

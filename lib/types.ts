@@ -1042,10 +1042,17 @@ export type ClinicSelfAssessment = {
 };
 
 export type LatestSelfAssessmentEntry = {
-  template_slug: string;
-  template_version: string;
-  title: string;
-  assessment: ClinicSelfAssessment | null;
+  template_id: string;
+  assessment_id: string;
+  clinic_assessment_version: number;
+  status: ClinicSelfAssessmentStatus;
+  template_version_snapshot: string;
+  submitted_at: string | null;
+  superseded_at: string | null;
+  total_questions_snapshot: number;
+  answered_questions_snapshot: number;
+  readiness_summary_snapshot: TrustSelfAssessmentReadinessSummaryCounts;
+  linked_evidence_counts_snapshot: TrustSelfAssessmentLinkedEvidenceCounts;
 };
 
 export type SelfAssessmentTemplateListResponse = {
