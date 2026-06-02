@@ -174,9 +174,9 @@ def _resolve_policy_version(db: Session, clinic_id: str) -> int:
 
 _GOVERNANCE_POLICY_NOTE = (
     "Governance policy evidence is metadata-only. It records active "
-    "AI-use policy versions and staff acknowledgement coverage. It is "
-    "not legal advice, a certification mark, a competence assessment, "
-    "or a guarantee of regulatory compliance."
+    "AI-use policy versions and staff acknowledgement coverage to "
+    "support governance review and readiness evidence. Human review "
+    "remains required; this is not legal advice."
 )
 
 

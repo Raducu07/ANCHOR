@@ -161,8 +161,8 @@ def _build_posture_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
                 f"Trust state: {trust_state}.",
                 f"Recent intervention rate: {snapshot['operations']['intervention_rate_24h'] * 100.0:.1f}%.",
                 f"Recent privacy warning rate: {snapshot['operations']['pii_warned_rate_24h'] * 100.0:.1f}%.",
-                f"Top mode (24h): {snapshot['operations']['top_mode_24h'] or '—'}.",
-                f"Top route (24h): {snapshot['operations']['top_route_24h'] or '—'}.",
+                f"Top mode (24h): {snapshot['operations']['top_mode_24h'] or '-'}.",
+                f"Top route (24h): {snapshot['operations']['top_route_24h'] or '-'}.",
             ],
         },
         {
@@ -185,6 +185,218 @@ def _build_posture_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         "sections": sections,
         "snapshot": snapshot,
     }
+
+
+# ---------------------------------------------------------------------
+# Phase 2A-3.9B-1 - Trust Pack evidence-closure helpers.
+#
+# Each builder consumes ONLY the metadata-only aggregates already on
+# the snapshot. None of these helpers issues new SQL, and none touches
+# raw self-assessment answers, raw policy body, staff identifiers, or
+# raw prompts / outputs. If a surface isn't aggregated on the snapshot
+# today, the section emits a conservative copy and points at the
+# relevant Trust posture sub-endpoint rather than fabricating numbers.
+# ---------------------------------------------------------------------
+
+
+_LEARNING_EVIDENCE_NOTE = (
+    "Learning evidence is metadata-only and supports staff AI-literacy "
+    "readiness review. It is not certified CPD, proof of competence, or "
+    "regulator-approved training."
+)
+
+
+def _build_learning_evidence_section(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    learning = snapshot.get("learning", {}) or {}
+    recommended = (learning.get("recommended_learning") or {}).get("title") or "-"
+    bullets: List[str] = [
+        "Learn baseline enabled.",
+        "Explainers and microlearning cards available.",
+        "Per-staff CPD aggregates are exposed via the learning-delta posture endpoint, not duplicated in this artefact.",
+        f"Recommended reinforcement focus: {recommended}.",
+        "Evidence is metadata-only; no raw learning content or per-staff identifiers in this artefact.",
+    ]
+    return {
+        "id": "learning_evidence",
+        "title": "Learning and CPD evidence",
+        "body": _LEARNING_EVIDENCE_NOTE,
+        "bullets": bullets,
+        "raw_content_included": False,
+        "staff_identifiers_included": False,
+    }
+
+
+def _build_governance_policy_evidence_section(
+    snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    block = snapshot.get("governance_policy") or {}
+    active_policy_count = int(block.get("active_policy_count") or 0)
+    expected = int(block.get("expected_user_count") or 0)
+    distinct = int(block.get("total_distinct_users_attested") or 0)
+    outstanding = int(block.get("outstanding_user_count") or 0)
+    average_coverage = float(block.get("average_coverage_rate") or 0.0)
+    total_attestations = int(block.get("total_attestation_count") or 0)
+    last_policy_update = block.get("last_policy_update_at")
+    most_recent_ack = block.get("most_recent_acknowledged_at")
+    governance_note = block.get("governance_note") or (
+        "Governance policy evidence is metadata-only. It records active "
+        "AI-use policy versions and staff acknowledgement coverage to "
+        "support governance review and readiness evidence. Human review "
+        "remains required; this is not legal advice."
+    )
+
+    active_titles: List[str] = []
+    for p in (block.get("active_policies") or [])[:5]:
+        title = str(p.get("title") or "").strip()
+        version = p.get("clinic_policy_version")
+        if title and version is not None:
+            active_titles.append(f"{title} (v{version})")
+        elif title:
+            active_titles.append(title)
+
+    bullets: List[str] = [
+        f"Active clinic policy versions: {active_policy_count}.",
+        f"Total non-voided attestations: {total_attestations}.",
+        f"Distinct users with at least one attestation: {distinct} of {expected}.",
+        f"Outstanding users: {outstanding}.",
+        f"Average attestation coverage across active policies: {average_coverage * 100.0:.1f}%.",
+        f"Most recent acknowledgement: {most_recent_ack or '-'}.",
+        f"Most recent policy update: {last_policy_update or '-'}.",
+    ]
+    if active_titles:
+        bullets.append("Active policies: " + "; ".join(active_titles) + ".")
+
+    return {
+        "id": "governance_policy_evidence",
+        "title": "Governance policy evidence",
+        "body": governance_note,
+        "bullets": bullets,
+        "raw_policy_body_included": False,
+        "staff_identifiers_included": False,
+    }
+
+
+def _build_staff_attestation_section(
+    snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    block = snapshot.get("governance_policy") or {}
+    expected = int(block.get("expected_user_count") or 0)
+    distinct = int(block.get("total_distinct_users_attested") or 0)
+    outstanding = int(block.get("outstanding_user_count") or 0)
+    average_coverage = float(block.get("average_coverage_rate") or 0.0)
+    most_recent_ack = block.get("most_recent_acknowledged_at")
+    return {
+        "id": "staff_attestation_evidence",
+        "title": "Staff attestation evidence",
+        "body": (
+            "Staff attestation evidence aggregates acknowledgement coverage "
+            "across active clinic policy versions. Per-user identifiers "
+            "are not included in this artefact."
+        ),
+        "bullets": [
+            f"Expected users: {expected}.",
+            f"Distinct users attested: {distinct}.",
+            f"Outstanding users: {outstanding}.",
+            f"Average coverage rate: {average_coverage * 100.0:.1f}%.",
+            f"Most recent acknowledgement: {most_recent_ack or '-'}.",
+            "Staff names and emails are not surfaced in this artefact.",
+        ],
+        "staff_identifiers_included": False,
+    }
+
+
+def _build_self_assessment_evidence_section(
+    snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    block = snapshot.get("self_assessment") or {}
+    templates = list(block.get("templates") or [])
+    submitted_count = int(block.get("submitted_assessment_count") or 0)
+    latest_submitted_at = block.get("latest_submitted_at")
+    governance_note = block.get("governance_note") or (
+        "Self-assessment evidence is metadata-only and supports governance "
+        "review and readiness evidence. It does not replace professional "
+        "judgement and should be reviewed by the clinic."
+    )
+
+    bullets: List[str] = [
+        f"Submitted self-assessments on file: {submitted_count}.",
+        f"Most recent submission: {latest_submitted_at or '-'}.",
+    ]
+
+    templates_summary: List[Dict[str, Any]] = []
+    for tpl in templates:
+        total_q = int(tpl.get("total_questions") or 0)
+        answered_q = int(tpl.get("answered_questions") or 0)
+        readiness = dict(tpl.get("readiness_summary_counts") or {})
+        evidence = dict(tpl.get("linked_evidence_counts") or {})
+        gap_count = int(tpl.get("gap_count") or 0)
+        title = str(tpl.get("title") or "").strip() or "-"
+        status = str(tpl.get("assessment_status") or "none")
+        templates_summary.append(
+            {
+                "template_slug": str(tpl.get("template_slug") or ""),
+                "template_version": str(tpl.get("template_version") or ""),
+                "title": title,
+                "assessment_status": status,
+                "latest_submitted_at": tpl.get("latest_submitted_at"),
+                "total_questions": total_q,
+                "answered_questions": answered_q,
+                "readiness_summary_counts": readiness,
+                "linked_evidence_counts": evidence,
+                "gap_count": gap_count,
+            }
+        )
+        bullets.append(
+            f"{title}: status {status}, answered {answered_q}/{total_q}, gaps {gap_count}."
+        )
+
+    return {
+        "id": "self_assessment_evidence",
+        "title": "Self-assessment evidence",
+        "body": governance_note,
+        "bullets": bullets,
+        "templates": templates_summary,
+        "raw_answers_included": False,
+        "staff_identifiers_included": False,
+    }
+
+
+def _build_assistant_receipt_evidence_section(
+    snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    governance = snapshot.get("governance", {}) or {}
+    events_24h = int(governance.get("events_24h") or 0)
+    interventions_24h = int(governance.get("interventions_24h") or 0)
+    return {
+        "id": "assistant_receipt_evidence",
+        "title": "Assistant receipt evidence",
+        "body": (
+            "Assistant receipt evidence is metadata-only. Receipts record "
+            "the governance metadata around Assistant runs (hashes, policy "
+            "version, validation profile, review state) and never the raw "
+            "prompt, draft, or output."
+        ),
+        "bullets": [
+            "Assistant receipt evidence surface is active.",
+            f"Recent governance events (24h): {events_24h}.",
+            f"Recent interventions (24h): {interventions_24h}.",
+            "Per-run receipt metadata is exposed via the Assistant traceability endpoints, not duplicated in this artefact.",
+            "Raw prompts, drafts, and outputs are not stored or surfaced.",
+        ],
+        "raw_content_included": False,
+        "raw_prompt_included": False,
+        "raw_output_included": False,
+    }
+
+
+def _build_evidence_sections(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [
+        _build_learning_evidence_section(snapshot),
+        _build_governance_policy_evidence_section(snapshot),
+        _build_staff_attestation_section(snapshot),
+        _build_self_assessment_evidence_section(snapshot),
+        _build_assistant_receipt_evidence_section(snapshot),
+    ]
 
 
 def _build_pack_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
@@ -262,7 +474,7 @@ def _build_pack_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
                 f"Recent intervention rate: {snapshot['operations']['intervention_rate_24h'] * 100.0:.1f}%.",
                 f"Recent privacy warning rate: {snapshot['operations']['pii_warned_rate_24h'] * 100.0:.1f}%.",
                 f"P95 latency (24h): {snapshot['operations']['p95_latency_ms']}ms.",
-                f"Top mode (24h): {snapshot['operations']['top_mode_24h'] or '—'}.",
+                f"Top mode (24h): {snapshot['operations']['top_mode_24h'] or '-'}.",
             ],
         },
         {
@@ -279,16 +491,37 @@ def _build_pack_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
                 f"Recommended learning focus: {snapshot['learning']['recommended_learning']['title']}.",
             ],
         },
+    ]
+
+    # ---------------------------------------------------------------------
+    # Phase 2A-3.9B-1 - evidence closure sections.
+    #
+    # Reuses metadata-only aggregates already present on the snapshot
+    # (governance_policy, self_assessment) plus conservative copy for
+    # surfaces whose aggregates are not on the snapshot today (Learn /
+    # CPD, Assistant receipt evidence) - those defer to the relevant
+    # Trust posture sub-endpoints rather than introducing new SQL here.
+    #
+    # All sections are metadata-only. No raw policy body, no raw
+    # self-assessment answers, no staff identifiers, no raw prompts /
+    # outputs / clinical content.
+    # ---------------------------------------------------------------------
+
+    sections.extend(_build_evidence_sections(snapshot))
+
+    sections.append(
         {
             "id": "artifact_basis",
             "title": "Artifact basis and limitations",
             "body": (
-                "This trust pack is an operational leadership artifact. It summarises governance posture and safe adoption signals but should not "
-                "be presented as a legal certification or formal compliance attestation."
+                "This trust pack is an operational leadership artifact. It "
+                "summarises governance posture and safe adoption signals as "
+                "readiness evidence. The clinic remains responsible for its "
+                "own AI-use governance; this is not legal advice."
             ),
             "bullets": snapshot["limitations"],
-        },
-    ]
+        }
+    )
 
     pack = {
         "artifact_type": "trust_pack",
@@ -436,11 +669,11 @@ def trust_materials(
 
 
 # ---------------------------------------------------------------------
-# Phase 2A-1 — Learning evidence delta (aggregate metadata only)
+# Phase 2A-1 - Learning evidence delta (aggregate metadata only)
 # ---------------------------------------------------------------------
 #
 # Aggregates only. No per-user data is surfaced here. completion_rate_by_role
-# is keyed on the repo's ACCESS-CONTROL role (admin/staff) — the only role data
+# is keyed on the repo's ACCESS-CONTROL role (admin/staff) - the only role data
 # that exists for users. Clinical roles (vet, nurse, ...) live solely as module
 # audience metadata and are deliberately NOT invented as user attributes.
 def _build_learning_delta(db: Session) -> TrustPackLearningDelta:

@@ -102,9 +102,9 @@ _ATTESTATION_COLS = (
 
 _GOVERNANCE_NOTE = (
     "Governance policy artefacts are metadata-only. Activating a clinic "
-    "policy version is governance evidence, not legal approval, "
-    "regulatory certification, or a staff-competence guarantee. "
-    "Human review remains required."
+    "policy version provides governance evidence and supports clinic "
+    "review. It does not replace professional judgement or legal "
+    "advice. Human review remains required."
 )
 
 
