@@ -4,7 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/shell/AppShell";
 import { getTrustPack } from "@/lib/trust";
-import type { TrustPackResponse } from "@/lib/types";
+import type {
+  TrustPackResponse,
+  TrustPackSection,
+  TrustPackSelfAssessmentTemplate,
+} from "@/lib/types";
 
 // Optional payload extras that are not declared on TrustPackResponse but
 // may be present on real responses. Each field is typed `unknown[]` so
@@ -463,6 +467,9 @@ export default function TrustPackPage() {
                           </div>
                         ))}
                       </div>
+
+                      <SelfAssessmentEvidenceTemplates section={section} />
+                      <HonestDisclosureRow section={section} />
                     </section>
                   );
                 })}
@@ -527,5 +534,154 @@ export default function TrustPackPage() {
         </div>
       </>
     </AppShell>
+  );
+}
+
+// Honest-disclosure chips for evidence sections. Each flag is optional;
+// rendered only when present on the backend section payload. All flags
+// are expected to be `false` in the live contract — render as "No".
+function HonestDisclosureRow({ section }: { section: TrustPackSection }) {
+  const rows: { key: string; label: string; value: boolean | undefined }[] = [
+    { key: "raw_content_included", label: "Raw content included", value: section.raw_content_included },
+    { key: "raw_policy_body_included", label: "Raw policy body included", value: section.raw_policy_body_included },
+    { key: "raw_answers_included", label: "Raw answers included", value: section.raw_answers_included },
+    { key: "raw_prompt_included", label: "Raw prompt included", value: section.raw_prompt_included },
+    { key: "raw_output_included", label: "Raw output included", value: section.raw_output_included },
+    { key: "staff_identifiers_included", label: "Staff identifiers included", value: section.staff_identifiers_included },
+  ];
+  const present = rows.filter((r) => typeof r.value === "boolean");
+  if (present.length === 0) return null;
+  return (
+    <div className="mt-4">
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+        Honest disclosure
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-700">
+        {present.map((r) => (
+          <span
+            key={r.key}
+            className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1"
+          >
+            {r.label}: {r.value ? "Yes" : "No"}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Self-assessment evidence template details. Renders only when the
+// section actually carries a templates array. Metadata-only; no raw
+// answers, no staff identifiers.
+function SelfAssessmentEvidenceTemplates({ section }: { section: TrustPackSection }) {
+  const templates = section.templates;
+  if (!Array.isArray(templates) || templates.length === 0) return null;
+  return (
+    <div className="mt-4 space-y-3">
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+        Templates
+      </p>
+      {templates.map((t) => (
+        <SelfAssessmentTemplateCard key={`${t.template_slug}-${t.template_version}`} template={t} />
+      ))}
+    </div>
+  );
+}
+
+function SelfAssessmentTemplateCard({
+  template,
+}: {
+  template: TrustPackSelfAssessmentTemplate;
+}) {
+  const readiness = template.readiness_summary_counts ?? {
+    yes: 0,
+    partial: 0,
+    planned: 0,
+    no: 0,
+    not_applicable: 0,
+  };
+  const evidence = template.linked_evidence_counts ?? {
+    policy_library: 0,
+    staff_attestation: 0,
+    learn_cpd: 0,
+    assistant_receipts: 0,
+    trust_posture: 0,
+    manual_review: 0,
+  };
+  const submittedAt = template.latest_submitted_at
+    ? formatDate(template.latest_submitted_at)
+    : "Not submitted yet";
+  const status =
+    typeof template.assessment_status === "string"
+      ? template.assessment_status.replaceAll("_", " ")
+      : "Not available";
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-900">{template.title}</p>
+          <p className="mt-1 text-xs text-slate-500">
+            Template v{template.template_version}
+          </p>
+        </div>
+        <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium capitalize text-slate-700">
+          {status}
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-600">
+        <span>Latest submitted: {submittedAt}</span>
+        <span>
+          Answered: {template.answered_questions ?? 0} of {template.total_questions ?? 0}
+        </span>
+        <span>Gap count: {template.gap_count ?? 0}</span>
+      </div>
+      <div className="mt-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Readiness summary
+        </p>
+        <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-700">
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Yes: {readiness.yes ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Partial: {readiness.partial ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Planned: {readiness.planned ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            No: {readiness.no ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Not applicable: {readiness.not_applicable ?? 0}
+          </span>
+        </div>
+      </div>
+      <div className="mt-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Linked evidence
+        </p>
+        <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-700">
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Policy library: {evidence.policy_library ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Staff attestation: {evidence.staff_attestation ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Learn / CPD: {evidence.learn_cpd ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Assistant receipts: {evidence.assistant_receipts ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Trust posture: {evidence.trust_posture ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Manual review: {evidence.manual_review ?? 0}
+          </span>
+        </div>
+      </div>
+    </div>
   );
 }

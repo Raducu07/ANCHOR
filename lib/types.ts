@@ -235,6 +235,41 @@ export type TrustPostureResponse = {
   governance_policy?: GovernancePolicyTrustBlock;
 };
 
+// Phase 2A-3.9B-2 — Trust Pack now includes evidence-closure sections
+// (Learning/CPD, governance policy, staff attestation, self-assessment,
+// Assistant receipts). Each evidence section may carry honest-disclosure
+// flags and, for self-assessment, a metadata-only templates array. All
+// flags are optional so legacy/narrative sections still type-check.
+export type TrustPackSelfAssessmentTemplate = {
+  template_slug: string;
+  template_version: string;
+  title: string;
+  assessment_status: "submitted" | "superseded" | "none" | string;
+  latest_submitted_at: string | null;
+  total_questions: number;
+  answered_questions: number;
+  readiness_summary_counts: TrustSelfAssessmentReadinessSummaryCounts;
+  linked_evidence_counts: TrustSelfAssessmentLinkedEvidenceCounts;
+  gap_count: number;
+};
+
+export type TrustPackSection = {
+  id: string;
+  title: string;
+  body: string;
+  bullets: string[];
+  // Honest-disclosure flags. All optional; present on the corresponding
+  // evidence sections only.
+  raw_content_included?: boolean;
+  raw_policy_body_included?: boolean;
+  staff_identifiers_included?: boolean;
+  raw_answers_included?: boolean;
+  raw_prompt_included?: boolean;
+  raw_output_included?: boolean;
+  // Self-assessment evidence carries a metadata-only templates array.
+  templates?: TrustPackSelfAssessmentTemplate[];
+};
+
 export type TrustPackResponse = {
   generated_at: string;
   pack: {
@@ -243,12 +278,7 @@ export type TrustPackResponse = {
     generated_at: string;
     clinic_name: string;
     trust_state: TrustState;
-    sections: {
-      id: string;
-      title: string;
-      body: string;
-      bullets: string[];
-    }[];
+    sections: TrustPackSection[];
     evidence_window: {
       hours: number;
       from: string;
