@@ -477,6 +477,71 @@ def _build_client_transparency_evidence_section(
     }
 
 
+_INCIDENT_NEAR_MISS_EVIDENCE_NOTE = (
+    "Incident and near-miss evidence summarises structured, "
+    "metadata-only AI-use review signals recorded by the clinic. It "
+    "supports governance review and learning without exposing raw "
+    "clinical content, client identifiers, patient identifiers, or "
+    "staff identifiers."
+)
+
+
+def _build_incident_near_miss_evidence_section(
+    snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    block = snapshot.get("incident_near_miss") or {}
+    records_total = int(block.get("records_total") or 0)
+    records_last_30d = int(block.get("records_last_30d") or 0)
+    open_records = int(block.get("open_records") or 0)
+    in_review_records = int(block.get("in_review_records") or 0)
+    actioned_records = int(block.get("actioned_records") or 0)
+    closed_records = int(block.get("closed_records") or 0)
+    voided_records = int(block.get("voided_records") or 0)
+    high_or_critical = int(block.get("high_or_critical_records") or 0)
+    privacy_related = int(block.get("privacy_related_records") or 0)
+    linked_receipt = int(block.get("linked_receipt_records") or 0)
+    learning_count = int(block.get("learning_recommended_count") or 0)
+    policy_count = int(block.get("policy_review_recommended_count") or 0)
+    client_comm_count = int(
+        block.get("client_communication_review_recommended_count") or 0
+    )
+    last_reported_at = block.get("last_reported_at")
+
+    bullets: List[str] = [
+        f"Total records recorded: {records_total}.",
+        f"Records in last 30 days: {records_last_30d}.",
+        f"Open records: {open_records}.",
+        f"In review records: {in_review_records}.",
+        f"Actioned records: {actioned_records}.",
+        f"Closed records: {closed_records}.",
+        f"Voided records: {voided_records}.",
+        f"High or critical records in window: {high_or_critical}.",
+        f"Privacy-related records in window: {privacy_related}.",
+        f"Linked receipt records in window: {linked_receipt}.",
+        f"Learning recommendations: {learning_count}.",
+        f"Policy review recommendations: {policy_count}.",
+        f"Client communication review recommendations: {client_comm_count}.",
+        f"Last reported at: {last_reported_at or '-'}.",
+        "Raw content included: No.",
+        "Clinical content included: No.",
+        "Staff identifiers included: No.",
+        "Client identifiers included: No.",
+        "Patient identifiers included: No.",
+    ]
+
+    return {
+        "id": "incident_near_miss_evidence",
+        "title": "Incident and near-miss evidence",
+        "body": _INCIDENT_NEAR_MISS_EVIDENCE_NOTE,
+        "bullets": bullets,
+        "raw_content_included": False,
+        "clinical_content_included": False,
+        "staff_identifiers_included": False,
+        "client_identifiers_included": False,
+        "patient_identifiers_included": False,
+    }
+
+
 def _build_evidence_sections(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [
         _build_learning_evidence_section(snapshot),
@@ -484,6 +549,7 @@ def _build_evidence_sections(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
         _build_staff_attestation_section(snapshot),
         _build_self_assessment_evidence_section(snapshot),
         _build_client_transparency_evidence_section(snapshot),
+        _build_incident_near_miss_evidence_section(snapshot),
         _build_assistant_receipt_evidence_section(snapshot),
     ]
 

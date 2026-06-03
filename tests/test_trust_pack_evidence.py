@@ -264,6 +264,32 @@ def _minimal_snapshot(**overrides: Any) -> Dict[str, Any]:
                 "transparency statement and published version."
             ),
         },
+        "incident_near_miss": {
+            "window_days": 30,
+            "records_total": 12,
+            "records_last_30d": 7,
+            "open_records": 2,
+            "in_review_records": 1,
+            "actioned_records": 1,
+            "closed_records": 2,
+            "voided_records": 1,
+            "high_or_critical_records": 3,
+            "privacy_related_records": 2,
+            "linked_receipt_records": 4,
+            "learning_recommended_count": 3,
+            "policy_review_recommended_count": 2,
+            "client_communication_review_recommended_count": 1,
+            "last_reported_at": "2026-06-03T08:30:00+00:00",
+            "raw_content_included": False,
+            "clinical_content_included": False,
+            "staff_identifiers_included": False,
+            "client_identifiers_included": False,
+            "patient_identifiers_included": False,
+            "governance_note": (
+                "Incident and near-miss evidence is metadata-only and "
+                "supports governance review and learning."
+            ),
+        },
         "limitations": [
             "Evidence is metadata-only.",
             "Human review remains required.",
@@ -701,3 +727,163 @@ def test_pack_section_ordering_places_client_transparency_before_assistant_recei
     assert ids.index("self_assessment_evidence") < ids.index(
         "client_transparency_evidence"
     )
+
+
+# ---------------------------------------------------------------------
+# Phase 2A-5.4 - incident_near_miss_evidence section
+# ---------------------------------------------------------------------
+
+
+def test_pack_has_incident_near_miss_evidence_section() -> None:
+    s = _section_by_id(_pack(), "incident_near_miss_evidence")
+    assert s["title"] == "Incident and near-miss evidence"
+    # Doctrine flags always false on this section.
+    for flag in (
+        "raw_content_included",
+        "clinical_content_included",
+        "staff_identifiers_included",
+        "client_identifiers_included",
+        "patient_identifiers_included",
+    ):
+        assert s[flag] is False
+
+
+def test_pack_incident_near_miss_section_ordering() -> None:
+    """Incident evidence sits after client_transparency_evidence and
+    before assistant_receipt_evidence."""
+    sections = _pack()["pack"]["sections"]
+    ids = [s["id"] for s in sections]
+    assert ids.index("client_transparency_evidence") < ids.index(
+        "incident_near_miss_evidence"
+    )
+    assert ids.index("incident_near_miss_evidence") < ids.index(
+        "assistant_receipt_evidence"
+    )
+
+
+def test_pack_incident_near_miss_bullets_present_for_populated_snapshot() -> None:
+    s = _section_by_id(_pack(), "incident_near_miss_evidence")
+    text = " ".join(s["bullets"]).lower()
+    # Total + window counts.
+    assert "total records recorded: 12" in text
+    assert "records in last 30 days: 7" in text
+    # Status counts.
+    assert "open records: 2" in text
+    assert "in review records: 1" in text
+    assert "actioned records: 1" in text
+    assert "closed records: 2" in text
+    assert "voided records: 1" in text
+    # Risk / privacy / linked aggregates.
+    assert "high or critical records in window: 3" in text
+    assert "privacy-related records in window: 2" in text
+    assert "linked receipt records in window: 4" in text
+    # Recommendation counts.
+    assert "learning recommendations: 3" in text
+    assert "policy review recommendations: 2" in text
+    assert "client communication review recommendations: 1" in text
+
+
+def test_pack_incident_near_miss_includes_honest_disclosure_rows() -> None:
+    s = _section_by_id(_pack(), "incident_near_miss_evidence")
+    text = " ".join(s["bullets"])
+    assert "Raw content included: No." in text
+    assert "Clinical content included: No." in text
+    assert "Staff identifiers included: No." in text
+    assert "Client identifiers included: No." in text
+    assert "Patient identifiers included: No." in text
+
+
+def test_pack_incident_near_miss_no_per_record_or_identifier_keys() -> None:
+    s = _section_by_id(_pack(), "incident_near_miss_evidence")
+    keys = set(_walk_keys(s))
+    # No individual record IDs.
+    assert "incident_id" not in keys
+    assert "records" not in keys  # would imply per-record array
+    # No staff / user identifier shapes.
+    for k in (
+        "created_by_user_id", "reviewed_by_user_id",
+        "closed_by_user_id", "voided_by_user_id",
+        "user_id", "user_email", "email",
+    ):
+        assert k not in keys
+    # No linked target UUIDs.
+    for k in (
+        "linked_receipt_id", "linked_governance_event_id",
+        "linked_assistant_run_id", "linked_clinic_policy_version_id",
+    ):
+        assert k not in keys
+
+
+def test_pack_incident_near_miss_no_raw_or_clinical_content() -> None:
+    s = _section_by_id(_pack(), "incident_near_miss_evidence")
+    keys = set(_walk_keys(s))
+    for k in (
+        "raw_prompt", "raw_output", "transcript",
+        "clinical_content", "client_identifier", "patient_identifier",
+        "case_material", "note", "description", "narrative",
+        "comments", "free_text",
+    ):
+        assert k not in keys
+
+
+def test_pack_incident_near_miss_handles_empty_state() -> None:
+    """No incidents recorded: all counts zero, last_reported_at '-'."""
+    resp = _pack(incident_near_miss={
+        "window_days": 30,
+        "records_total": 0,
+        "records_last_30d": 0,
+        "open_records": 0,
+        "in_review_records": 0,
+        "actioned_records": 0,
+        "closed_records": 0,
+        "voided_records": 0,
+        "high_or_critical_records": 0,
+        "privacy_related_records": 0,
+        "linked_receipt_records": 0,
+        "learning_recommended_count": 0,
+        "policy_review_recommended_count": 0,
+        "client_communication_review_recommended_count": 0,
+        "last_reported_at": None,
+        "raw_content_included": False,
+        "clinical_content_included": False,
+        "staff_identifiers_included": False,
+        "client_identifiers_included": False,
+        "patient_identifiers_included": False,
+        "governance_note": "ok",
+    })
+    s = _section_by_id(resp, "incident_near_miss_evidence")
+    text = " ".join(s["bullets"]).lower()
+    assert "total records recorded: 0" in text
+    assert "records in last 30 days: 0" in text
+    assert "last reported at: -" in text
+    # Honest-disclosure rows still emitted.
+    raw_text = " ".join(s["bullets"])
+    assert "Raw content included: No." in raw_text
+    assert "Patient identifiers included: No." in raw_text
+
+
+def test_pack_incident_near_miss_section_avoids_high_risk_wording() -> None:
+    s = _section_by_id(_pack(), "incident_near_miss_evidence")
+    haystack = " ".join(_walk_strings(s)).lower()
+    for a, b in _FORBIDDEN_FRAGMENTS:
+        phrase = (a + b).lower()
+        assert phrase not in haystack, (
+            f"forbidden phrase in incident_near_miss_evidence: {a}{b}"
+        )
+
+
+def test_pack_still_includes_all_six_other_evidence_sections() -> None:
+    """Back-compat: existing evidence sections still render after the
+    incident evidence section is appended."""
+    ids = [s["id"] for s in _pack()["pack"]["sections"]]
+    for required in (
+        "learning_evidence",
+        "governance_policy_evidence",
+        "staff_attestation_evidence",
+        "self_assessment_evidence",
+        "client_transparency_evidence",
+        "assistant_receipt_evidence",
+        # And the new one.
+        "incident_near_miss_evidence",
+    ):
+        assert required in ids, f"evidence section missing: {required}"

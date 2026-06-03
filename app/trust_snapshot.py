@@ -742,6 +742,167 @@ def _build_client_transparency_block(
     }
 
 
+_INCIDENT_NEAR_MISS_NOTE = (
+    "Incident and near-miss evidence is metadata-only and supports "
+    "governance review and learning. It does not include raw prompts, "
+    "outputs, clinical case material, client identifiers, or patient "
+    "identifiers. It is not a clinical record, not a legal claim, not "
+    "an insurance submission, and not a regulator report. Human "
+    "professional review remains required."
+)
+
+
+def _build_incident_near_miss_block(
+    db: Session,
+    clinic_id: str,
+) -> Dict[str, Any]:
+    """Aggregate metadata-only AI-use incident / near-miss evidence
+    for the Trust posture surface.
+
+    Reads only `ai_incident_near_miss_records` and returns counts. NO
+    per-record identifiers are surfaced (no `incident_id`,
+    `created_by_user_id`, `reviewed_by_user_id`, `closed_by_user_id`,
+    `voided_by_user_id`, or `linked_*_id` UUIDs). No free-text fields
+    are read or returned - the schema cannot carry them.
+
+    Window: fixed 30-day rolling window for the operational status /
+    severity / category / linked-receipt / recommendation aggregates.
+    `records_total` is all-time (including voided).
+    `last_reported_at` is the latest non-voided report wall-clock,
+    any time (operational "when did we last see anything live").
+    """
+    window_days = 30
+    row = _safe_row_mapping(
+        db,
+        """
+        WITH params AS (
+            SELECT
+                CAST(:clinic_id AS uuid) AS clinic_id,
+                (now() - (:window_days || ' days')::interval)
+                    AS window_start
+        )
+        SELECT
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+            ) AS records_total,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+            ) AS records_last_30d,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+                  AND r.status = 'open'
+            ) AS open_records,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+                  AND r.status = 'in_review'
+            ) AS in_review_records,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+                  AND r.status = 'actioned'
+            ) AS actioned_records,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+                  AND r.status = 'closed'
+            ) AS closed_records,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+                  AND r.status = 'voided'
+            ) AS voided_records,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+                  AND r.status <> 'voided'
+                  AND r.severity IN ('high','critical')
+            ) AS high_or_critical_records,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+                  AND r.status <> 'voided'
+                  AND r.category = 'privacy_or_identifier_risk'
+            ) AS privacy_related_records,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+                  AND r.status <> 'voided'
+                  AND r.linked_receipt_id IS NOT NULL
+            ) AS linked_receipt_records,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+                  AND r.status <> 'voided'
+                  AND r.learning_recommended = true
+            ) AS learning_recommended_count,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+                  AND r.status <> 'voided'
+                  AND r.policy_review_recommended = true
+            ) AS policy_review_recommended_count,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.reported_at >= (SELECT window_start FROM params)
+                  AND r.status <> 'voided'
+                  AND r.client_communication_review_recommended = true
+            ) AS client_communication_review_recommended_count,
+            MAX(r.reported_at) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.status <> 'voided'
+            ) AS last_reported_at
+        FROM public.ai_incident_near_miss_records r
+        """,
+        {"clinic_id": clinic_id, "window_days": str(window_days)},
+        "incident_near_miss_aggregate",
+    )
+
+    last_reported_at = row.get("last_reported_at")
+    last_reported_at_iso = (
+        last_reported_at.isoformat() if last_reported_at else None
+    )
+
+    return {
+        "window_days": window_days,
+        "records_total": _to_int(row.get("records_total")),
+        "records_last_30d": _to_int(row.get("records_last_30d")),
+        "open_records": _to_int(row.get("open_records")),
+        "in_review_records": _to_int(row.get("in_review_records")),
+        "actioned_records": _to_int(row.get("actioned_records")),
+        "closed_records": _to_int(row.get("closed_records")),
+        "voided_records": _to_int(row.get("voided_records")),
+        "high_or_critical_records": _to_int(
+            row.get("high_or_critical_records")
+        ),
+        "privacy_related_records": _to_int(
+            row.get("privacy_related_records")
+        ),
+        "linked_receipt_records": _to_int(
+            row.get("linked_receipt_records")
+        ),
+        "learning_recommended_count": _to_int(
+            row.get("learning_recommended_count")
+        ),
+        "policy_review_recommended_count": _to_int(
+            row.get("policy_review_recommended_count")
+        ),
+        "client_communication_review_recommended_count": _to_int(
+            row.get("client_communication_review_recommended_count")
+        ),
+        "last_reported_at": last_reported_at_iso,
+        # Doctrine self-assertions. Always false on this surface.
+        "raw_content_included": False,
+        "clinical_content_included": False,
+        "staff_identifiers_included": False,
+        "client_identifiers_included": False,
+        "patient_identifiers_included": False,
+        "governance_note": _INCIDENT_NEAR_MISS_NOTE,
+    }
+
+
 def build_trust_snapshot(
     db: Session,
     clinic_id: str,
@@ -877,6 +1038,10 @@ def build_trust_snapshot(
         db=db, clinic_id=clinic_id,
     )
 
+    incident_near_miss_block = _build_incident_near_miss_block(
+        db=db, clinic_id=clinic_id,
+    )
+
     recommended_learning = _derive_recommended_learning(
         top_mode_24h=top_mode_24h,
         intervention_rate_24h=intervention_rate_24h,
@@ -949,6 +1114,7 @@ def build_trust_snapshot(
         "governance_policy": governance_policy_block,
         "self_assessment": self_assessment_block,
         "client_transparency": client_transparency_block,
+        "incident_near_miss": incident_near_miss_block,
         "limitations": _build_limitations(signal_quality=signal_quality),
     }
 
