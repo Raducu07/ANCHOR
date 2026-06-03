@@ -1267,21 +1267,11 @@ def test_module_does_not_import_learn_or_cpd_paths() -> None:
     assert "cpd_exports" not in src
 
 
-def test_no_publish_endpoints_yet() -> None:
-    """2A-4.3 will add /publish endpoints. They must not exist yet."""
+def test_router_registers_expected_endpoint_count() -> None:
+    """Router covers the nine 2A-4.2 endpoints plus the five 2A-4.3
+    publish-surface endpoints. Anchors the route count contract so a
+    future surface change cannot silently add a route."""
     from app.client_transparency import router
-    paths = {r.path for r in router.routes}
-    assert not any("/publish" in p for p in paths), (
-        f"publish endpoints unexpectedly registered: {paths}"
-    )
-    assert not any("/public/" in p for p in paths), (
-        f"public-version endpoints unexpectedly registered: {paths}"
-    )
-
-
-def test_router_registers_exactly_nine_endpoints() -> None:
-    from app.client_transparency import router
-    # Count distinct (method, path) pairs.
     pairs = set()
     for r in router.routes:
         methods = getattr(r, "methods", None) or set()
@@ -1289,7 +1279,768 @@ def test_router_registers_exactly_nine_endpoints() -> None:
             if m in ("HEAD", "OPTIONS"):
                 continue
             pairs.add((m, r.path))
-    assert len(pairs) == 9, sorted(pairs)
+    assert len(pairs) == 14, sorted(pairs)
+
+
+def test_no_unauthenticated_routes_on_client_transparency_router() -> None:
+    """v1 doctrine: every client-transparency route - including the
+    publication surface - is authenticated and clinic-scoped. The
+    router-level Depends(require_clinic_user) covers this; this test
+    is the audit-trail belt-and-braces."""
+    from app.client_transparency import router
+    # Router-level dependencies live on `router.dependencies`. We
+    # check that the require_clinic_user dependency is present.
+    from app.auth_and_rls import require_clinic_user
+    deps = [d.dependency for d in router.dependencies]
+    assert require_clinic_user in deps, (
+        "client_transparency router must require clinic auth on every route"
+    )
+
+
+# ---------------------------------------------------------------------
+# Phase 2A-4.3 - Publication surface tests
+# ---------------------------------------------------------------------
+
+
+def _seed_active(fake: ClientTransparencyFakeDB,
+                 *, clinic_id: str = CLINIC_A,
+                 template_id: str = TPL_V1) -> Dict[str, Any]:
+    row = _seed_draft(fake, clinic_id=clinic_id, template_id=template_id)
+    row["status"] = "active"
+    row["activated_at"] = datetime.now(timezone.utc)
+    row["activated_by_user_id"] = _uuid.UUID(ADMIN_USER)
+    row["effective_from"] = row["activated_at"]
+    return row
+
+
+def _extend_fake_for_public_versions(fake: ClientTransparencyFakeDB) -> None:
+    """Attach a public_versions list and re-wire fake.execute() to
+    handle the new SQL paths. Used by the publish-surface tests."""
+    if hasattr(fake, "public_versions"):
+        return  # already extended
+    fake.public_versions = []  # type: ignore[attr-defined]
+    orig_execute = fake.execute
+
+    def execute(statement, params=None):
+        sql = str(getattr(statement, "text", statement))
+        p = dict(params or {})
+
+        # ---- SELECT public version by id (clinic-scoped) ----
+        if (
+            "FROM client_transparency_public_versions" in sql
+            and "public_version_id = CAST(:public_version_id AS uuid)" in sql
+            and "UPDATE" not in sql
+        ):
+            fake.calls.append((sql, p))
+            for pv in fake.public_versions:  # type: ignore[attr-defined]
+                if (
+                    pv["clinic_id"] == fake.current_clinic
+                    and str(pv["public_version_id"]) == p["public_version_id"]
+                ):
+                    return _Result(row=pv)
+            return _Result(row=None)
+
+        # ---- SELECT latest published for clinic ----
+        if (
+            "FROM client_transparency_public_versions" in sql
+            and "publication_status = 'published'" in sql
+            and "ORDER BY published_at DESC" in sql
+            and "LIMIT 1" in sql
+        ):
+            fake.calls.append((sql, p))
+            rows = [
+                pv for pv in fake.public_versions  # type: ignore[attr-defined]
+                if pv["clinic_id"] == fake.current_clinic
+                and pv["publication_status"] == "published"
+            ]
+            rows = sorted(rows, key=lambda pv: pv["published_at"], reverse=True)
+            return _Result(row=rows[0] if rows else None)
+
+        # ---- SELECT template by template_id (publish path) ----
+        if (
+            "FROM client_transparency_templates" in sql
+            and "template_id = CAST(:template_id AS uuid)" in sql
+        ):
+            fake.calls.append((sql, p))
+            tid = p["template_id"]
+            for t in fake.templates.values():
+                if str(t["template_id"]) == tid:
+                    return _Result(row=t)
+            return _Result(row=None)
+
+        # ---- MAX(public_version) ----
+        if (
+            "MAX(public_version)" in sql
+            and "client_transparency_public_versions" in sql
+        ):
+            fake.calls.append((sql, p))
+            vs = [
+                int(pv["public_version"])
+                for pv in fake.public_versions  # type: ignore[attr-defined]
+                if pv["clinic_id"] == fake.current_clinic
+            ]
+            return _Result(row={"v": max(vs) if vs else 0})
+
+        # ---- INSERT public version ----
+        if "INSERT INTO client_transparency_public_versions" in sql:
+            fake.calls.append((sql, p))
+            now = datetime.now(timezone.utc)
+            payload = p["generated_public_payload"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            row = {
+                "public_version_id": _uuid.uuid4(),
+                "clinic_id": p["clinic_id"],
+                "clinic_profile_id": _uuid.UUID(p["clinic_profile_id"]),
+                "public_version": int(p["public_version"]),
+                "publication_status": "published",
+                "generated_public_payload": payload,
+                "content_hash": p["content_hash"],
+                "published_at": now,
+                "published_by_user_id": _uuid.UUID(p["published_by_user_id"]),
+                "retired_at": None,
+                "retired_by_user_id": None,
+                "created_at": now,
+            }
+            fake.public_versions.append(row)  # type: ignore[attr-defined]
+            return _Result(row=row)
+
+        # ---- UPDATE public version (retire) ----
+        if (
+            "UPDATE client_transparency_public_versions" in sql
+            and "publication_status = 'retired'" in sql
+            and "RETURNING" in sql
+        ):
+            fake.calls.append((sql, p))
+            for pv in fake.public_versions:  # type: ignore[attr-defined]
+                if (
+                    pv["clinic_id"] == fake.current_clinic
+                    and str(pv["public_version_id"]) == p["public_version_id"]
+                    and pv["publication_status"] == "published"
+                ):
+                    pv["publication_status"] = "retired"
+                    pv["retired_at"] = datetime.now(timezone.utc)
+                    pv["retired_by_user_id"] = _uuid.UUID(p["actor"])
+                    return _Result(row=pv)
+            return _Result(row=None)
+
+        # ---- list public versions ----
+        if (
+            "FROM client_transparency_public_versions" in sql
+            and "ORDER BY published_at DESC" in sql
+            and "LIMIT :limit" in sql
+        ):
+            fake.calls.append((sql, p))
+            rows = [
+                pv for pv in fake.public_versions  # type: ignore[attr-defined]
+                if pv["clinic_id"] == fake.current_clinic
+            ]
+            if "publication_status = :publication_status" in sql:
+                rows = [pv for pv in rows
+                        if pv["publication_status"] == p["publication_status"]]
+            rows = sorted(rows, key=lambda pv: pv["published_at"], reverse=True)
+            return _Result(rows=rows[: int(p.get("limit", 25))])
+
+        return orig_execute(statement, params)
+
+    fake.execute = execute  # type: ignore[assignment]
+
+
+# ---- PUB1. publish --------------------------------------------------
+
+
+def test_publish_requires_admin_role() -> None:
+    app, fake = build_app(role="staff")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    resp = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 403
+    assert resp.json().get("detail") == "forbidden_not_admin"
+    assert fake.public_versions == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("role", ["admin", "owner", "practice_manager"])
+def test_admin_tier_can_publish_active_profile(role: str) -> None:
+    app, fake = build_app(role=role)
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    resp = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    pv = body["public_version"]
+    assert pv["publication_status"] == "published"
+    assert pv["public_version"] == 1
+    assert pv["content_hash"]
+    assert pv["published_by_user_id"] == ADMIN_USER
+    _assert_no_forbidden_keys(body)
+
+
+def test_publish_unknown_profile_404() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    resp = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{_uuid.uuid4()}/publish",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 404
+    assert resp.json().get("detail") == "client_transparency_profile_not_found"
+
+
+def test_publish_cross_clinic_404() -> None:
+    app, fake = build_app(role="admin", clinic_id=CLINIC_A)
+    _extend_fake_for_public_versions(fake)
+    other = _seed_active(fake, clinic_id=CLINIC_B)
+    resp = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{other['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize("status", ["draft", "superseded", "archived"])
+def test_publish_rejects_non_active_profile(status: str) -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_draft(fake)
+    row["status"] = status
+    resp = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 400
+    assert resp.json().get("detail") == "client_transparency_profile_not_active"
+    assert fake.public_versions == []  # type: ignore[attr-defined]
+
+
+def test_publish_generates_safe_payload_shape() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    resp = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 201
+    pv = resp.json()["public_version"]
+    payload = pv["generated_public_payload"]
+    assert payload["artifact_type"] == "client_transparency_statement"
+    assert payload["artifact_version"] == "1.0.0"
+    assert payload["template_slug"] == "client_ai_use_transparency_v1"
+    assert payload["template_version"] == "1.0.0"
+    assert payload["profile_version"] == 1
+    assert payload["display_title"] == "How we use AI"
+    assert payload["plain_language_summary"] == "Bounded, human-reviewed AI use."
+    assert payload["permitted_use_categories"] == ["draft_client_communication"]
+    assert payload["prohibited_use_categories"] == ["diagnosis"]
+    # Statements + interpretation blocks present and all true.
+    assert payload["statements"] == {
+        "human_review_required": True,
+        "privacy_boundaries_included": True,
+        "client_explanation_available": True,
+    }
+    assert payload["interpretation"] == {
+        "not_legal_advice": True,
+        "not_consent_form": True,
+        "not_clinical_record": True,
+        "not_compliance_certificate": True,
+        "human_professional_review_required": True,
+    }
+    # Sections from the template's default_sections.
+    section_keys = [s["key"] for s in payload["sections"]]
+    assert "what_ai_may_be_used_for" in section_keys
+    assert "what_ai_is_not_used_for" in section_keys
+    assert "human_review" in section_keys
+    assert "privacy_and_confidentiality" in section_keys
+    assert "questions_from_clients" in section_keys
+
+
+def test_publish_content_hash_is_deterministic() -> None:
+    """The content_hash is sha256 over canonical-sorted JSON. Two
+    publishes of the same active profile state must produce the same
+    hash (and therefore the same row, by idempotency)."""
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    resp1 = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    hash1 = resp1.json()["public_version"]["content_hash"]
+
+    # Independently recompute the hash from the helper - it must match
+    # the value persisted by the route.
+    from app.client_transparency import (
+        _build_public_payload,
+        _canonical_json_sha256,
+    )
+    template = list(fake.templates.values())[0]
+    independent = _canonical_json_sha256(
+        _build_public_payload(profile=row, template=template),
+    )
+    assert hash1 == independent
+    # 64 hex characters.
+    assert len(hash1) == 64
+    int(hash1, 16)  # no ValueError
+
+
+def test_publish_is_idempotent_for_same_profile_and_hash() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    cpid = str(row["clinic_profile_id"])
+
+    r1 = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{cpid}/publish",
+        headers=auth_headers(),
+    )
+    r2 = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{cpid}/publish",
+        headers=auth_headers(),
+    )
+    assert r1.status_code == 201
+    assert r2.status_code == 201
+    pv1 = r1.json()["public_version"]
+    pv2 = r2.json()["public_version"]
+    # Same row returned.
+    assert pv1["public_version_id"] == pv2["public_version_id"]
+    assert pv1["public_version"] == pv2["public_version"] == 1
+    # Only one row persisted.
+    assert len(fake.public_versions) == 1  # type: ignore[attr-defined]
+    # Only one audit event recorded.
+    published_audits = [
+        e for e in fake.audit_events
+        if e["action"] == "governance_client_transparency_public_version_published"
+    ]
+    assert len(published_audits) == 1
+
+
+def test_publish_creates_next_public_version_after_new_profile_active() -> None:
+    """When the clinic activates a NEW profile (different content) and
+    re-publishes, the new public_version is incremented and the prior
+    published row is kept on the table (still 'published' status until
+    explicitly retired)."""
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    first = _seed_active(fake)
+    r1 = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{first['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    assert r1.status_code == 201
+
+    # Supersede the first by spinning up a different active profile.
+    first["status"] = "superseded"
+    first["superseded_at"] = datetime.now(timezone.utc)
+    second = _seed_active(
+        fake, template_id=TPL_V2,
+    )
+    second["display_title"] = "Refreshed plain title"  # different content -> new hash
+    r2 = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{second['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    assert r2.status_code == 201
+    pv2 = r2.json()["public_version"]
+    assert pv2["public_version"] == 2
+    assert pv2["content_hash"] != r1.json()["public_version"]["content_hash"]
+
+
+def test_publish_writes_metadata_only_audit_event() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    pubs = [
+        e for e in fake.audit_events
+        if e["action"] == "governance_client_transparency_public_version_published"
+    ]
+    assert len(pubs) == 1
+    meta = pubs[0]["meta"]
+    assert set(meta.keys()) == {
+        "clinic_profile_id",
+        "client_transparency_template_id",
+        "clinic_profile_version",
+        "public_version",
+        "content_hash",
+        "status",
+    }
+    # Audit must NOT carry raw display_title / plain_language_summary text.
+    meta_str = json.dumps(meta)
+    assert row["display_title"] not in meta_str
+    assert row["plain_language_summary"] not in meta_str
+    _assert_no_forbidden_keys(meta, where="audit.meta")
+
+
+# ---- PUB2. /public/current ------------------------------------------
+
+
+def test_current_public_version_404_before_any_publish() -> None:
+    app, fake = build_app(role="staff")
+    _extend_fake_for_public_versions(fake)
+    resp = client_for(app).get(
+        "/v1/governance/client-transparency/public/current",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 404
+    assert resp.json().get("detail") == "client_transparency_public_version_not_found"
+
+
+def test_current_public_version_returns_latest_published() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+
+    # Staff can read /public/current.
+    app2, fake2 = build_app(role="staff")
+    _extend_fake_for_public_versions(fake2)
+    # Inject the same published row into fake2 to avoid re-publishing.
+    fake2.public_versions = list(fake.public_versions)  # type: ignore[attr-defined]
+    resp = client_for(app2).get(
+        "/v1/governance/client-transparency/public/current",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["public_version"]["publication_status"] == "published"
+
+
+def test_current_excludes_retired_versions() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    pub_resp = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    pvid = pub_resp.json()["public_version"]["public_version_id"]
+    # Retire it.
+    client_for(app).post(
+        f"/v1/governance/client-transparency/public/versions/{pvid}/retire",
+        headers=auth_headers(),
+    )
+    # /current should now 404 - no live published rows.
+    resp = client_for(app).get(
+        "/v1/governance/client-transparency/public/current",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 404
+
+
+# ---- PUB3. list public versions -------------------------------------
+
+
+def test_list_public_versions_clinic_scoped() -> None:
+    app, fake = build_app(role="admin", clinic_id=CLINIC_A)
+    _extend_fake_for_public_versions(fake)
+    # Plant a row that belongs to CLINIC_B - must not appear.
+    fake.public_versions.append({  # type: ignore[attr-defined]
+        "public_version_id": _uuid.uuid4(),
+        "clinic_id": CLINIC_B,
+        "clinic_profile_id": _uuid.uuid4(),
+        "public_version": 1,
+        "publication_status": "published",
+        "generated_public_payload": {"a": 1},
+        "content_hash": "x" * 64,
+        "published_at": datetime.now(timezone.utc),
+        "published_by_user_id": _uuid.UUID(ADMIN_USER),
+        "retired_at": None,
+        "retired_by_user_id": None,
+        "created_at": datetime.now(timezone.utc),
+    })
+    own = _seed_active(fake)
+    client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{own['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    resp = client_for(app).get(
+        "/v1/governance/client-transparency/public/versions",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["public_versions"]) == 1
+    assert body["public_versions"][0]["clinic_id"] == CLINIC_A
+
+
+def test_list_public_versions_status_filter() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    pub = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    pvid = pub.json()["public_version"]["public_version_id"]
+    # Filter published.
+    r = client_for(app).get(
+        "/v1/governance/client-transparency/public/versions?publication_status=published",
+        headers=auth_headers(),
+    )
+    assert r.status_code == 200
+    assert len(r.json()["public_versions"]) == 1
+    # Retire then filter retired.
+    client_for(app).post(
+        f"/v1/governance/client-transparency/public/versions/{pvid}/retire",
+        headers=auth_headers(),
+    )
+    r = client_for(app).get(
+        "/v1/governance/client-transparency/public/versions?publication_status=retired",
+        headers=auth_headers(),
+    )
+    assert r.status_code == 200
+    assert len(r.json()["public_versions"]) == 1
+    # Published filter now empty.
+    r = client_for(app).get(
+        "/v1/governance/client-transparency/public/versions?publication_status=published",
+        headers=auth_headers(),
+    )
+    assert len(r.json()["public_versions"]) == 0
+
+
+def test_list_public_versions_invalid_status_400() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    resp = client_for(app).get(
+        "/v1/governance/client-transparency/public/versions?publication_status=bogus",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 400
+    assert resp.json().get("detail") == "client_transparency_invalid_publication_status"
+
+
+# ---- PUB4. detail ---------------------------------------------------
+
+
+def test_public_version_detail_clinic_scoped() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    pub = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    pvid = pub.json()["public_version"]["public_version_id"]
+    resp = client_for(app).get(
+        f"/v1/governance/client-transparency/public/versions/{pvid}",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["public_version"]["public_version_id"] == pvid
+
+
+def test_public_version_detail_cross_clinic_404() -> None:
+    app, fake = build_app(role="admin", clinic_id=CLINIC_A)
+    _extend_fake_for_public_versions(fake)
+    other_id = _uuid.uuid4()
+    fake.public_versions.append({  # type: ignore[attr-defined]
+        "public_version_id": other_id,
+        "clinic_id": CLINIC_B,
+        "clinic_profile_id": _uuid.uuid4(),
+        "public_version": 1,
+        "publication_status": "published",
+        "generated_public_payload": {"a": 1},
+        "content_hash": "x" * 64,
+        "published_at": datetime.now(timezone.utc),
+        "published_by_user_id": _uuid.UUID(ADMIN_USER),
+        "retired_at": None,
+        "retired_by_user_id": None,
+        "created_at": datetime.now(timezone.utc),
+    })
+    resp = client_for(app).get(
+        f"/v1/governance/client-transparency/public/versions/{other_id}",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 404
+
+
+# ---- PUB5. retire ---------------------------------------------------
+
+
+def test_retire_requires_admin() -> None:
+    app, fake = build_app(role="staff")
+    _extend_fake_for_public_versions(fake)
+    fake.public_versions.append({  # type: ignore[attr-defined]
+        "public_version_id": _uuid.uuid4(),
+        "clinic_id": CLINIC_A,
+        "clinic_profile_id": _uuid.uuid4(),
+        "public_version": 1,
+        "publication_status": "published",
+        "generated_public_payload": {"a": 1},
+        "content_hash": "x" * 64,
+        "published_at": datetime.now(timezone.utc),
+        "published_by_user_id": _uuid.UUID(ADMIN_USER),
+        "retired_at": None,
+        "retired_by_user_id": None,
+        "created_at": datetime.now(timezone.utc),
+    })
+    pvid = fake.public_versions[0]["public_version_id"]  # type: ignore[attr-defined]
+    resp = client_for(app).post(
+        f"/v1/governance/client-transparency/public/versions/{pvid}/retire",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 403
+
+
+def test_retire_published_sets_retired_status_and_metadata() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    pub = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    pvid = pub.json()["public_version"]["public_version_id"]
+    resp = client_for(app).post(
+        f"/v1/governance/client-transparency/public/versions/{pvid}/retire",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+    pv = resp.json()["public_version"]
+    assert pv["publication_status"] == "retired"
+    assert pv["retired_at"] is not None
+    assert pv["retired_by_user_id"] == ADMIN_USER
+
+
+def test_retire_already_retired_idempotent_no_duplicate_audit() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    pub = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    pvid = pub.json()["public_version"]["public_version_id"]
+    client_for(app).post(
+        f"/v1/governance/client-transparency/public/versions/{pvid}/retire",
+        headers=auth_headers(),
+    )
+    audits_before = len([
+        e for e in fake.audit_events
+        if e["action"] == "governance_client_transparency_public_version_retired"
+    ])
+    # Retire again.
+    resp = client_for(app).post(
+        f"/v1/governance/client-transparency/public/versions/{pvid}/retire",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["public_version"]["publication_status"] == "retired"
+    audits_after = len([
+        e for e in fake.audit_events
+        if e["action"] == "governance_client_transparency_public_version_retired"
+    ])
+    assert audits_after == audits_before
+
+
+def test_retire_writes_metadata_only_audit_event() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    pub = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    pvid = pub.json()["public_version"]["public_version_id"]
+    client_for(app).post(
+        f"/v1/governance/client-transparency/public/versions/{pvid}/retire",
+        headers=auth_headers(),
+    )
+    retired = [
+        e for e in fake.audit_events
+        if e["action"] == "governance_client_transparency_public_version_retired"
+    ]
+    assert len(retired) == 1
+    meta = retired[0]["meta"]
+    assert set(meta.keys()) == {
+        "clinic_profile_id",
+        "public_version",
+        "content_hash",
+        "previous_status",
+        "status",
+    }
+    _assert_no_forbidden_keys(meta, where="audit.meta")
+
+
+def test_retire_unknown_id_404() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    resp = client_for(app).post(
+        f"/v1/governance/client-transparency/public/versions/{_uuid.uuid4()}/retire",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 404
+
+
+# ---- Doctrine sweep across the publish surface ----------------------
+
+
+def test_public_response_envelopes_metadata_only() -> None:
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    pub = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    assert pub.status_code == 201
+    _assert_no_forbidden_keys(pub.json(), where="publish")
+
+    for url in (
+        "/v1/governance/client-transparency/public/current",
+        "/v1/governance/client-transparency/public/versions",
+        f"/v1/governance/client-transparency/public/versions/{pub.json()['public_version']['public_version_id']}",
+    ):
+        r = client_for(app).get(url, headers=auth_headers())
+        assert r.status_code == 200, (url, r.text)
+        _assert_no_forbidden_keys(r.json(), where=url)
+
+
+def test_publish_payload_excludes_forbidden_concepts() -> None:
+    """The frozen client-safe payload must not carry any 'compliance',
+    'consent', 'certification', 'proof', or staff/user identifier
+    fields. Sweep recursively for forbidden keys AND for the literal
+    field names that doctrine rejects."""
+    app, fake = build_app(role="admin")
+    _extend_fake_for_public_versions(fake)
+    row = _seed_active(fake)
+    resp = client_for(app).post(
+        f"/v1/governance/client-transparency/profiles/{row['clinic_profile_id']}/publish",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 201
+    payload = resp.json()["public_version"]["generated_public_payload"]
+    _assert_no_forbidden_keys(payload, where="payload")
+    forbidden_payload_keys = {
+        "compliance_status", "consent_text", "legal_consent",
+        "certification", "approval", "proof",
+        "user_id", "user_email", "first_name", "last_name",
+        "client_identifier", "patient_identifier",
+        "raw_prompt", "raw_output", "transcript",
+        "competence_grade", "score", "pass_fail",
+        "staff_certified", "clinical_safety_proof", "legal_approval",
+    }
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            assert not (set(obj.keys()) & forbidden_payload_keys)
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+    walk(payload)
 
 
 def test_all_response_envelopes_metadata_only() -> None:

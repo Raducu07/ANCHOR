@@ -37,6 +37,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -89,6 +90,26 @@ _PROFILE_COLS = (
     "superseded_at, effective_from, created_at, updated_at"
 )
 
+_PUBLIC_VERSION_COLS = (
+    "public_version_id, clinic_id, clinic_profile_id, public_version, "
+    "publication_status, generated_public_payload, content_hash, "
+    "published_at, published_by_user_id, retired_at, retired_by_user_id, "
+    "created_at"
+)
+
+# Status enum used by client_transparency_public_versions.
+_PUBLICATION_STATUS_PUBLISHED = "published"
+_PUBLICATION_STATUS_RETIRED = "retired"
+_ALL_PUBLICATION_STATUSES = {
+    _PUBLICATION_STATUS_PUBLISHED, _PUBLICATION_STATUS_RETIRED,
+}
+
+# Frozen client-safe payload artefact identifiers. Bumped on payload
+# shape changes; older published versions retain their original
+# `artifact_version` so hashes remain reproducible.
+_PUBLIC_PAYLOAD_ARTIFACT_TYPE = "client_transparency_statement"
+_PUBLIC_PAYLOAD_ARTIFACT_VERSION = "1.0.0"
+
 
 # ---------------------------------------------------------------------
 # Governance note
@@ -100,6 +121,13 @@ _GOVERNANCE_NOTE = (
     "human-reviewed AI use. They are not legal advice, a consent form, "
     "a clinical record, or a compliance certificate. Human professional "
     "review remains required."
+)
+
+_PUBLIC_VERSION_GOVERNANCE_NOTE = (
+    "Published client transparency versions are immutable, metadata-only "
+    "governance artefacts for clinic review and client-safe communication. "
+    "They are not legal advice, a consent form, a clinical record, or a "
+    "compliance certificate. Human professional review remains required."
 )
 
 
@@ -201,6 +229,39 @@ class ClientTransparencyProfileCreateRequest(BaseModel):
     human_review_statement_enabled: Optional[bool] = None
     privacy_statement_enabled: Optional[bool] = None
     client_explanation_statement_enabled: Optional[bool] = None
+
+
+class ClientTransparencyPublicVersion(BaseModel):
+    """Metadata-only view of a client_transparency_public_versions row.
+
+    `generated_public_payload` is the frozen client-safe snapshot
+    produced at publish time. It contains ONLY bounded clinic-authored
+    public disclosure metadata - no staff identifiers, no client/patient
+    identifiers, no clinical content, no audit metadata."""
+
+    public_version_id: _uuid.UUID
+    clinic_id: _uuid.UUID
+    clinic_profile_id: _uuid.UUID
+    public_version: int
+    publication_status: str
+    generated_public_payload: Dict[str, Any]
+    content_hash: str
+    published_at: datetime
+    published_by_user_id: _uuid.UUID
+    retired_at: Optional[datetime] = None
+    retired_by_user_id: Optional[_uuid.UUID] = None
+    created_at: datetime
+
+
+class ClientTransparencyPublicVersionResponse(BaseModel):
+    public_version: ClientTransparencyPublicVersion
+    governance_note: str = _PUBLIC_VERSION_GOVERNANCE_NOTE
+
+
+class ClientTransparencyPublicVersionListResponse(BaseModel):
+    public_versions: List[ClientTransparencyPublicVersion]
+    limit: int
+    governance_note: str = _PUBLIC_VERSION_GOVERNANCE_NOTE
 
 
 class ClientTransparencyProfileUpdateRequest(BaseModel):
@@ -1165,4 +1226,535 @@ def archive_profile(
     )
     return ClientTransparencyProfileResponse(
         profile=_profile_from_row(new_row_d),
+    )
+
+
+# ---------------------------------------------------------------------
+# Phase 2A-4.3 - Publication snapshot surface.
+# ---------------------------------------------------------------------
+#
+# Publishing freezes an active clinic profile into an immutable
+# client-safe snapshot stored on `client_transparency_public_versions`.
+# The snapshot is the artefact a clinic would share with clients or
+# publish externally. It is:
+#
+#   * Bounded to the clinic-authored public disclosure fields
+#     (`display_title`, `plain_language_summary`) plus categorical
+#     metadata and a small `statements` / `interpretation` map.
+#   * Free of staff identifiers, client/patient identifiers, raw
+#     prompts, outputs, transcripts, clinical case material, and any
+#     "compliance" / "consent" / "approval" / "proof" claim fields.
+#   * Deterministically canonicalised (sorted keys, compact separators)
+#     before SHA-256 hashing, so re-publishing the same active profile
+#     state is idempotent at the content level.
+#
+# Idempotency rule:
+#   If the LATEST already-published version for the clinic has the same
+#   `clinic_profile_id` and the same `content_hash`, the publish route
+#   returns it instead of creating a duplicate row. Retired versions
+#   are NOT considered for idempotency - a clinic that retires a
+#   previous publication has explicitly invalidated it.
+#
+# Retire rule:
+#   Append-only. Retiring a published version sets
+#   `publication_status` to retired, `retired_at` to now, and
+#   `retired_by_user_id` to the actor. The row is never deleted.
+
+
+def _canonical_json_sha256(payload: Dict[str, Any]) -> str:
+    """Compute a deterministic SHA-256 over the canonical JSON form of
+    `payload`. Keys are sorted; separators are compact; ASCII-only so
+    the hash is stable across Python builds / locales."""
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+def _build_public_payload(
+    *,
+    profile: Dict[str, Any],
+    template: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build the frozen, deterministic, client-safe publication payload.
+
+    Inputs must be the active profile row and its associated template
+    row (already fetched clinic-scoped by the caller). Output is a
+    dict suitable for `_canonical_json_sha256` and for storage as
+    `generated_public_payload` JSONB.
+    """
+    default_sections = template.get("default_sections")
+    if isinstance(default_sections, str):
+        try:
+            default_sections = json.loads(default_sections)
+        except Exception:
+            default_sections = {}
+    if not isinstance(default_sections, dict):
+        default_sections = {}
+    sections = default_sections.get("sections") or []
+    if not isinstance(sections, list):
+        sections = []
+
+    return {
+        "artifact_type": _PUBLIC_PAYLOAD_ARTIFACT_TYPE,
+        "artifact_version": _PUBLIC_PAYLOAD_ARTIFACT_VERSION,
+        "template_slug": str(template.get("template_slug") or ""),
+        "template_version": str(profile.get("template_version_snapshot") or ""),
+        "profile_version": int(profile.get("clinic_profile_version") or 0),
+        "display_title": str(profile.get("display_title") or ""),
+        "plain_language_summary": str(
+            profile.get("plain_language_summary") or ""
+        ),
+        "permitted_use_categories": list(
+            profile.get("permitted_use_categories") or []
+        ),
+        "prohibited_use_categories": list(
+            profile.get("prohibited_use_categories") or []
+        ),
+        "sections": [
+            {
+                "key": str(s.get("key") or ""),
+                "heading": str(s.get("heading") or ""),
+            }
+            for s in sections if isinstance(s, dict)
+        ],
+        "statements": {
+            "human_review_required": True,
+            "privacy_boundaries_included": True,
+            "client_explanation_available": True,
+        },
+        "interpretation": {
+            "not_legal_advice": True,
+            "not_consent_form": True,
+            "not_clinical_record": True,
+            "not_compliance_certificate": True,
+            "human_professional_review_required": True,
+        },
+    }
+
+
+def _public_version_from_row(
+    row: Dict[str, Any],
+) -> ClientTransparencyPublicVersion:
+    payload = row.get("generated_public_payload")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return ClientTransparencyPublicVersion(
+        public_version_id=row["public_version_id"],
+        clinic_id=row["clinic_id"],
+        clinic_profile_id=row["clinic_profile_id"],
+        public_version=int(row["public_version"]),
+        publication_status=row["publication_status"],
+        generated_public_payload=payload,
+        content_hash=row["content_hash"],
+        published_at=row["published_at"],
+        published_by_user_id=row["published_by_user_id"],
+        retired_at=row.get("retired_at"),
+        retired_by_user_id=row.get("retired_by_user_id"),
+        created_at=row["created_at"],
+    )
+
+
+def _select_public_version_for_clinic(
+    db: Session, *, clinic_id: str, public_version_id: str,
+) -> Optional[Dict[str, Any]]:
+    row = db.execute(
+        text(
+            f"""
+            SELECT {_PUBLIC_VERSION_COLS}
+            FROM client_transparency_public_versions
+            WHERE clinic_id = CAST(:clinic_id AS uuid)
+              AND public_version_id = CAST(:public_version_id AS uuid)
+            LIMIT 1
+            """
+        ),
+        {"clinic_id": clinic_id, "public_version_id": public_version_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def _select_template_by_id(
+    db: Session, *, template_id: str,
+) -> Optional[Dict[str, Any]]:
+    row = db.execute(
+        text(
+            f"SELECT {_TEMPLATE_COLS} FROM client_transparency_templates "
+            "WHERE template_id = CAST(:template_id AS uuid) LIMIT 1"
+        ),
+        {"template_id": template_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def _select_latest_published_for_clinic(
+    db: Session, *, clinic_id: str,
+) -> Optional[Dict[str, Any]]:
+    row = db.execute(
+        text(
+            f"""
+            SELECT {_PUBLIC_VERSION_COLS}
+            FROM client_transparency_public_versions
+            WHERE clinic_id = CAST(:clinic_id AS uuid)
+              AND publication_status = 'published'
+            ORDER BY published_at DESC
+            LIMIT 1
+            """
+        ),
+        {"clinic_id": clinic_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------
+# PUB1. POST /profiles/{clinic_profile_id}/publish
+# ---------------------------------------------------------------------
+
+
+@router.post(
+    "/profiles/{clinic_profile_id}/publish",
+    response_model=ClientTransparencyPublicVersionResponse,
+    status_code=201,
+)
+def publish_profile(
+    clinic_profile_id: _uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ClientTransparencyPublicVersionResponse:
+    """Freeze the clinic active profile into a new published
+    client_transparency_public_versions row. Idempotent against the
+    latest published row if (clinic_profile_id, content_hash) match."""
+    ctx = _ctx(request)
+    _require_admin(ctx["role"])
+
+    profile = _select_profile_for_clinic(
+        db,
+        clinic_id=ctx["clinic_id"],
+        clinic_profile_id=str(clinic_profile_id),
+    )
+    if not profile:
+        raise HTTPException(
+            status_code=404,
+            detail="client_transparency_profile_not_found",
+        )
+    if profile["status"] != _STATUS_ACTIVE:
+        raise HTTPException(
+            status_code=400,
+            detail="client_transparency_profile_not_active",
+        )
+
+    template = _select_template_by_id(
+        db, template_id=str(profile["client_transparency_template_id"]),
+    )
+    if not template:
+        raise HTTPException(status_code=500, detail="internal_server_error")
+
+    payload = _build_public_payload(profile=profile, template=template)
+    content_hash = _canonical_json_sha256(payload)
+
+    # Idempotency: latest *published* row only. Retired rows have been
+    # explicitly invalidated and should not satisfy a fresh publish.
+    latest = _select_latest_published_for_clinic(
+        db, clinic_id=ctx["clinic_id"],
+    )
+    if (
+        latest is not None
+        and str(latest["clinic_profile_id"]) == str(clinic_profile_id)
+        and latest["content_hash"] == content_hash
+    ):
+        return ClientTransparencyPublicVersionResponse(
+            public_version=_public_version_from_row(latest),
+        )
+
+    max_row = db.execute(
+        text(
+            """
+            SELECT COALESCE(MAX(public_version), 0) AS v
+            FROM client_transparency_public_versions
+            WHERE clinic_id = CAST(:clinic_id AS uuid)
+            """
+        ),
+        {"clinic_id": ctx["clinic_id"]},
+    ).mappings().first()
+    next_public_version = int((max_row or {}).get("v") or 0) + 1
+
+    new_row = db.execute(
+        text(
+            f"""
+            INSERT INTO client_transparency_public_versions (
+                clinic_id,
+                clinic_profile_id,
+                public_version,
+                publication_status,
+                generated_public_payload,
+                content_hash,
+                published_by_user_id
+            )
+            VALUES (
+                CAST(:clinic_id AS uuid),
+                CAST(:clinic_profile_id AS uuid),
+                :public_version,
+                'published',
+                CAST(:generated_public_payload AS jsonb),
+                :content_hash,
+                CAST(:published_by_user_id AS uuid)
+            )
+            RETURNING {_PUBLIC_VERSION_COLS}
+            """
+        ),
+        {
+            "clinic_id": ctx["clinic_id"],
+            "clinic_profile_id": str(clinic_profile_id),
+            "public_version": next_public_version,
+            "generated_public_payload": json.dumps(
+                payload, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=True,
+            ),
+            "content_hash": content_hash,
+            "published_by_user_id": ctx["clinic_user_id"],
+        },
+    ).mappings().first()
+    if not new_row:
+        raise HTTPException(status_code=500, detail="internal_server_error")
+    new_row_d = dict(new_row)
+
+    _insert_audit_event(
+        db,
+        clinic_id=ctx["clinic_id"],
+        admin_user_id=ctx["clinic_user_id"],
+        action="governance_client_transparency_public_version_published",
+        target_id=str(new_row_d["public_version_id"]),
+        ip_hash=ctx["ip_hash"],
+        meta={
+            "clinic_profile_id": str(profile["clinic_profile_id"]),
+            "client_transparency_template_id": str(
+                profile["client_transparency_template_id"]
+            ),
+            "clinic_profile_version": int(profile["clinic_profile_version"]),
+            "public_version": int(new_row_d["public_version"]),
+            "content_hash": content_hash,
+            "status": _PUBLICATION_STATUS_PUBLISHED,
+        },
+    )
+    logger.info(
+        "governance_client_transparency_public_version_published",
+        extra={
+            "clinic_id": ctx["clinic_id"],
+            "public_version_id": str(new_row_d["public_version_id"]),
+            "public_version": int(new_row_d["public_version"]),
+            "content_hash": content_hash,
+        },
+    )
+    return ClientTransparencyPublicVersionResponse(
+        public_version=_public_version_from_row(new_row_d),
+    )
+
+
+# ---------------------------------------------------------------------
+# PUB2. GET /public/current
+# ---------------------------------------------------------------------
+
+
+@router.get(
+    "/public/current",
+    response_model=ClientTransparencyPublicVersionResponse,
+)
+def get_current_public_version(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ClientTransparencyPublicVersionResponse:
+    """Most recent PUBLISHED public version for the caller's clinic.
+    Authenticated + clinic-scoped only (no unauthenticated public URL
+    in v1). Retired versions are excluded - retiring is an explicit
+    invalidation signal."""
+    ctx = _ctx(request)
+    row = _select_latest_published_for_clinic(
+        db, clinic_id=ctx["clinic_id"],
+    )
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="client_transparency_public_version_not_found",
+        )
+    return ClientTransparencyPublicVersionResponse(
+        public_version=_public_version_from_row(row),
+    )
+
+
+# ---------------------------------------------------------------------
+# PUB3. GET /public/versions  (list)
+# ---------------------------------------------------------------------
+
+
+@router.get(
+    "/public/versions",
+    response_model=ClientTransparencyPublicVersionListResponse,
+)
+def list_public_versions(
+    request: Request,
+    db: Session = Depends(get_db),
+    publication_status: Optional[str] = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=100),
+) -> ClientTransparencyPublicVersionListResponse:
+    ctx = _ctx(request)
+    if (
+        publication_status is not None
+        and publication_status not in _ALL_PUBLICATION_STATUSES
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="client_transparency_invalid_publication_status",
+        )
+
+    clauses = ["clinic_id = CAST(:clinic_id AS uuid)"]
+    params: Dict[str, Any] = {
+        "clinic_id": ctx["clinic_id"],
+        "limit": int(limit),
+    }
+    if publication_status is not None:
+        clauses.append("publication_status = :publication_status")
+        params["publication_status"] = publication_status
+
+    where_clause = " AND ".join(clauses)
+    rows = db.execute(
+        text(
+            f"""
+            SELECT {_PUBLIC_VERSION_COLS}
+            FROM client_transparency_public_versions
+            WHERE {where_clause}
+            ORDER BY published_at DESC
+            LIMIT :limit
+            """
+        ),
+        params,
+    ).mappings().all()
+    return ClientTransparencyPublicVersionListResponse(
+        public_versions=[_public_version_from_row(dict(r)) for r in rows],
+        limit=int(limit),
+    )
+
+
+# ---------------------------------------------------------------------
+# PUB4. GET /public/versions/{public_version_id}
+# ---------------------------------------------------------------------
+
+
+@router.get(
+    "/public/versions/{public_version_id}",
+    response_model=ClientTransparencyPublicVersionResponse,
+)
+def get_public_version(
+    public_version_id: _uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ClientTransparencyPublicVersionResponse:
+    ctx = _ctx(request)
+    row = _select_public_version_for_clinic(
+        db,
+        clinic_id=ctx["clinic_id"],
+        public_version_id=str(public_version_id),
+    )
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="client_transparency_public_version_not_found",
+        )
+    return ClientTransparencyPublicVersionResponse(
+        public_version=_public_version_from_row(row),
+    )
+
+
+# ---------------------------------------------------------------------
+# PUB5. POST /public/versions/{public_version_id}/retire
+# ---------------------------------------------------------------------
+
+
+@router.post(
+    "/public/versions/{public_version_id}/retire",
+    response_model=ClientTransparencyPublicVersionResponse,
+)
+def retire_public_version(
+    public_version_id: _uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ClientTransparencyPublicVersionResponse:
+    """Retire a published version. Append-only - the row is never
+    deleted. Idempotent on an already-retired target (no duplicate
+    audit row)."""
+    ctx = _ctx(request)
+    _require_admin(ctx["role"])
+
+    target = _select_public_version_for_clinic(
+        db,
+        clinic_id=ctx["clinic_id"],
+        public_version_id=str(public_version_id),
+    )
+    if not target:
+        raise HTTPException(
+            status_code=404,
+            detail="client_transparency_public_version_not_found",
+        )
+
+    if target["publication_status"] == _PUBLICATION_STATUS_RETIRED:
+        return ClientTransparencyPublicVersionResponse(
+            public_version=_public_version_from_row(target),
+        )
+
+    new_row = db.execute(
+        text(
+            f"""
+            UPDATE client_transparency_public_versions
+            SET publication_status = 'retired',
+                retired_at = now(),
+                retired_by_user_id = CAST(:actor AS uuid)
+            WHERE clinic_id = CAST(:clinic_id AS uuid)
+              AND public_version_id = CAST(:public_version_id AS uuid)
+              AND publication_status = 'published'
+            RETURNING {_PUBLIC_VERSION_COLS}
+            """
+        ),
+        {
+            "clinic_id": ctx["clinic_id"],
+            "public_version_id": str(public_version_id),
+            "actor": ctx["clinic_user_id"],
+        },
+    ).mappings().first()
+    if not new_row:
+        raise HTTPException(
+            status_code=409,
+            detail="client_transparency_public_version_state_changed",
+        )
+    new_row_d = dict(new_row)
+
+    _insert_audit_event(
+        db,
+        clinic_id=ctx["clinic_id"],
+        admin_user_id=ctx["clinic_user_id"],
+        action="governance_client_transparency_public_version_retired",
+        target_id=str(new_row_d["public_version_id"]),
+        ip_hash=ctx["ip_hash"],
+        meta={
+            "clinic_profile_id": str(new_row_d["clinic_profile_id"]),
+            "public_version": int(new_row_d["public_version"]),
+            "content_hash": str(new_row_d["content_hash"]),
+            "previous_status": _PUBLICATION_STATUS_PUBLISHED,
+            "status": _PUBLICATION_STATUS_RETIRED,
+        },
+    )
+    logger.info(
+        "governance_client_transparency_public_version_retired",
+        extra={
+            "clinic_id": ctx["clinic_id"],
+            "public_version_id": str(new_row_d["public_version_id"]),
+        },
+    )
+    return ClientTransparencyPublicVersionResponse(
+        public_version=_public_version_from_row(new_row_d),
     )
