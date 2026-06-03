@@ -139,6 +139,20 @@ export default function SettingsPage() {
           </Card>
         ) : null}
 
+        <Card variant="native">
+          <SectionTitle
+            title="Incident & near-miss logging"
+            description="Record structured AI-use incident and near-miss governance metadata for review and learning. Human professional review remains required."
+          />
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <QuickLink
+              href="/settings/incidents"
+              title="Incident & near-miss logging"
+              description="Open incident logging"
+            />
+          </div>
+        </Card>
+
         <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
           <Card variant="native">
             <SectionTitle
