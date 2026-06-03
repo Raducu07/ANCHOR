@@ -237,6 +237,33 @@ def _minimal_snapshot(**overrides: Any) -> Dict[str, Any]:
                 "governance review and readiness evidence."
             ),
         },
+        "client_transparency": {
+            "active_profile_exists": True,
+            "active_profile_status": "active",
+            "active_profile_version": 2,
+            "active_profile_activated_at": "2026-06-03T09:00:00+00:00",
+            "active_template_slug": "client_ai_use_transparency_v1",
+            "active_template_version": "1.0.0",
+            "published_version_exists": True,
+            "latest_public_version": 3,
+            "latest_publication_status": "published",
+            "latest_published_at": "2026-06-03T10:00:00+00:00",
+            "permitted_categories_count": 2,
+            "prohibited_categories_count": 3,
+            "human_review_statement_enabled": True,
+            "privacy_statement_enabled": True,
+            "client_explanation_statement_enabled": True,
+            "raw_content_included": False,
+            "clinical_content_included": False,
+            "staff_identifiers_included": False,
+            "client_identifiers_included": False,
+            "patient_identifiers_included": False,
+            "governance_note": (
+                "Client transparency evidence is metadata-only and indicates "
+                "whether the clinic has an active, client-safe AI-use "
+                "transparency statement and published version."
+            ),
+        },
         "limitations": [
             "Evidence is metadata-only.",
             "Human review remains required.",
@@ -543,3 +570,134 @@ def test_pack_handles_empty_self_assessment_block() -> None:
     s = _section_by_id(resp, "self_assessment_evidence")
     assert s["templates"] == []
     assert "submitted self-assessments on file: 0" in " ".join(s["bullets"]).lower()
+
+
+# ---------------------------------------------------------------------
+# Phase 2A-4.4 - client_transparency_evidence section
+# ---------------------------------------------------------------------
+
+
+def test_pack_has_client_transparency_evidence_section() -> None:
+    s = _section_by_id(_pack(), "client_transparency_evidence")
+    assert s["title"] == "Client transparency evidence"
+    assert s["active_profile_exists"] is True
+    assert s["published_version_exists"] is True
+    # Doctrine flags always false on this section.
+    for flag in (
+        "raw_content_included",
+        "clinical_content_included",
+        "staff_identifiers_included",
+        "client_identifiers_included",
+        "patient_identifiers_included",
+    ):
+        assert s[flag] is False
+
+
+def test_pack_client_transparency_section_includes_active_and_published() -> None:
+    s = _section_by_id(_pack(), "client_transparency_evidence")
+    text = " ".join(s["bullets"]).lower()
+    assert "active client transparency profile: yes" in text
+    assert "published client-safe version: yes" in text
+
+
+def test_pack_client_transparency_section_includes_category_counts() -> None:
+    s = _section_by_id(_pack(), "client_transparency_evidence")
+    text = " ".join(s["bullets"]).lower()
+    assert "permitted ai-use categories recorded: 2" in text
+    assert "prohibited ai-use categories recorded: 3" in text
+
+
+def test_pack_client_transparency_section_includes_statement_flags() -> None:
+    s = _section_by_id(_pack(), "client_transparency_evidence")
+    text = " ".join(s["bullets"]).lower()
+    assert "human review statement enabled: yes" in text
+    assert "privacy statement enabled: yes" in text
+    assert "client explanation statement enabled: yes" in text
+
+
+def test_pack_client_transparency_section_includes_honest_disclosure_rows() -> None:
+    s = _section_by_id(_pack(), "client_transparency_evidence")
+    text = " ".join(s["bullets"])
+    assert "Raw content included: No." in text
+    assert "Clinical content included: No." in text
+    assert "Staff identifiers included: No." in text
+    assert "Client identifiers included: No." in text
+    assert "Patient identifiers included: No." in text
+
+
+def test_pack_client_transparency_section_no_payload_or_clinic_text() -> None:
+    s = _section_by_id(_pack(), "client_transparency_evidence")
+    keys = set(_walk_keys(s))
+    assert "generated_public_payload" not in keys
+    assert "display_title" not in keys
+    assert "plain_language_summary" not in keys
+    # Strings should not embed the clinic-authored disclosure text from
+    # the (test-only) snapshot fixture either - the section reads only
+    # the aggregate block, not the clinic-authored fields.
+    haystack = " ".join(_walk_strings(s))
+    assert "How we use AI at the clinic" not in haystack
+
+
+def test_pack_client_transparency_section_avoids_high_risk_wording() -> None:
+    s = _section_by_id(_pack(), "client_transparency_evidence")
+    haystack = " ".join(_walk_strings(s)).lower()
+    # Reuse the file-wide forbidden-fragment table assembled at runtime.
+    for a, b in _FORBIDDEN_FRAGMENTS:
+        phrase = (a + b).lower()
+        assert phrase not in haystack, (
+            f"forbidden phrase leaked into client_transparency_evidence: {a}{b}"
+        )
+
+
+def test_pack_client_transparency_section_handles_empty_state() -> None:
+    """No active profile, no published version."""
+    resp = _pack(client_transparency={
+        "active_profile_exists": False,
+        "active_profile_status": "none",
+        "active_profile_version": None,
+        "active_profile_activated_at": None,
+        "active_template_slug": None,
+        "active_template_version": None,
+        "published_version_exists": False,
+        "latest_public_version": None,
+        "latest_publication_status": "none",
+        "latest_published_at": None,
+        "permitted_categories_count": 0,
+        "prohibited_categories_count": 0,
+        "human_review_statement_enabled": False,
+        "privacy_statement_enabled": False,
+        "client_explanation_statement_enabled": False,
+        "raw_content_included": False,
+        "clinical_content_included": False,
+        "staff_identifiers_included": False,
+        "client_identifiers_included": False,
+        "patient_identifiers_included": False,
+        "governance_note": "ok",
+    })
+    s = _section_by_id(resp, "client_transparency_evidence")
+    text = " ".join(s["bullets"]).lower()
+    assert "active client transparency profile: no" in text
+    assert "published client-safe version: no" in text
+    assert "latest public version: -" in text
+    # Statement enabled bullets are NOT emitted when no active profile.
+    assert "human review statement enabled" not in text
+    assert "privacy statement enabled" not in text
+    assert "client explanation statement enabled" not in text
+    # Honest-disclosure rows still present.
+    raw_text = " ".join(s["bullets"])
+    assert "Raw content included: No." in raw_text
+    assert "Patient identifiers included: No." in raw_text
+
+
+def test_pack_section_ordering_places_client_transparency_before_assistant_receipts() -> None:
+    """Sanity check: the new section appears between the existing
+    evidence sections and the assistant_receipt_evidence section, so
+    Trust Pack rendering preserves a coherent narrative order."""
+    sections = _pack()["pack"]["sections"]
+    ids = [s["id"] for s in sections]
+    assert ids.index("client_transparency_evidence") < ids.index(
+        "assistant_receipt_evidence"
+    )
+    assert ids.index("self_assessment_evidence") < ids.index(
+        "client_transparency_evidence"
+    )

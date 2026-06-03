@@ -389,12 +389,101 @@ def _build_assistant_receipt_evidence_section(
     }
 
 
+_CLIENT_TRANSPARENCY_EVIDENCE_NOTE = (
+    "Client transparency evidence summarises whether the clinic has "
+    "configured and published a client-safe AI-use transparency "
+    "statement. This supports clear communication about bounded, "
+    "human-reviewed AI use without storing raw clinical content or "
+    "client/patient identifiers."
+)
+
+
+def _yes_no(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+def _build_client_transparency_evidence_section(
+    snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    block = snapshot.get("client_transparency") or {}
+    active_exists = bool(block.get("active_profile_exists"))
+    active_version = block.get("active_profile_version")
+    published_exists = bool(block.get("published_version_exists"))
+    latest_public_version = block.get("latest_public_version")
+    latest_published_at = block.get("latest_published_at")
+    permitted_count = int(block.get("permitted_categories_count") or 0)
+    prohibited_count = int(block.get("prohibited_categories_count") or 0)
+    human_review_enabled = bool(block.get("human_review_statement_enabled"))
+    privacy_enabled = bool(block.get("privacy_statement_enabled"))
+    client_explanation_enabled = bool(
+        block.get("client_explanation_statement_enabled")
+    )
+
+    bullets: List[str] = [
+        f"Active client transparency profile: {_yes_no(active_exists)}.",
+    ]
+    if active_exists:
+        bullets.append(
+            f"Active profile version: {active_version if active_version is not None else '-'}."
+        )
+    bullets.append(
+        f"Published client-safe version: {_yes_no(published_exists)}."
+    )
+    bullets.append(
+        f"Latest public version: {latest_public_version if latest_public_version is not None else '-'}."
+    )
+    if active_exists:
+        bullets.append(
+            f"Latest published at: {latest_published_at or '-'}."
+        )
+        bullets.append(
+            f"Permitted AI-use categories recorded: {permitted_count}."
+        )
+        bullets.append(
+            f"Prohibited AI-use categories recorded: {prohibited_count}."
+        )
+        bullets.append(
+            f"Human review statement enabled: {_yes_no(human_review_enabled)}."
+        )
+        bullets.append(
+            f"Privacy statement enabled: {_yes_no(privacy_enabled)}."
+        )
+        bullets.append(
+            f"Client explanation statement enabled: {_yes_no(client_explanation_enabled)}."
+        )
+    bullets.extend([
+        "Raw content included: No.",
+        "Clinical content included: No.",
+        "Staff identifiers included: No.",
+        "Client identifiers included: No.",
+        "Patient identifiers included: No.",
+    ])
+
+    return {
+        "id": "client_transparency_evidence",
+        "title": "Client transparency evidence",
+        "body": _CLIENT_TRANSPARENCY_EVIDENCE_NOTE,
+        "bullets": bullets,
+        # Explicit boolean flags so a downstream consumer can drive
+        # rendering / Trust Pack export logic without parsing bullet
+        # text.
+        "active_profile_exists": active_exists,
+        "published_version_exists": published_exists,
+        "raw_content_included": False,
+        "clinical_content_included": False,
+        "staff_identifiers_included": False,
+        "client_identifiers_included": False,
+        "patient_identifiers_included": False,
+    }
+
+
 def _build_evidence_sections(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [
         _build_learning_evidence_section(snapshot),
         _build_governance_policy_evidence_section(snapshot),
         _build_staff_attestation_section(snapshot),
         _build_self_assessment_evidence_section(snapshot),
+        _build_client_transparency_evidence_section(snapshot),
         _build_assistant_receipt_evidence_section(snapshot),
     ]
 

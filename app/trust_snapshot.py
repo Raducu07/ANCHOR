@@ -585,6 +585,163 @@ def _build_self_assessment_block(
     }
 
 
+_CLIENT_TRANSPARENCY_NOTE = (
+    "Client transparency evidence is metadata-only and indicates whether "
+    "the clinic has an active, client-safe AI-use transparency statement "
+    "and published version. It supports plain-language client "
+    "communication about bounded, human-reviewed AI use. It is not legal "
+    "advice, a consent form, a clinical record, or a compliance "
+    "certificate. Human professional review remains required."
+)
+
+
+def _build_client_transparency_block(
+    db: Session,
+    clinic_id: str,
+) -> Dict[str, Any]:
+    """Aggregate metadata-only client-facing transparency evidence for
+    the Trust posture surface.
+
+    Reads only:
+      * clinic_client_transparency_profiles (active row, joined to the
+        global template for slug/version metadata only).
+      * client_transparency_public_versions (latest published row -
+        retired rows are NOT counted as currently published).
+
+    Does NOT read or surface:
+      * `generated_public_payload`
+      * `display_title`, `plain_language_summary` (clinic-authored
+        public disclosure text; not part of the Trust readiness
+        aggregate)
+      * any staff/user identifier, client identifier, or patient
+        identifier
+      * any raw prompts / outputs / transcripts / clinical content
+    """
+    # ---- Active profile (with template metadata) ----
+    active_row = _safe_row_mapping(
+        db,
+        """
+        SELECT
+            cpv.clinic_profile_version,
+            cpv.activated_at,
+            cpv.permitted_use_categories,
+            cpv.prohibited_use_categories,
+            cpv.human_review_statement_enabled,
+            cpv.privacy_statement_enabled,
+            cpv.client_explanation_statement_enabled,
+            tpl.template_slug,
+            cpv.template_version_snapshot
+        FROM public.clinic_client_transparency_profiles cpv
+        LEFT JOIN public.client_transparency_templates tpl
+            ON tpl.template_id = cpv.client_transparency_template_id
+        WHERE cpv.clinic_id = CAST(:clinic_id AS uuid)
+          AND cpv.status = 'active'
+        LIMIT 1
+        """,
+        {"clinic_id": clinic_id},
+        "client_transparency_active_profile",
+    )
+
+    active_exists = bool(active_row)
+    if active_exists:
+        active_profile_version = _to_int(
+            active_row.get("clinic_profile_version"), default=0,
+        )
+        activated_at = active_row.get("activated_at")
+        active_profile_activated_at = (
+            activated_at.isoformat() if activated_at else None
+        )
+        active_template_slug = active_row.get("template_slug")
+        active_template_version = active_row.get("template_version_snapshot")
+        permitted_count = len(active_row.get("permitted_use_categories") or [])
+        prohibited_count = len(
+            active_row.get("prohibited_use_categories") or []
+        )
+        human_review_enabled = bool(
+            active_row.get("human_review_statement_enabled", False)
+        )
+        privacy_enabled = bool(
+            active_row.get("privacy_statement_enabled", False)
+        )
+        client_explanation_enabled = bool(
+            active_row.get("client_explanation_statement_enabled", False)
+        )
+    else:
+        active_profile_version = None
+        active_profile_activated_at = None
+        active_template_slug = None
+        active_template_version = None
+        permitted_count = 0
+        prohibited_count = 0
+        # For an absent profile, NO active statement exists, so the
+        # statement booleans surface as false. This is honest - the
+        # clinic has not yet configured these statements.
+        human_review_enabled = False
+        privacy_enabled = False
+        client_explanation_enabled = False
+
+    # ---- Latest published public version ----
+    # Retired versions do NOT count as currently published.
+    pub_row = _safe_row_mapping(
+        db,
+        """
+        SELECT
+            public_version,
+            publication_status,
+            published_at
+        FROM public.client_transparency_public_versions
+        WHERE clinic_id = CAST(:clinic_id AS uuid)
+          AND publication_status = 'published'
+        ORDER BY published_at DESC
+        LIMIT 1
+        """,
+        {"clinic_id": clinic_id},
+        "client_transparency_latest_published",
+    )
+
+    if pub_row:
+        published_version_exists = True
+        latest_public_version = _to_int(pub_row.get("public_version"), default=0)
+        latest_publication_status = "published"
+        published_at = pub_row.get("published_at")
+        latest_published_at = (
+            published_at.isoformat() if published_at else None
+        )
+    else:
+        published_version_exists = False
+        latest_public_version = None
+        latest_publication_status = "none"
+        latest_published_at = None
+
+    return {
+        "active_profile_exists": active_exists,
+        "active_profile_status": "active" if active_exists else "none",
+        "active_profile_version": (
+            active_profile_version if active_exists else None
+        ),
+        "active_profile_activated_at": active_profile_activated_at,
+        "active_template_slug": active_template_slug,
+        "active_template_version": active_template_version,
+        "published_version_exists": published_version_exists,
+        "latest_public_version": latest_public_version,
+        "latest_publication_status": latest_publication_status,
+        "latest_published_at": latest_published_at,
+        "permitted_categories_count": int(permitted_count),
+        "prohibited_categories_count": int(prohibited_count),
+        "human_review_statement_enabled": human_review_enabled,
+        "privacy_statement_enabled": privacy_enabled,
+        "client_explanation_statement_enabled": client_explanation_enabled,
+        # Doctrine self-assertions. Backend tests + Trust Pack section
+        # enforce these are always false on this surface.
+        "raw_content_included": False,
+        "clinical_content_included": False,
+        "staff_identifiers_included": False,
+        "client_identifiers_included": False,
+        "patient_identifiers_included": False,
+        "governance_note": _CLIENT_TRANSPARENCY_NOTE,
+    }
+
+
 def build_trust_snapshot(
     db: Session,
     clinic_id: str,
@@ -716,6 +873,10 @@ def build_trust_snapshot(
         db=db, clinic_id=clinic_id,
     )
 
+    client_transparency_block = _build_client_transparency_block(
+        db=db, clinic_id=clinic_id,
+    )
+
     recommended_learning = _derive_recommended_learning(
         top_mode_24h=top_mode_24h,
         intervention_rate_24h=intervention_rate_24h,
@@ -787,6 +948,7 @@ def build_trust_snapshot(
         },
         "governance_policy": governance_policy_block,
         "self_assessment": self_assessment_block,
+        "client_transparency": client_transparency_block,
         "limitations": _build_limitations(signal_quality=signal_quality),
     }
 
