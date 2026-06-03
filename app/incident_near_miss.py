@@ -912,3 +912,819 @@ def get_record(
                 status_code=404, detail="incident_not_found",
             )
     return IncidentNearMissRecordResponse(record=_record_from_row(row))
+
+
+# ---------------------------------------------------------------------
+# Phase 2A-5.3 - Lifecycle (PATCH / review / close / void) + summary.
+# ---------------------------------------------------------------------
+#
+# State machine:
+#
+#   open ---PATCH(any tier)---> open
+#   open ---review--->  in_review | actioned
+#   open ---close---> closed
+#   open ---void---> voided
+#
+#   in_review ---PATCH(admin)---> in_review
+#   in_review ---review---> in_review | actioned
+#   in_review ---close---> closed
+#   in_review ---void---> voided
+#
+#   actioned ---PATCH(admin)---> actioned
+#   actioned ---review---> actioned (no-op)
+#   actioned ---close---> closed
+#   actioned ---void---> voided
+#
+#   closed ---PATCH---> 409 (final)
+#   closed ---review---> 400 invalid_transition
+#   closed ---close---> 200 idempotent (no new audit row)
+#   closed ---void---> voided
+#
+#   voided ---PATCH---> 409 (final)
+#   voided ---review---> 400 invalid_transition
+#   voided ---close---> 400 invalid_transition
+#   voided ---void---> 200 idempotent (no new audit row)
+#
+# Audit doctrine recap:
+#   * Reuse `_insert_audit_event` from 2A-5.2 (no `ON CONFLICT`
+#     against the partial admin_audit_events_idem_uq index).
+#   * Idempotent close / void re-calls: NO duplicate audit row.
+#   * `meta` is enum values + boolean flags + changed_field_names
+#     only. No raw text. No linked-target UUIDs (only `*_present`
+#     flags or the change-list).
+
+
+# Review transition allow-list. Source status -> set of next_status
+# values reachable via the /review endpoint.
+_REVIEW_TRANSITIONS = {
+    "open": frozenset({"in_review", "actioned"}),
+    "in_review": frozenset({"in_review", "actioned"}),
+    "actioned": frozenset({"actioned"}),
+    # closed / voided deliberately absent -> 400 invalid_transition
+}
+
+# Default `next_status` when the request omits it. Reflects the
+# spec's "natural forward progression".
+_REVIEW_DEFAULT_NEXT_STATUS = {
+    "open": "in_review",
+    "in_review": "actioned",
+    "actioned": "actioned",
+}
+
+# Allowed next_status values for the review endpoint (subset of the
+# global STATUS_VALUES list).
+_REVIEW_ALLOWED_NEXT_STATUS = frozenset({"in_review", "actioned"})
+
+# Statuses from which PATCH is permitted (any tier or admin).
+_PATCH_OPEN_TIER_STATUSES = frozenset({"open"})
+_PATCH_ADMIN_TIER_STATUSES = frozenset({"open", "in_review", "actioned"})
+
+# void_reason_category allow-set (also enforced by CHECK constraint).
+_VOID_REASON_SET = frozenset(VOID_REASON_VALUES)
+
+
+_INCIDENT_SUMMARY_GOVERNANCE_NOTE = (
+    "Incident and near-miss summary evidence is metadata-only and "
+    "supports governance review and learning. It does not include "
+    "raw prompts, outputs, clinical case material, client identifiers, "
+    "or patient identifiers. It is not a clinical record, not a legal "
+    "claim, not an insurance submission, and not a regulator report. "
+    "Human professional review remains required."
+)
+
+
+# ---------------------------------------------------------------------
+# Lifecycle request models
+# ---------------------------------------------------------------------
+
+
+class IncidentNearMissUpdateRequest(BaseModel):
+    """Bounded PATCH body. `extra='forbid'` rejects every free-text /
+    identifier / claim / insurance / negligence / malpractice field.
+
+    Linked IDs are intentionally NOT updatable here - the originating
+    link choice is part of the record's audit context. Status,
+    `*_by_user_id`, `void_reason_category`, timestamps, and any field
+    not on this allow-list are also rejected at the parser layer.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    category: Optional[str] = Field(default=None, max_length=64)
+    severity: Optional[str] = Field(default=None, max_length=64)
+    source: Optional[str] = Field(default=None, max_length=64)
+    outcome: Optional[str] = Field(default=None, max_length=64)
+    occurred_at: Optional[datetime] = None
+    detected_at: Optional[datetime] = None
+    action_taken_category: Optional[str] = Field(default=None, max_length=64)
+    learning_recommended: Optional[bool] = None
+    policy_review_recommended: Optional[bool] = None
+    client_communication_review_recommended: Optional[bool] = None
+
+
+class IncidentNearMissReviewRequest(BaseModel):
+    """Bounded review body. `extra='forbid'`. `next_status` defaults
+    to the natural forward progression for the source status."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    next_status: Optional[str] = Field(default=None, max_length=64)
+    action_taken_category: Optional[str] = Field(default=None, max_length=64)
+    learning_recommended: Optional[bool] = None
+    policy_review_recommended: Optional[bool] = None
+    client_communication_review_recommended: Optional[bool] = None
+
+
+class IncidentNearMissVoidRequest(BaseModel):
+    """Bounded void body. Requires `void_reason_category` against the
+    CHECK-constrained enum."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    void_reason_category: str = Field(..., min_length=1, max_length=64)
+
+
+# ---------------------------------------------------------------------
+# Summary response model
+# ---------------------------------------------------------------------
+
+
+class IncidentNearMissSummary(BaseModel):
+    window_days: int
+    records_total: int
+    records_in_window: int
+
+    open_records: int
+    in_review_records: int
+    actioned_records: int
+    closed_records: int
+    voided_records: int
+
+    high_or_critical_records: int
+    privacy_related_records: int
+    linked_receipt_records: int
+
+    learning_recommended_count: int
+    policy_review_recommended_count: int
+    client_communication_review_recommended_count: int
+
+    last_reported_at: Optional[datetime] = None
+
+    # Doctrine self-assertions - always false on this surface.
+    raw_content_included: bool = False
+    clinical_content_included: bool = False
+    staff_identifiers_included: bool = False
+    client_identifiers_included: bool = False
+    patient_identifiers_included: bool = False
+
+
+class IncidentNearMissSummaryResponse(BaseModel):
+    summary: IncidentNearMissSummary
+    governance_note: str = _INCIDENT_SUMMARY_GOVERNANCE_NOTE
+
+
+# ---------------------------------------------------------------------
+# Update enum validator
+# ---------------------------------------------------------------------
+
+
+def _validate_update_enums(payload: IncidentNearMissUpdateRequest) -> None:
+    _validate_enum(payload.category, _CATEGORY_SET, "invalid_category")
+    _validate_enum(payload.severity, _SEVERITY_SET, "invalid_severity")
+    _validate_enum(payload.source, _SOURCE_SET, "invalid_source")
+    _validate_enum(payload.outcome, _OUTCOME_SET, "invalid_outcome")
+    _validate_enum(
+        payload.action_taken_category,
+        _ACTION_TAKEN_SET,
+        "invalid_action_taken_category",
+    )
+
+
+def _resolve_review_next_status(
+    *, current_status: str, requested: Optional[str],
+) -> str:
+    """Resolve the next status for the /review transition. Returns
+    the resolved status string OR raises an HTTPException with the
+    stable error code."""
+    if current_status not in _REVIEW_TRANSITIONS:
+        # closed / voided
+        raise HTTPException(status_code=400, detail="invalid_transition")
+    if requested is None:
+        return _REVIEW_DEFAULT_NEXT_STATUS[current_status]
+    if requested not in _REVIEW_ALLOWED_NEXT_STATUS:
+        raise HTTPException(status_code=400, detail="invalid_status")
+    if requested not in _REVIEW_TRANSITIONS[current_status]:
+        raise HTTPException(status_code=400, detail="invalid_transition")
+    return requested
+
+
+# ---------------------------------------------------------------------
+# PATCH /records/{incident_id}
+# ---------------------------------------------------------------------
+
+
+@router.patch(
+    "/records/{incident_id}",
+    response_model=IncidentNearMissRecordResponse,
+)
+def update_record(
+    incident_id: _uuid.UUID,
+    payload: IncidentNearMissUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> IncidentNearMissRecordResponse:
+    """Update structured metadata on an incident record.
+
+    * Creator may PATCH only while status is `open`.
+    * Admin tier may PATCH while status is one of
+      {open, in_review, actioned}.
+    * `closed` and `voided` records are final - both tiers receive
+      409 `incident_not_editable`.
+    * Non-admin non-creator receives 404 `incident_not_found`
+      (enumeration-safe; same envelope as missing/cross-clinic).
+    """
+    ctx = _ctx(request)
+
+    target = _select_record_for_clinic(
+        db, clinic_id=ctx["clinic_id"], incident_id=str(incident_id),
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="incident_not_found")
+
+    is_admin = _is_incident_admin(ctx["role"])
+    is_creator = (
+        str(target["created_by_user_id"]) == ctx["clinic_user_id"]
+    )
+
+    # Non-admin non-creator: enumeration-safe 404.
+    if not is_admin and not is_creator:
+        raise HTTPException(status_code=404, detail="incident_not_found")
+
+    current_status = str(target["status"])
+    if is_admin:
+        if current_status not in _PATCH_ADMIN_TIER_STATUSES:
+            raise HTTPException(
+                status_code=409, detail="incident_not_editable",
+            )
+    else:
+        # Creator scope.
+        if current_status not in _PATCH_OPEN_TIER_STATUSES:
+            raise HTTPException(
+                status_code=409, detail="incident_not_editable",
+            )
+
+    _validate_update_enums(payload)
+
+    patch = payload.model_dump(exclude_unset=True)
+    if not patch:
+        # Nothing to do, but UPDATE still bumps updated_at. Allow
+        # empty patch to be a no-op-but-touch so the frontend can
+        # trigger a "touched" semantic without sending fields.
+        # Reject instead for clarity.
+        raise HTTPException(
+            status_code=400, detail="incident_update_empty",
+        )
+
+    sets: List[str] = ["updated_at = now()"]
+    params: Dict[str, Any] = {
+        "clinic_id": ctx["clinic_id"],
+        "incident_id": str(incident_id),
+    }
+    for col in (
+        "category",
+        "severity",
+        "source",
+        "outcome",
+        "occurred_at",
+        "detected_at",
+        "action_taken_category",
+        "learning_recommended",
+        "policy_review_recommended",
+        "client_communication_review_recommended",
+    ):
+        if col in patch:
+            sets.append(f"{col} = :{col}")
+            params[col] = patch[col]
+
+    new_row = db.execute(
+        text(
+            f"""
+            UPDATE ai_incident_near_miss_records
+            SET {', '.join(sets)}
+            WHERE clinic_id = CAST(:clinic_id AS uuid)
+              AND incident_id = CAST(:incident_id AS uuid)
+            RETURNING {_RECORD_COLS}
+            """
+        ),
+        params,
+    ).mappings().first()
+    if not new_row:
+        # Concurrent state change between SELECT and UPDATE.
+        raise HTTPException(
+            status_code=409, detail="incident_state_changed",
+        )
+    new_row_d = dict(new_row)
+
+    _insert_audit_event(
+        db,
+        clinic_id=ctx["clinic_id"],
+        admin_user_id=ctx["clinic_user_id"],
+        action="ai_incident_near_miss_record_updated",
+        target_id=str(new_row_d["incident_id"]),
+        ip_hash=ctx["ip_hash"],
+        meta={
+            "changed_field_names": sorted(
+                k for k in patch.keys()
+            ),
+            "category": new_row_d["category"],
+            "severity": new_row_d["severity"],
+            "source": new_row_d["source"],
+            "outcome": new_row_d["outcome"],
+            "action_taken_category": new_row_d.get("action_taken_category"),
+            "status": new_row_d["status"],
+            "actor_tier": "admin" if is_admin else "creator",
+        },
+    )
+    logger.info(
+        "ai_incident_near_miss_record_updated",
+        extra={
+            "clinic_id": ctx["clinic_id"],
+            "incident_id": str(new_row_d["incident_id"]),
+            "actor_tier": "admin" if is_admin else "creator",
+        },
+    )
+    return IncidentNearMissRecordResponse(
+        record=_record_from_row(new_row_d),
+    )
+
+
+# ---------------------------------------------------------------------
+# POST /records/{incident_id}/review
+# ---------------------------------------------------------------------
+
+
+@router.post(
+    "/records/{incident_id}/review",
+    response_model=IncidentNearMissRecordResponse,
+)
+def review_record(
+    incident_id: _uuid.UUID,
+    payload: IncidentNearMissReviewRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> IncidentNearMissRecordResponse:
+    """Admin-tier review transition.
+
+    Allowed source statuses: `open`, `in_review`, `actioned`.
+    Allowed `next_status`: `in_review`, `actioned`.
+    `closed` and `voided` records cannot be reviewed (400
+    `invalid_transition`).
+
+    `reviewed_at` is set on first review and preserved thereafter;
+    `reviewed_by_user_id` is similarly first-write-wins so historical
+    actor attribution survives subsequent reviews.
+    """
+    ctx = _ctx(request)
+    _require_incident_admin(ctx["role"])
+
+    target = _select_record_for_clinic(
+        db, clinic_id=ctx["clinic_id"], incident_id=str(incident_id),
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="incident_not_found")
+
+    # Enum / transition validation.
+    _validate_enum(
+        payload.action_taken_category,
+        _ACTION_TAKEN_SET,
+        "invalid_action_taken_category",
+    )
+    resolved_next_status = _resolve_review_next_status(
+        current_status=str(target["status"]),
+        requested=payload.next_status,
+    )
+
+    # UPDATE. `reviewed_at` / `reviewed_by_user_id` are first-write-
+    # wins (COALESCE existing value with the new now() / actor).
+    sets: List[str] = [
+        "status = :next_status",
+        "reviewed_by_user_id = COALESCE(reviewed_by_user_id, CAST(:actor AS uuid))",
+        "reviewed_at = COALESCE(reviewed_at, now())",
+        "updated_at = now()",
+    ]
+    params: Dict[str, Any] = {
+        "clinic_id": ctx["clinic_id"],
+        "incident_id": str(incident_id),
+        "next_status": resolved_next_status,
+        "actor": ctx["clinic_user_id"],
+    }
+    if payload.action_taken_category is not None:
+        sets.append("action_taken_category = :action_taken_category")
+        params["action_taken_category"] = payload.action_taken_category
+    for boolean_col in (
+        "learning_recommended",
+        "policy_review_recommended",
+        "client_communication_review_recommended",
+    ):
+        v = getattr(payload, boolean_col)
+        if v is not None:
+            sets.append(f"{boolean_col} = :{boolean_col}")
+            params[boolean_col] = bool(v)
+
+    new_row = db.execute(
+        text(
+            f"""
+            UPDATE ai_incident_near_miss_records
+            SET {', '.join(sets)}
+            WHERE clinic_id = CAST(:clinic_id AS uuid)
+              AND incident_id = CAST(:incident_id AS uuid)
+            RETURNING {_RECORD_COLS}
+            """
+        ),
+        params,
+    ).mappings().first()
+    if not new_row:
+        raise HTTPException(
+            status_code=409, detail="incident_state_changed",
+        )
+    new_row_d = dict(new_row)
+
+    _insert_audit_event(
+        db,
+        clinic_id=ctx["clinic_id"],
+        admin_user_id=ctx["clinic_user_id"],
+        action="ai_incident_near_miss_record_reviewed",
+        target_id=str(new_row_d["incident_id"]),
+        ip_hash=ctx["ip_hash"],
+        meta={
+            "previous_status": str(target["status"]),
+            "status": resolved_next_status,
+            "action_taken_category": new_row_d.get(
+                "action_taken_category"
+            ),
+            "learning_recommended": bool(
+                new_row_d["learning_recommended"]
+            ),
+            "policy_review_recommended": bool(
+                new_row_d["policy_review_recommended"]
+            ),
+            "client_communication_review_recommended": bool(
+                new_row_d["client_communication_review_recommended"]
+            ),
+        },
+    )
+    logger.info(
+        "ai_incident_near_miss_record_reviewed",
+        extra={
+            "clinic_id": ctx["clinic_id"],
+            "incident_id": str(new_row_d["incident_id"]),
+            "previous_status": str(target["status"]),
+            "next_status": resolved_next_status,
+        },
+    )
+    return IncidentNearMissRecordResponse(
+        record=_record_from_row(new_row_d),
+    )
+
+
+# ---------------------------------------------------------------------
+# POST /records/{incident_id}/close
+# ---------------------------------------------------------------------
+
+
+@router.post(
+    "/records/{incident_id}/close",
+    response_model=IncidentNearMissRecordResponse,
+)
+def close_record(
+    incident_id: _uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> IncidentNearMissRecordResponse:
+    """Admin-tier close. Sets status='closed'. Idempotent on already-
+    closed records (200 with existing state, no duplicate audit row).
+    400 invalid_transition from `voided`."""
+    ctx = _ctx(request)
+    _require_incident_admin(ctx["role"])
+
+    target = _select_record_for_clinic(
+        db, clinic_id=ctx["clinic_id"], incident_id=str(incident_id),
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="incident_not_found")
+
+    current_status = str(target["status"])
+    if current_status == "closed":
+        # Idempotent no-op.
+        return IncidentNearMissRecordResponse(
+            record=_record_from_row(target),
+        )
+    if current_status == "voided":
+        raise HTTPException(
+            status_code=400, detail="invalid_transition",
+        )
+
+    new_row = db.execute(
+        text(
+            f"""
+            UPDATE ai_incident_near_miss_records
+            SET status = 'closed',
+                closed_by_user_id = COALESCE(closed_by_user_id, CAST(:actor AS uuid)),
+                closed_at = COALESCE(closed_at, now()),
+                updated_at = now()
+            WHERE clinic_id = CAST(:clinic_id AS uuid)
+              AND incident_id = CAST(:incident_id AS uuid)
+              AND status IN ('open','in_review','actioned')
+            RETURNING {_RECORD_COLS}
+            """
+        ),
+        {
+            "clinic_id": ctx["clinic_id"],
+            "incident_id": str(incident_id),
+            "actor": ctx["clinic_user_id"],
+        },
+    ).mappings().first()
+    if not new_row:
+        raise HTTPException(
+            status_code=409, detail="incident_state_changed",
+        )
+    new_row_d = dict(new_row)
+
+    _insert_audit_event(
+        db,
+        clinic_id=ctx["clinic_id"],
+        admin_user_id=ctx["clinic_user_id"],
+        action="ai_incident_near_miss_record_closed",
+        target_id=str(new_row_d["incident_id"]),
+        ip_hash=ctx["ip_hash"],
+        meta={
+            "previous_status": current_status,
+            "status": "closed",
+        },
+    )
+    logger.info(
+        "ai_incident_near_miss_record_closed",
+        extra={
+            "clinic_id": ctx["clinic_id"],
+            "incident_id": str(new_row_d["incident_id"]),
+            "previous_status": current_status,
+        },
+    )
+    return IncidentNearMissRecordResponse(
+        record=_record_from_row(new_row_d),
+    )
+
+
+# ---------------------------------------------------------------------
+# POST /records/{incident_id}/void
+# ---------------------------------------------------------------------
+
+
+@router.post(
+    "/records/{incident_id}/void",
+    response_model=IncidentNearMissRecordResponse,
+)
+def void_record(
+    incident_id: _uuid.UUID,
+    payload: IncidentNearMissVoidRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> IncidentNearMissRecordResponse:
+    """Admin-tier void with reason. Append-only - row never deleted.
+    Idempotent on already-voided records (200 with existing state,
+    no duplicate audit row, first reason/timestamp preserved)."""
+    ctx = _ctx(request)
+    _require_incident_admin(ctx["role"])
+
+    if payload.void_reason_category not in _VOID_REASON_SET:
+        raise HTTPException(
+            status_code=400, detail="invalid_void_reason_category",
+        )
+
+    target = _select_record_for_clinic(
+        db, clinic_id=ctx["clinic_id"], incident_id=str(incident_id),
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="incident_not_found")
+
+    current_status = str(target["status"])
+    if current_status == "voided":
+        # Idempotent no-op. Preserve first reason / actor / timestamp.
+        return IncidentNearMissRecordResponse(
+            record=_record_from_row(target),
+        )
+
+    new_row = db.execute(
+        text(
+            f"""
+            UPDATE ai_incident_near_miss_records
+            SET status = 'voided',
+                void_reason_category = COALESCE(
+                    void_reason_category, :void_reason_category
+                ),
+                voided_by_user_id = COALESCE(
+                    voided_by_user_id, CAST(:actor AS uuid)
+                ),
+                voided_at = COALESCE(voided_at, now()),
+                updated_at = now()
+            WHERE clinic_id = CAST(:clinic_id AS uuid)
+              AND incident_id = CAST(:incident_id AS uuid)
+              AND status <> 'voided'
+            RETURNING {_RECORD_COLS}
+            """
+        ),
+        {
+            "clinic_id": ctx["clinic_id"],
+            "incident_id": str(incident_id),
+            "void_reason_category": payload.void_reason_category,
+            "actor": ctx["clinic_user_id"],
+        },
+    ).mappings().first()
+    if not new_row:
+        raise HTTPException(
+            status_code=409, detail="incident_state_changed",
+        )
+    new_row_d = dict(new_row)
+
+    _insert_audit_event(
+        db,
+        clinic_id=ctx["clinic_id"],
+        admin_user_id=ctx["clinic_user_id"],
+        action="ai_incident_near_miss_record_voided",
+        target_id=str(new_row_d["incident_id"]),
+        ip_hash=ctx["ip_hash"],
+        meta={
+            "previous_status": current_status,
+            "status": "voided",
+            "void_reason_category": payload.void_reason_category,
+        },
+    )
+    logger.info(
+        "ai_incident_near_miss_record_voided",
+        extra={
+            "clinic_id": ctx["clinic_id"],
+            "incident_id": str(new_row_d["incident_id"]),
+            "previous_status": current_status,
+        },
+    )
+    return IncidentNearMissRecordResponse(
+        record=_record_from_row(new_row_d),
+    )
+
+
+# ---------------------------------------------------------------------
+# GET /summary
+# ---------------------------------------------------------------------
+#
+# Aggregation rules (founder-confirmed in 2A-5.0/2A-5.3 specs):
+#
+#   * `records_total`  - ALL non-deleted rows (no window), including
+#                        voided. Useful for "how many lifetime?".
+#   * `records_in_window` - reported_at >= now() - window_days days.
+#   * Status counts (open/in_review/actioned/closed/voided) - windowed.
+#     Voided is its own count.
+#   * `high_or_critical_records` - severity in (high, critical),
+#     windowed, EXCLUDING voided.
+#   * `privacy_related_records`  - category='privacy_or_identifier_risk',
+#     windowed, EXCLUDING voided.
+#   * `linked_receipt_records`   - linked_receipt_id IS NOT NULL,
+#     windowed, EXCLUDING voided.
+#   * Recommendation counts      - booleans true, windowed, EXCLUDING
+#     voided.
+#   * `last_reported_at`         - latest reported_at among non-voided
+#     records (any time, not just window) - aggregate signal of
+#     "when did we last record anything live".
+
+
+@router.get(
+    "/summary",
+    response_model=IncidentNearMissSummaryResponse,
+)
+def get_summary(
+    request: Request,
+    db: Session = Depends(get_db),
+    window_days: int = Query(default=30, ge=1, le=365),
+) -> IncidentNearMissSummaryResponse:
+    """Aggregate metadata-only summary for governance review. Visible
+    to any authenticated clinic user (no per-record identifiers
+    surfaced; only counts)."""
+    ctx = _ctx(request)
+
+    row = db.execute(
+        text(
+            """
+            WITH params AS (
+                SELECT
+                    CAST(:clinic_id AS uuid) AS clinic_id,
+                    (now() - (:window_days || ' days')::interval) AS window_start
+            )
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                ) AS records_total,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                ) AS records_in_window,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                      AND r.status = 'open'
+                ) AS open_records,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                      AND r.status = 'in_review'
+                ) AS in_review_records,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                      AND r.status = 'actioned'
+                ) AS actioned_records,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                      AND r.status = 'closed'
+                ) AS closed_records,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                      AND r.status = 'voided'
+                ) AS voided_records,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                      AND r.status <> 'voided'
+                      AND r.severity IN ('high','critical')
+                ) AS high_or_critical_records,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                      AND r.status <> 'voided'
+                      AND r.category = 'privacy_or_identifier_risk'
+                ) AS privacy_related_records,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                      AND r.status <> 'voided'
+                      AND r.linked_receipt_id IS NOT NULL
+                ) AS linked_receipt_records,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                      AND r.status <> 'voided'
+                      AND r.learning_recommended = true
+                ) AS learning_recommended_count,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                      AND r.status <> 'voided'
+                      AND r.policy_review_recommended = true
+                ) AS policy_review_recommended_count,
+                COUNT(*) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.reported_at >= (SELECT window_start FROM params)
+                      AND r.status <> 'voided'
+                      AND r.client_communication_review_recommended = true
+                ) AS client_communication_review_recommended_count,
+                MAX(r.reported_at) FILTER (
+                    WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                      AND r.status <> 'voided'
+                ) AS last_reported_at
+            FROM ai_incident_near_miss_records r
+            """
+        ),
+        {
+            "clinic_id": ctx["clinic_id"],
+            "window_days": int(window_days),
+        },
+    ).mappings().first()
+    row_d = dict(row) if row else {}
+
+    def _i(key: str) -> int:
+        v = row_d.get(key)
+        try:
+            return int(v) if v is not None else 0
+        except Exception:
+            return 0
+
+    summary = IncidentNearMissSummary(
+        window_days=int(window_days),
+        records_total=_i("records_total"),
+        records_in_window=_i("records_in_window"),
+        open_records=_i("open_records"),
+        in_review_records=_i("in_review_records"),
+        actioned_records=_i("actioned_records"),
+        closed_records=_i("closed_records"),
+        voided_records=_i("voided_records"),
+        high_or_critical_records=_i("high_or_critical_records"),
+        privacy_related_records=_i("privacy_related_records"),
+        linked_receipt_records=_i("linked_receipt_records"),
+        learning_recommended_count=_i("learning_recommended_count"),
+        policy_review_recommended_count=_i("policy_review_recommended_count"),
+        client_communication_review_recommended_count=_i(
+            "client_communication_review_recommended_count"
+        ),
+        last_reported_at=row_d.get("last_reported_at"),
+    )
+    return IncidentNearMissSummaryResponse(summary=summary)
