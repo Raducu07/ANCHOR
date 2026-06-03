@@ -12,6 +12,7 @@ import type {
   GovernancePolicyTrustBlock,
   TrustPackLearningDelta,
   TrustPostureResponse,
+  TrustClientTransparencyBlock,
   TrustSelfAssessmentBlock,
 } from "@/lib/types";
 
@@ -281,6 +282,10 @@ export default function TrustPosturePage() {
 
             <SelfAssessmentEvidenceCard
               block={data.snapshot.self_assessment ?? null}
+            />
+
+            <ClientTransparencyEvidenceCard
+              block={data.snapshot.client_transparency ?? null}
             />
 
             <div className="grid gap-6 xl:grid-cols-2">
@@ -953,6 +958,209 @@ function SelfAssessmentEvidenceCard({
         {block.governance_note ||
           "Self-assessment evidence is metadata-only and supports governance review and readiness evidence. Human review remains required."}
       </p>
+    </div>
+  );
+}
+
+// Phase 2A-4.8 - Client Transparency evidence tile. Aggregate metadata
+// only; no display title, no plain-language summary, no payload, no
+// content hash, no client/patient identifiers, no staff identifiers.
+function ClientTransparencyEvidenceCard({
+  block,
+}: {
+  block: TrustClientTransparencyBlock | null;
+}) {
+  if (!block) {
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          Evidence
+        </p>
+        <h2 className="mt-1 text-lg font-semibold text-slate-900">
+          Client transparency evidence
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-slate-600">
+          Client transparency evidence is not available yet.
+        </p>
+      </div>
+    );
+  }
+
+  const activeProfileExists = Boolean(block.active_profile_exists);
+  const publishedVersionExists = Boolean(block.published_version_exists);
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            Evidence
+          </p>
+          <h2 className="mt-1 text-lg font-semibold text-slate-900">
+            Client transparency evidence
+          </h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+            Metadata-only evidence showing whether the clinic has configured and
+            published a client-safe AI-use transparency statement. Human
+            professional review remains required.
+          </p>
+        </div>
+        <Link
+          href="/settings/client-transparency"
+          className="rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+        >
+          Open client transparency
+        </Link>
+      </div>
+
+      <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Active profile
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {activeProfileExists ? "Yes" : "No"}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Active profile version
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {block.active_profile_version != null
+              ? `v${block.active_profile_version}`
+              : "-"}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Active template
+          </div>
+          <div className="mt-2 text-sm font-medium text-slate-900">
+            {block.active_template_slug
+              ? `${block.active_template_slug} v${block.active_template_version ?? "-"}`
+              : "-"}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Activated
+          </div>
+          <div className="mt-2 text-sm font-medium text-slate-900">
+            {formatDate(block.active_profile_activated_at ?? undefined)}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Published client-safe version
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {publishedVersionExists ? "Yes" : "No"}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Latest public version
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {block.latest_public_version != null
+              ? `v${block.latest_public_version}`
+              : "-"}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Latest publication status
+          </div>
+          <div className="mt-2 text-sm font-medium capitalize text-slate-900">
+            {(block.latest_publication_status ?? "none").replaceAll("_", " ")}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Latest published
+          </div>
+          <div className="mt-2 text-sm font-medium text-slate-900">
+            {block.latest_published_at
+              ? formatDate(block.latest_published_at)
+              : "Not published yet"}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Permitted categories
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {block.permitted_categories_count ?? 0}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Prohibited categories
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {block.prohibited_categories_count ?? 0}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Statement flags
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-700">
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Human review statement: {block.human_review_statement_enabled ? "Enabled" : "Not enabled"}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Privacy statement: {block.privacy_statement_enabled ? "Enabled" : "Not enabled"}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Client explanation statement: {block.client_explanation_statement_enabled ? "Enabled" : "Not enabled"}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Honest disclosure
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-700">
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+            Raw content included: No
+          </span>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+            Clinical content included: No
+          </span>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+            Staff identifiers included: No
+          </span>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+            Client identifiers included: No
+          </span>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+            Patient identifiers included: No
+          </span>
+        </div>
+      </div>
+
+      {!activeProfileExists ? (
+        <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          No active client transparency profile yet.
+        </p>
+      ) : null}
+
+      {block.governance_note ? (
+        <p className="mt-3 text-[11px] leading-5 text-slate-500">
+          {block.governance_note}
+        </p>
+      ) : null}
     </div>
   );
 }
