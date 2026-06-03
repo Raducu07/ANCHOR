@@ -123,6 +123,22 @@ export default function SettingsPage() {
           </Card>
         ) : null}
 
+        {user && POLICY_ADMIN_ROLES.has(user.role) ? (
+          <Card variant="native">
+            <SectionTitle
+              title="Client transparency"
+              description="Configure a plain-language AI-use transparency statement for client communication. Human professional review remains required."
+            />
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <QuickLink
+                href="/settings/client-transparency"
+                title="Client transparency"
+                description="Draft, activate, and archive the clinic's client-facing AI-use transparency profile."
+              />
+            </div>
+          </Card>
+        ) : null}
+
         <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
           <Card variant="native">
             <SectionTitle
