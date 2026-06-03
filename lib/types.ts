@@ -198,6 +198,9 @@ export type TrustSnapshot = {
   // Phase 2A-4.4 - client-facing transparency aggregate block. Optional
   // for backward compatibility with snapshots that pre-date the block.
   client_transparency?: TrustClientTransparencyBlock;
+  // Phase 2A-5.4 - incident / near-miss aggregate block. Optional for
+  // backward compatibility with snapshots that pre-date the block.
+  incident_near_miss?: TrustIncidentNearMissBlock;
   limitations: string[];
 };
 
@@ -1368,3 +1371,225 @@ export interface TrustClientTransparencyBlock {
   governance_note: string;
 }
 
+
+// ---------------------------------------------------------------------
+// Phase 2A-5 - Incident / Near-Miss Logging.
+// Metadata-only. Reflective governance learning surface; not blame, not
+// a clinical record, not a legal report. Bounded enums only; no
+// free-text request or response fields; no client/patient/staff
+// identifiers; no raw prompts/outputs or clinical content.
+// ---------------------------------------------------------------------
+
+export type IncidentNearMissStatus =
+  | "open"
+  | "in_review"
+  | "actioned"
+  | "closed"
+  | "voided";
+
+export type IncidentNearMissSeverity =
+  | "low"
+  | "moderate"
+  | "high"
+  | "critical";
+
+export type IncidentNearMissCategory =
+  | "misleading_output"
+  | "inaccurate_output"
+  | "unsafe_suggestion"
+  | "privacy_or_identifier_risk"
+  | "overconfident_output"
+  | "missing_human_review"
+  | "policy_boundary_issue"
+  | "inappropriate_client_communication"
+  | "workflow_confusion"
+  | "other";
+
+export type IncidentNearMissSource =
+  | "assistant_workspace"
+  | "external_ai_tool"
+  | "ambient_or_scribe"
+  | "client_communication"
+  | "internal_summary"
+  | "clinical_note_support"
+  | "other";
+
+export type IncidentNearMissOutcome =
+  | "caught_before_use"
+  | "corrected_before_use"
+  | "used_with_correction"
+  | "escalated_for_review"
+  | "client_communication_delayed"
+  | "clinical_team_reviewed"
+  | "other";
+
+export type IncidentNearMissActionTakenCategory =
+  | "no_action_required"
+  | "additional_review"
+  | "staff_briefing"
+  | "policy_review"
+  | "process_change"
+  | "vendor_followup"
+  | "other";
+
+export type IncidentNearMissVoidReasonCategory =
+  | "duplicate"
+  | "wrong_clinic_record"
+  | "test_data"
+  | "incorrect_metadata"
+  | "other";
+
+export interface IncidentNearMissRecord {
+  incident_id: string;
+  created_by_user_id?: string | null;
+  reviewed_by_user_id?: string | null;
+  closed_by_user_id?: string | null;
+  voided_by_user_id?: string | null;
+  status: IncidentNearMissStatus;
+  severity: IncidentNearMissSeverity;
+  category: IncidentNearMissCategory;
+  source: IncidentNearMissSource;
+  outcome: IncidentNearMissOutcome;
+  action_taken_category: IncidentNearMissActionTakenCategory | null;
+  learning_recommended: boolean;
+  policy_review_recommended: boolean;
+  client_communication_review_recommended: boolean;
+  occurred_at: string | null;
+  detected_at: string | null;
+  reported_at: string;
+  reviewed_at: string | null;
+  closed_at: string | null;
+  voided_at: string | null;
+  linked_receipt_id: string | null;
+  linked_governance_event_id: string | null;
+  linked_assistant_run_id: string | null;
+  linked_clinic_policy_version_id: string | null;
+  void_reason_category: IncidentNearMissVoidReasonCategory | null;
+  created_at: string;
+  updated_at: string;
+  raw_content_included: false;
+  clinical_content_included: false;
+  staff_identifiers_included: false;
+  client_identifiers_included: false;
+  patient_identifiers_included: false;
+}
+
+export interface IncidentNearMissCreateRequest {
+  category: IncidentNearMissCategory;
+  severity: IncidentNearMissSeverity;
+  source: IncidentNearMissSource;
+  outcome: IncidentNearMissOutcome;
+  occurred_at?: string | null;
+  detected_at?: string | null;
+  action_taken_category?: IncidentNearMissActionTakenCategory | null;
+  learning_recommended?: boolean;
+  policy_review_recommended?: boolean;
+  client_communication_review_recommended?: boolean;
+  linked_receipt_id?: string | null;
+  linked_governance_event_id?: string | null;
+  linked_assistant_run_id?: string | null;
+  linked_clinic_policy_version_id?: string | null;
+}
+
+export interface IncidentNearMissUpdateRequest {
+  category?: IncidentNearMissCategory;
+  severity?: IncidentNearMissSeverity;
+  source?: IncidentNearMissSource;
+  outcome?: IncidentNearMissOutcome;
+  occurred_at?: string | null;
+  detected_at?: string | null;
+  action_taken_category?: IncidentNearMissActionTakenCategory | null;
+  learning_recommended?: boolean;
+  policy_review_recommended?: boolean;
+  client_communication_review_recommended?: boolean;
+}
+
+export interface IncidentNearMissReviewRequest {
+  next_status?: "in_review" | "actioned" | null;
+  action_taken_category?: IncidentNearMissActionTakenCategory | null;
+  learning_recommended?: boolean | null;
+  policy_review_recommended?: boolean | null;
+  client_communication_review_recommended?: boolean | null;
+}
+
+export interface IncidentNearMissVoidRequest {
+  void_reason_category: IncidentNearMissVoidReasonCategory;
+}
+
+export interface IncidentNearMissVocabularyResponse {
+  statuses: IncidentNearMissStatus[];
+  severities: IncidentNearMissSeverity[];
+  categories: IncidentNearMissCategory[];
+  sources: IncidentNearMissSource[];
+  outcomes: IncidentNearMissOutcome[];
+  action_taken_categories: IncidentNearMissActionTakenCategory[];
+  void_reason_categories: IncidentNearMissVoidReasonCategory[];
+  governance_note: string;
+}
+
+export interface IncidentNearMissRecordResponse {
+  record: IncidentNearMissRecord;
+  governance_note: string;
+}
+
+export interface IncidentNearMissRecordListResponse {
+  records: IncidentNearMissRecord[];
+  limit: number;
+  applied_filters?: Record<string, string | number | boolean | null>;
+  governance_note: string;
+}
+
+export interface IncidentNearMissSummary {
+  window_days: number;
+  records_total: number;
+  records_in_window?: number;
+  records_last_30d?: number;
+  open_records: number;
+  in_review_records: number;
+  actioned_records: number;
+  closed_records: number;
+  voided_records: number;
+  high_or_critical_records: number;
+  privacy_related_records: number;
+  linked_receipt_records: number;
+  learning_recommended_count: number;
+  policy_review_recommended_count: number;
+  client_communication_review_recommended_count: number;
+  last_reported_at: string | null;
+  raw_content_included: false;
+  clinical_content_included: false;
+  staff_identifiers_included: false;
+  client_identifiers_included: false;
+  patient_identifiers_included: false;
+}
+
+export interface IncidentNearMissSummaryResponse {
+  summary: IncidentNearMissSummary;
+  governance_note: string;
+}
+
+// Aggregate incident / near-miss block exposed via Trust posture.
+// Metadata-only; no record-level rows, no identifiers, no narrative.
+export interface TrustIncidentNearMissBlock {
+  window_days: number;
+  records_total: number;
+  records_last_30d: number;
+  open_records: number;
+  in_review_records: number;
+  actioned_records: number;
+  closed_records: number;
+  voided_records: number;
+  high_or_critical_records: number;
+  privacy_related_records: number;
+  linked_receipt_records: number;
+  learning_recommended_count: number;
+  policy_review_recommended_count: number;
+  client_communication_review_recommended_count: number;
+  last_reported_at: string | null;
+  raw_content_included: false;
+  clinical_content_included: false;
+  staff_identifiers_included: false;
+  client_identifiers_included: false;
+  patient_identifiers_included: false;
+  governance_note: string;
+}
