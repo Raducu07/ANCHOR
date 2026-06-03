@@ -548,6 +548,9 @@ function HonestDisclosureRow({ section }: { section: TrustPackSection }) {
     { key: "raw_prompt_included", label: "Raw prompt included", value: section.raw_prompt_included },
     { key: "raw_output_included", label: "Raw output included", value: section.raw_output_included },
     { key: "staff_identifiers_included", label: "Staff identifiers included", value: section.staff_identifiers_included },
+    { key: "clinical_content_included", label: "Clinical content included", value: section.clinical_content_included },
+    { key: "client_identifiers_included", label: "Client identifiers included", value: section.client_identifiers_included },
+    { key: "patient_identifiers_included", label: "Patient identifiers included", value: section.patient_identifiers_included },
   ];
   const present = rows.filter((r) => typeof r.value === "boolean");
   if (present.length === 0) return null;
