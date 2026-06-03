@@ -17,7 +17,7 @@ import type {
 } from "@/lib/types";
 
 function formatDate(value?: string) {
-  if (!value) return "—";
+  if (!value) return "-";
   try {
     return new Date(value).toLocaleString();
   } catch {
@@ -259,7 +259,7 @@ export default function TrustPosturePage() {
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                     <div className="text-xs uppercase tracking-wide text-slate-500">Top mode (24h)</div>
                     <div className="mt-1 text-sm font-medium text-slate-900">
-                      {data.snapshot.operations.top_mode_24h ?? "—"}
+                      {data.snapshot.operations.top_mode_24h ?? "-"}
                     </div>
                   </div>
                 </div>
@@ -840,7 +840,7 @@ function SelfAssessmentEvidenceCard({
           <div className="mt-2 text-sm font-semibold text-slate-900">
             {firstTemplate
               ? `${firstTemplate.answered_questions} of ${firstTemplate.total_questions}`
-              : "—"}
+              : "-"}
           </div>
         </div>
       </div>
