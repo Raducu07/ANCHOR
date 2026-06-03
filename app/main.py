@@ -49,6 +49,7 @@ from app.portal_intelligence import router as portal_intelligence_router
 from app.assistant import router as assistant_router
 from app.learn_v1 import router as learn_v1_router
 from app.governance_policy import router as governance_policy_router
+from app.client_transparency import router as client_transparency_router
 from app.self_assessment import router as self_assessment_router
 
 ensure_logging_configured()
@@ -187,6 +188,7 @@ app.include_router(portal_intelligence_router)
 app.include_router(assistant_router)
 app.include_router(learn_v1_router)
 app.include_router(governance_policy_router)
+app.include_router(client_transparency_router)
 app.include_router(self_assessment_router)
 app.include_router(public_intake_router)
 
