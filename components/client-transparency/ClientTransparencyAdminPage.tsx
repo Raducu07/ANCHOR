@@ -1,6 +1,8 @@
 "use client";
 
-// Phase 2A-4.6 - Client Transparency admin page (clinic-admin only).
+// Phase 2A-4.6 / 2A-4.7 - Client Transparency admin page (clinic-admin
+// only). Profile authoring, activation, archiving, publishing, and a
+// client-safe read-only preview of the current published version.
 //
 // Metadata-only doctrine:
 //   * The profile is a plain-language client-facing AI-use disclosure
@@ -10,7 +12,8 @@
 //     or patient identifiers; no raw prompts/outputs.
 //   * The three statement flags are backend-locked true. The frontend
 //     surfaces them as locked badges and never sends false.
-//   * Publish/version UI is intentionally deferred to Phase 2A-4.7.
+//   * Published client-safe versions remain authenticated and clinic-
+//     scoped in this slice; no unauthenticated public route exists yet.
 //   * Frontend admin gate is UX hardening only; backend remains the
 //     real authorization control.
 
@@ -35,14 +38,19 @@ import {
   archiveClientTransparencyProfile,
   createClientTransparencyProfile,
   getActiveClientTransparencyProfile,
+  getCurrentClientTransparencyPublicVersion,
   listClientTransparencyProfiles,
+  listClientTransparencyPublicVersions,
   listClientTransparencyTemplates,
+  publishClientTransparencyProfile,
+  retireClientTransparencyPublicVersion,
   updateClientTransparencyProfile,
 } from "@/lib/clientTransparency";
 import type {
   ClientTransparencyProfile,
   ClientTransparencyProfileCreateRequest,
   ClientTransparencyProfileUpdateRequest,
+  ClientTransparencyPublicVersion,
   ClientTransparencyTemplate,
 } from "@/lib/types";
 
@@ -174,6 +182,22 @@ export function ClientTransparencyAdminPage() {
 
   const [actingOnProfileId, setActingOnProfileId] = useState<string | null>(null);
 
+  // ---------- Publish / preview / history state ------------------------
+
+  const [currentPublic, setCurrentPublic] =
+    useState<ClientTransparencyPublicVersion | null>(null);
+  const [currentPublicLoading, setCurrentPublicLoading] = useState(false);
+  const [currentPublicError, setCurrentPublicError] = useState<string | null>(null);
+
+  const [publicVersions, setPublicVersions] =
+    useState<ClientTransparencyPublicVersion[] | null>(null);
+  const [publicVersionsLoading, setPublicVersionsLoading] = useState(false);
+  const [publicVersionsError, setPublicVersionsError] = useState<string | null>(null);
+
+  const [publishing, setPublishing] = useState(false);
+  const [actingOnPublicVersionId, setActingOnPublicVersionId] =
+    useState<string | null>(null);
+
   const loadTemplate = useCallback(async () => {
     setTemplateLoading(true);
     setTemplateError(null);
@@ -245,15 +269,78 @@ export function ClientTransparencyAdminPage() {
     }
   }, []);
 
+  const loadCurrentPublic = useCallback(async () => {
+    setCurrentPublicLoading(true);
+    setCurrentPublicError(null);
+    try {
+      const result = await getCurrentClientTransparencyPublicVersion();
+      setCurrentPublic(result.public_version ?? null);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setCurrentPublic(null);
+      } else if (
+        err instanceof ApiError &&
+        (err.status === 401 || err.status === 403)
+      ) {
+        setCurrentPublic(null);
+      } else {
+        setCurrentPublicError(
+          errorMessageFromUnknown(
+            err,
+            "The current client-safe version could not be loaded.",
+          ),
+        );
+      }
+    } finally {
+      setCurrentPublicLoading(false);
+    }
+  }, []);
+
+  const loadPublicVersions = useCallback(async () => {
+    setPublicVersionsLoading(true);
+    setPublicVersionsError(null);
+    try {
+      const result = await listClientTransparencyPublicVersions({ limit: 25 });
+      setPublicVersions(result.public_versions ?? []);
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        setPublicVersions([]);
+      } else {
+        setPublicVersions(null);
+        setPublicVersionsError(
+          errorMessageFromUnknown(
+            err,
+            "Published client transparency versions could not be loaded.",
+          ),
+        );
+      }
+    } finally {
+      setPublicVersionsLoading(false);
+    }
+  }, []);
+
   const reloadAll = useCallback(async () => {
-    await Promise.all([loadActiveProfile(), loadProfiles()]);
-  }, [loadActiveProfile, loadProfiles]);
+    await Promise.all([
+      loadActiveProfile(),
+      loadProfiles(),
+      loadCurrentPublic(),
+      loadPublicVersions(),
+    ]);
+  }, [loadActiveProfile, loadProfiles, loadCurrentPublic, loadPublicVersions]);
 
   useEffect(() => {
     void loadTemplate();
     void loadActiveProfile();
     void loadProfiles();
-  }, [loadTemplate, loadActiveProfile, loadProfiles]);
+    void loadCurrentPublic();
+    void loadPublicVersions();
+  }, [
+    loadTemplate,
+    loadActiveProfile,
+    loadProfiles,
+    loadCurrentPublic,
+    loadPublicVersions,
+  ]);
 
   // ---------- Create draft ---------------------------------------------
 
@@ -396,6 +483,68 @@ export function ClientTransparencyAdminPage() {
     }
   }
 
+  // ---------- Publish / retire -----------------------------------------
+
+  async function handlePublish() {
+    if (!isAdmin || !activeProfile || activeProfile.status !== "active") return;
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        "Publish the active client transparency profile as a client-safe version?",
+      );
+      if (!ok) return;
+    }
+    setFeedback(null);
+    setPublishing(true);
+    try {
+      await publishClientTransparencyProfile(activeProfile.clinic_profile_id);
+      setFeedback({
+        kind: "success",
+        message: "Client-safe transparency version published.",
+      });
+      await reloadAll();
+    } catch (err) {
+      setFeedback({
+        kind: "error",
+        message: errorMessageFromUnknown(
+          err,
+          "Unable to update the published client transparency version.",
+        ),
+      });
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  async function handleRetirePublicVersion(version: ClientTransparencyPublicVersion) {
+    if (!isAdmin) return;
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        "Retire this published client transparency version?",
+      );
+      if (!ok) return;
+    }
+    setFeedback(null);
+    setActingOnPublicVersionId(version.public_version_id);
+    try {
+      await retireClientTransparencyPublicVersion(version.public_version_id);
+      setFeedback({
+        kind: "success",
+        message: "Published client transparency version retired.",
+      });
+      await reloadAll();
+    } catch (err) {
+      setFeedback({
+        kind: "error",
+        message: errorMessageFromUnknown(
+          err,
+          "Unable to update the published client transparency version.",
+        ),
+      });
+    } finally {
+      setActingOnPublicVersionId(null);
+    }
+  }
+
   // ---------- Derived ---------------------------------------------------
 
   const sortedProfiles = useMemo(() => {
@@ -406,6 +555,15 @@ export function ClientTransparencyAdminPage() {
       return bT - aT;
     });
   }, [profiles]);
+
+  const sortedPublicVersions = useMemo(() => {
+    if (!publicVersions) return [];
+    return [...publicVersions].sort((a, b) => b.public_version - a.public_version);
+  }, [publicVersions]);
+
+  const canPublish = Boolean(
+    isAdmin && activeProfile && activeProfile.status === "active",
+  );
 
   // ---------- Render ----------------------------------------------------
 
@@ -475,6 +633,58 @@ export function ClientTransparencyAdminPage() {
         ) : (
           <ProfileSummaryBlock profile={activeProfile} highlight />
         )}
+      </Card>
+
+      {/* ---------- Publish + client-safe preview ---------- */}
+      <Card variant="native">
+        <SectionTitle
+          title="Publish and client-safe preview"
+          description="Publishing creates an immutable, clinic-scoped client-safe version of the active transparency statement. It remains authenticated in this version of ANCHOR."
+        />
+        <div className="mt-4 space-y-4">
+          {canPublish ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                onClick={() => void handlePublish()}
+                loading={publishing}
+                disabled={publishing}
+              >
+                Publish client-safe version
+              </Button>
+              <span className="text-xs text-slate-500">
+                Publishing applies to the current active profile only.
+              </span>
+            </div>
+          ) : !isAdmin ? (
+            <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              Admin access required to publish or retire client transparency versions.
+            </p>
+          ) : !activeProfile ? (
+            <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              Activate a draft profile before publishing a client-safe version.
+            </p>
+          ) : (
+            <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              Only an active profile can be published.
+            </p>
+          )}
+
+          {currentPublicLoading && !currentPublic ? (
+            <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              Loading current client-safe version...
+            </p>
+          ) : currentPublicError ? (
+            <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              {currentPublicError}
+            </p>
+          ) : !currentPublic ? (
+            <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              No published client-safe transparency version yet.
+            </p>
+          ) : (
+            <ClientSafePreview version={currentPublic} />
+          )}
+        </div>
       </Card>
 
       {/* ---------- Template ---------- */}
@@ -643,6 +853,78 @@ export function ClientTransparencyAdminPage() {
                       ) : null}
                     </div>
                   )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+
+      {/* ---------- Publication history ---------- */}
+      <Card variant="native">
+        <SectionTitle
+          title="Publication history"
+          description="Previous client-safe versions for this clinic. Retired versions remain visible as metadata-only governance evidence."
+        />
+        {publicVersionsLoading && !publicVersions ? (
+          <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            Loading publication history...
+          </p>
+        ) : publicVersionsError ? (
+          <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            {publicVersionsError}
+          </p>
+        ) : sortedPublicVersions.length === 0 ? (
+          <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            No client-safe versions have been published yet.
+          </p>
+        ) : (
+          <ul className="mt-4 space-y-3">
+            {sortedPublicVersions.map((v) => {
+              const isBusy = actingOnPublicVersionId === v.public_version_id;
+              const canRetire = isAdmin && v.publication_status === "published";
+              const hash = v.content_hash
+                ? `${v.content_hash.slice(0, 12)}...`
+                : "Not set";
+              return (
+                <li
+                  key={v.public_version_id}
+                  className="rounded-xl border border-slate-200 bg-slate-50 p-4"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900">
+                        Public version v{v.public_version}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {v.generated_public_payload?.display_title ?? "Client-safe statement"}
+                      </p>
+                    </div>
+                    <StatusBadge value={v.publication_status} />
+                  </div>
+                  <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                    <DetailLine
+                      label="Published"
+                      value={formatDateTime(v.published_at)}
+                    />
+                    <DetailLine
+                      label="Retired"
+                      value={formatDateTime(v.retired_at)}
+                    />
+                    <DetailLine label="Content hash" value={hash} />
+                  </div>
+                  {canRetire ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        variant="secondary"
+                        onClick={() => void handleRetirePublicVersion(v)}
+                        loading={isBusy}
+                        disabled={isBusy}
+                      >
+                        Retire version
+                      </Button>
+                    </div>
+                  ) : null}
                 </li>
               );
             })}
@@ -1012,6 +1294,134 @@ function DraftFormFields({
         <p className="mt-1 text-xs text-slate-500">
           These statement flags are locked enabled for this template.
         </p>
+      </div>
+    </div>
+  );
+}
+
+function YesNoBadge({ label, value }: { label: string; value: boolean }) {
+  return (
+    <span
+      className={[
+        "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium",
+        value
+          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+          : "border-slate-200 bg-white text-slate-600",
+      ].join(" ")}
+    >
+      {label}: {value ? "Yes" : "No"}
+    </span>
+  );
+}
+
+function ClientSafePreview({
+  version,
+}: {
+  version: ClientTransparencyPublicVersion;
+}) {
+  const payload = version.generated_public_payload;
+  const statements = payload?.statements ?? {
+    human_review_required: false,
+    privacy_boundaries_included: false,
+    client_explanation_available: false,
+  };
+  const interpretation = payload?.interpretation ?? {
+    not_legal_advice: false,
+    not_consent_form: false,
+    not_clinical_record: false,
+    not_compliance_certificate: false,
+    human_professional_review_required: false,
+  };
+  const sectionHeadings =
+    payload?.sections?.map((s) => s.heading).filter(Boolean) ?? [];
+  const hash = version.content_hash
+    ? `${version.content_hash.slice(0, 12)}...`
+    : "Not set";
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-900">
+            {payload?.display_title ?? "Client-safe statement"}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Public version v{version.public_version} - template v
+            {payload?.template_version ?? "-"} - profile v
+            {payload?.profile_version ?? "-"}
+          </p>
+        </div>
+        <StatusBadge value={version.publication_status} />
+      </div>
+      {payload?.plain_language_summary ? (
+        <p className="mt-2 text-sm leading-6 text-slate-700">
+          {payload.plain_language_summary}
+        </p>
+      ) : null}
+      <div className="mt-3 grid gap-1 sm:grid-cols-2">
+        <DetailLine label="Published" value={formatDateTime(version.published_at)} />
+        <DetailLine label="Retired" value={formatDateTime(version.retired_at)} />
+        <DetailLine label="Content hash" value={hash} />
+      </div>
+      {sectionHeadings.length > 0 ? (
+        <PillGroup label="Section headings" items={sectionHeadings} />
+      ) : null}
+      {payload?.permitted_use_categories?.length ? (
+        <PillGroup
+          label="Permitted use categories"
+          items={payload.permitted_use_categories}
+        />
+      ) : null}
+      {payload?.prohibited_use_categories?.length ? (
+        <PillGroup
+          label="Prohibited use categories"
+          items={payload.prohibited_use_categories}
+        />
+      ) : null}
+      <div className="mt-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Statement flags
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <YesNoBadge
+            label="Human review required"
+            value={Boolean(statements.human_review_required)}
+          />
+          <YesNoBadge
+            label="Privacy boundaries included"
+            value={Boolean(statements.privacy_boundaries_included)}
+          />
+          <YesNoBadge
+            label="Client explanation available"
+            value={Boolean(statements.client_explanation_available)}
+          />
+        </div>
+      </div>
+      <div className="mt-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Interpretation
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <YesNoBadge
+            label="Not legal advice"
+            value={Boolean(interpretation.not_legal_advice)}
+          />
+          <YesNoBadge
+            label="Not a consent form"
+            value={Boolean(interpretation.not_consent_form)}
+          />
+          <YesNoBadge
+            label="Not a clinical record"
+            value={Boolean(interpretation.not_clinical_record)}
+          />
+          <YesNoBadge
+            label="Not a compliance certificate"
+            value={Boolean(interpretation.not_compliance_certificate)}
+          />
+          <YesNoBadge
+            label="Human professional review required"
+            value={Boolean(interpretation.human_professional_review_required)}
+          />
+        </div>
       </div>
     </div>
   );
