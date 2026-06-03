@@ -26,7 +26,7 @@ function sanitizeClinicName(value: unknown, fallback = "Your clinic") {
 }
 
 function formatDate(value?: string) {
-  if (!value) return "—";
+  if (!value) return "-";
   try {
     return new Date(value).toLocaleString();
   } catch {
@@ -35,7 +35,7 @@ function formatDate(value?: string) {
 }
 
 function titleCase(value?: string | null) {
-  if (!value) return "—";
+  if (!value) return "-";
   return value
     .replaceAll("_", " ")
     .replace(/\b\w/g, (m) => m.toUpperCase());
@@ -138,7 +138,7 @@ export default function TrustPackPage() {
       `Governance policy version: v${data.snapshot.governance.policy_version}.`,
       `Operational signal quality: ${titleCase(data.snapshot.operations.signal_quality)}.`,
       `Recent activity volume: ${data.snapshot.operations.events_24h} events in the last 24 hours.`,
-      `Top operating mode in the last 24 hours: ${data.snapshot.operations.top_mode_24h ?? "—"}.`,
+      `Top operating mode in the last 24 hours: ${data.snapshot.operations.top_mode_24h ?? "-"}.`,
       "Trust Pack content is derived from governance, privacy, tenancy, operations, and learning metadata rather than stored raw prompts or model outputs.",
     ];
   }, [data]);
@@ -405,7 +405,7 @@ export default function TrustPackPage() {
                           Top mode (24h)
                         </div>
                         <div className="mt-1 text-sm font-medium text-slate-900">
-                          {data.snapshot.operations.top_mode_24h ?? "—"}
+                          {data.snapshot.operations.top_mode_24h ?? "-"}
                         </div>
                       </div>
                     </div>
