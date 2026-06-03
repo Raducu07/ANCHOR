@@ -195,6 +195,9 @@ export type TrustSnapshot = {
   // Phase 2A-3.4 — RCVS-aligned self-assessment aggregate block. Optional
   // for backward compatibility with snapshots that pre-date the block.
   self_assessment?: TrustSelfAssessmentBlock;
+  // Phase 2A-4.4 - client-facing transparency aggregate block. Optional
+  // for backward compatibility with snapshots that pre-date the block.
+  client_transparency?: TrustClientTransparencyBlock;
   limitations: string[];
 };
 
@@ -268,6 +271,12 @@ export type TrustPackSection = {
   raw_output_included?: boolean;
   // Self-assessment evidence carries a metadata-only templates array.
   templates?: TrustPackSelfAssessmentTemplate[];
+  // Phase 2A-4.4 - client-transparency evidence honest-disclosure flags.
+  active_profile_exists?: boolean;
+  published_version_exists?: boolean;
+  clinical_content_included?: false;
+  client_identifiers_included?: false;
+  patient_identifiers_included?: false;
 };
 
 export type TrustPackResponse = {
@@ -1171,4 +1180,191 @@ export type TrustSelfAssessmentBlock = {
   staff_identifiers_included: false;
   governance_note: string;
 };
+
+// ---------------------------------------------------------------------
+// Phase 2A-4 - Client-Facing Transparency Layer.
+// Metadata-only. Plain-language disclosure support surface. Not a
+// consent form, not a clinical record, not a compliance certificate,
+// not legal advice. Endpoints live under
+// /v1/governance/client-transparency.
+// ---------------------------------------------------------------------
+
+export interface ClientTransparencySectionDefinition {
+  key: string;
+  heading: string;
+}
+
+export interface ClientTransparencyDefaultSections {
+  sections: ClientTransparencySectionDefinition[];
+}
+
+export interface ClientTransparencyTemplate {
+  template_id: string;
+  template_slug: string;
+  template_version: string;
+  title: string;
+  summary: string;
+  default_sections: ClientTransparencyDefaultSections;
+  default_permitted_categories: string[];
+  default_prohibited_categories: string[];
+  rcvs_principle_mappings: string[];
+  eu_ai_act_article_mappings: string[];
+  content_reference: string;
+  content_sha256: string | null;
+  is_active: boolean;
+  superseded_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ClientTransparencyTemplateListResponse {
+  templates: ClientTransparencyTemplate[];
+  governance_note: string;
+}
+
+export interface ClientTransparencyTemplateResponse {
+  template: ClientTransparencyTemplate;
+  governance_note: string;
+}
+
+export type ClientTransparencyProfileStatus =
+  | "draft"
+  | "active"
+  | "superseded"
+  | "archived";
+
+export interface ClientTransparencyProfile {
+  clinic_profile_id: string;
+  client_transparency_template_id: string;
+  template_version_snapshot: string;
+  clinic_profile_version: number;
+  status: ClientTransparencyProfileStatus;
+  display_title: string;
+  plain_language_summary: string;
+  permitted_use_categories: string[];
+  prohibited_use_categories: string[];
+  human_review_statement_enabled: boolean;
+  privacy_statement_enabled: boolean;
+  client_explanation_statement_enabled: boolean;
+  content_sha256_snapshot: string | null;
+  activated_at: string | null;
+  superseded_at: string | null;
+  effective_from: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ClientTransparencyProfileCreateRequest {
+  template_slug: string;
+  template_version?: string | null;
+  display_title: string;
+  plain_language_summary: string;
+  permitted_use_categories: string[];
+  prohibited_use_categories: string[];
+  human_review_statement_enabled?: boolean;
+  privacy_statement_enabled?: boolean;
+  client_explanation_statement_enabled?: boolean;
+}
+
+export interface ClientTransparencyProfileUpdateRequest {
+  display_title?: string;
+  plain_language_summary?: string;
+  permitted_use_categories?: string[];
+  prohibited_use_categories?: string[];
+  human_review_statement_enabled?: boolean;
+  privacy_statement_enabled?: boolean;
+  client_explanation_statement_enabled?: boolean;
+}
+
+export interface ClientTransparencyProfileResponse {
+  profile: ClientTransparencyProfile;
+  governance_note: string;
+}
+
+export interface ClientTransparencyProfileListResponse {
+  profiles: ClientTransparencyProfile[];
+  limit: number;
+  governance_note: string;
+}
+
+export type ClientTransparencyPublicationStatus = "published" | "retired";
+
+export interface ClientTransparencyPublicPayload {
+  artifact_type: "client_transparency_statement";
+  artifact_version: string;
+  template_slug: string;
+  template_version: string;
+  profile_version: number;
+  display_title: string;
+  plain_language_summary: string;
+  permitted_use_categories: string[];
+  prohibited_use_categories: string[];
+  sections: ClientTransparencySectionDefinition[];
+  statements: {
+    human_review_required: boolean;
+    privacy_boundaries_included: boolean;
+    client_explanation_available: boolean;
+  };
+  // Honest-disclosure interpretation flags. The literal type names
+  // include "not_consent_form" / "not_compliance_certificate" / etc;
+  // these are disclaimers, not affirmative claims.
+  interpretation: {
+    not_legal_advice: boolean;
+    not_consent_form: boolean;
+    not_clinical_record: boolean;
+    not_compliance_certificate: boolean;
+    human_professional_review_required: boolean;
+  };
+}
+
+export interface ClientTransparencyPublicVersion {
+  public_version_id: string;
+  clinic_profile_id: string;
+  public_version: number;
+  publication_status: ClientTransparencyPublicationStatus;
+  generated_public_payload: ClientTransparencyPublicPayload;
+  content_hash: string;
+  published_at: string;
+  retired_at: string | null;
+  created_at: string;
+}
+
+export interface ClientTransparencyPublicVersionResponse {
+  public_version: ClientTransparencyPublicVersion;
+  governance_note: string;
+}
+
+export interface ClientTransparencyPublicVersionListResponse {
+  public_versions: ClientTransparencyPublicVersion[];
+  limit: number;
+  governance_note: string;
+}
+
+// Aggregate client-transparency block exposed via Trust posture.
+// Metadata-only; no raw client/patient content, no identifiers, no
+// clinical record fields.
+export interface TrustClientTransparencyBlock {
+  active_profile_exists: boolean;
+  active_profile_status: "active" | "none";
+  active_profile_version: number | null;
+  active_profile_activated_at: string | null;
+  active_template_slug: string | null;
+  active_template_version: string | null;
+  published_version_exists: boolean;
+  latest_public_version: number | null;
+  latest_publication_status: "published" | "retired" | "none";
+  latest_published_at: string | null;
+  permitted_categories_count: number;
+  prohibited_categories_count: number;
+  human_review_statement_enabled: boolean;
+  privacy_statement_enabled: boolean;
+  client_explanation_statement_enabled: boolean;
+  // Honest disclosures. All flags are always false in the live contract.
+  raw_content_included: false;
+  clinical_content_included: false;
+  staff_identifiers_included: false;
+  client_identifiers_included: false;
+  patient_identifiers_included: false;
+  governance_note: string;
+}
 
