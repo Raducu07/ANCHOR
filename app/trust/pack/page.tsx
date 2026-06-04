@@ -25,6 +25,18 @@ function sanitizeClinicName(value: unknown, fallback = "Your clinic") {
   return text;
 }
 
+// Scrub the known test/demo clinic name out of backend-supplied visible
+// copy (e.g. Trust Pack executive summary body). Narrow replacement only;
+// does not touch legitimate customer clinic names.
+function sanitizeVisibleClinicCopy(
+  value: unknown,
+  fallback = "Your clinic",
+): string {
+  const text = typeof value === "string" ? value : "";
+  if (!text) return text;
+  return text.replaceAll("M4 Portal Test Clinic", fallback);
+}
+
 function formatDate(value?: string) {
   if (!value) return "-";
   try {
@@ -454,7 +466,7 @@ export default function TrustPackPage() {
                       </h2>
 
                       <p className="mt-3 text-sm leading-7 text-slate-700">
-                        {section.body}
+                        {sanitizeVisibleClinicCopy(section.body)}
                       </p>
 
                       <div className="mt-4 grid gap-3">
