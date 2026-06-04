@@ -30,11 +30,15 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import {
+  closeIncidentNearMissRecord,
   createIncidentNearMissRecord,
   getIncidentNearMissSummary,
   getIncidentNearMissVocabulary,
   listIncidentNearMissRecords,
   listMyIncidentNearMissRecords,
+  reviewIncidentNearMissRecord,
+  updateIncidentNearMissRecord,
+  voidIncidentNearMissRecord,
 } from "@/lib/incidentNearMiss";
 import type {
   IncidentNearMissActionTakenCategory,
@@ -46,7 +50,9 @@ import type {
   IncidentNearMissSource,
   IncidentNearMissStatus,
   IncidentNearMissSummary,
+  IncidentNearMissUpdateRequest,
   IncidentNearMissVocabularyResponse,
+  IncidentNearMissVoidReasonCategory,
 } from "@/lib/types";
 
 const ADMIN_ROLES = new Set(["admin", "owner", "practice_manager"]);
@@ -114,6 +120,68 @@ type ListFilterState = {
   severity: IncidentNearMissSeverity | "";
 };
 
+type EditFormState = {
+  category: IncidentNearMissCategory | "";
+  severity: IncidentNearMissSeverity | "";
+  source: IncidentNearMissSource | "";
+  outcome: IncidentNearMissOutcome | "";
+  actionTakenCategory: IncidentNearMissActionTakenCategory | "";
+  occurredAt: string;
+  detectedAt: string;
+  learningRecommended: boolean;
+  policyReviewRecommended: boolean;
+  clientCommunicationReviewRecommended: boolean;
+};
+
+function editFormFromRecord(r: IncidentNearMissRecord): EditFormState {
+  // datetime-local needs a YYYY-MM-DDTHH:MM string; only the date prefix is
+  // safe to derive without timezone conversion subtleties, so we keep the
+  // backend-supplied ISO string unless empty. Empty means "leave blank".
+  function toLocalInput(value: string | null): string {
+    if (!value) return "";
+    // Slice the ISO timestamp to the minute resolution accepted by the
+    // datetime-local input. The page already submits via trimOrNull, which
+    // preserves whatever the user leaves in the field.
+    return value.length >= 16 ? value.slice(0, 16) : value;
+  }
+  return {
+    category: r.category,
+    severity: r.severity,
+    source: r.source,
+    outcome: r.outcome,
+    actionTakenCategory: r.action_taken_category ?? "",
+    occurredAt: toLocalInput(r.occurred_at),
+    detectedAt: toLocalInput(r.detected_at),
+    learningRecommended: r.learning_recommended,
+    policyReviewRecommended: r.policy_review_recommended,
+    clientCommunicationReviewRecommended:
+      r.client_communication_review_recommended,
+  };
+}
+
+type AdminRowActions = {
+  vocab: IncidentNearMissVocabularyResponse | null;
+  actingOnIncidentId: string | null;
+  editingIncidentId: string | null;
+  editForm: EditFormState | null;
+  setEditForm: (next: EditFormState | null) => void;
+  voidPickerForIncidentId: string | null;
+  voidReasonByIncident: Record<string, IncidentNearMissVoidReasonCategory>;
+  setVoidReason: (
+    incidentId: string,
+    reason: IncidentNearMissVoidReasonCategory,
+  ) => void;
+  onMoveToReview: (record: IncidentNearMissRecord) => void;
+  onMarkActioned: (record: IncidentNearMissRecord) => void;
+  onClose: (record: IncidentNearMissRecord) => void;
+  onOpenVoidPicker: (record: IncidentNearMissRecord) => void;
+  onConfirmVoid: (record: IncidentNearMissRecord) => void;
+  onCancelVoidPicker: () => void;
+  onStartEdit: (record: IncidentNearMissRecord) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: (record: IncidentNearMissRecord) => void;
+};
+
 function emptyCreateForm(
   vocab: IncidentNearMissVocabularyResponse | null,
 ): CreateFormState {
@@ -171,6 +239,16 @@ export function IncidentNearMissPage() {
   );
   const [creating, setCreating] = useState(false);
   const [feedback, setFeedback] = useState<ActionFeedback>(null);
+
+  // Lifecycle action state — admin only, all-records list.
+  const [actingOnIncidentId, setActingOnIncidentId] = useState<string | null>(null);
+  const [editingIncidentId, setEditingIncidentId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<EditFormState | null>(null);
+  const [voidPickerForIncidentId, setVoidPickerForIncidentId] =
+    useState<string | null>(null);
+  const [voidReasonByIncident, setVoidReasonByIncident] = useState<
+    Record<string, IncidentNearMissVoidReasonCategory>
+  >({});
 
   // ----- Loaders -----
 
@@ -382,6 +460,158 @@ export function IncidentNearMissPage() {
     }
   }
 
+  // ----- Lifecycle handlers (admin only) -----
+
+  function lifecycleErrorMessage(err: unknown): string {
+    if (err instanceof ApiError) {
+      if (err.status === 401 || err.status === 403) {
+        return "Admin access is required for this action.";
+      }
+      if (err.status === 404) {
+        return "Incident / near-miss record was not found for this clinic.";
+      }
+      if (err.status === 400 || err.status === 409 || err.status === 422) {
+        return "This record cannot be moved to that state.";
+      }
+      if (err.message) return err.message;
+    }
+    if (err instanceof Error) return err.message;
+    return "Unable to update incident / near-miss record.";
+  }
+
+  async function runLifecycleAction(
+    record: IncidentNearMissRecord,
+    action: () => Promise<unknown>,
+    successMessage: string,
+  ) {
+    if (!isAdmin) return;
+    setFeedback(null);
+    setActingOnIncidentId(record.incident_id);
+    try {
+      await action();
+      setFeedback({ kind: "success", message: successMessage });
+      await reloadAll();
+    } catch (err) {
+      setFeedback({ kind: "error", message: lifecycleErrorMessage(err) });
+    } finally {
+      setActingOnIncidentId(null);
+    }
+  }
+
+  async function handleMoveToReview(record: IncidentNearMissRecord) {
+    await runLifecycleAction(
+      record,
+      () =>
+        reviewIncidentNearMissRecord(record.incident_id, {
+          next_status: "in_review",
+        }),
+      "Incident / near-miss record moved to review.",
+    );
+  }
+
+  async function handleMarkActioned(record: IncidentNearMissRecord) {
+    await runLifecycleAction(
+      record,
+      () =>
+        reviewIncidentNearMissRecord(record.incident_id, {
+          next_status: "actioned",
+        }),
+      "Incident / near-miss record marked actioned.",
+    );
+  }
+
+  async function handleClose(record: IncidentNearMissRecord) {
+    await runLifecycleAction(
+      record,
+      () => closeIncidentNearMissRecord(record.incident_id),
+      "Incident / near-miss record closed.",
+    );
+  }
+
+  function defaultVoidReason(): IncidentNearMissVoidReasonCategory {
+    return vocab?.void_reason_categories?.[0] ?? "duplicate";
+  }
+
+  function openVoidPicker(record: IncidentNearMissRecord) {
+    setVoidPickerForIncidentId(record.incident_id);
+    setVoidReasonByIncident((prev) => ({
+      ...prev,
+      [record.incident_id]: prev[record.incident_id] ?? defaultVoidReason(),
+    }));
+  }
+
+  function cancelVoidPicker() {
+    setVoidPickerForIncidentId(null);
+  }
+
+  async function confirmVoid(record: IncidentNearMissRecord) {
+    if (!isAdmin) return;
+    const reason =
+      voidReasonByIncident[record.incident_id] ?? defaultVoidReason();
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        "Void this incident / near-miss record? This preserves the metadata record but marks it voided.",
+      );
+      if (!ok) return;
+    }
+    setVoidPickerForIncidentId(null);
+    await runLifecycleAction(
+      record,
+      () =>
+        voidIncidentNearMissRecord(record.incident_id, {
+          void_reason_category: reason,
+        }),
+      "Incident / near-miss record voided.",
+    );
+  }
+
+  // ----- Bounded structured update (admin only) -----
+
+  function startEdit(record: IncidentNearMissRecord) {
+    setEditingIncidentId(record.incident_id);
+    setEditForm(editFormFromRecord(record));
+  }
+
+  function cancelEdit() {
+    setEditingIncidentId(null);
+    setEditForm(null);
+  }
+
+  async function saveEdit(record: IncidentNearMissRecord) {
+    if (!isAdmin || !editForm) return;
+    setFeedback(null);
+    setActingOnIncidentId(record.incident_id);
+    try {
+      const body: IncidentNearMissUpdateRequest = {
+        category: editForm.category || undefined,
+        severity: editForm.severity || undefined,
+        source: editForm.source || undefined,
+        outcome: editForm.outcome || undefined,
+        action_taken_category: editForm.actionTakenCategory
+          ? editForm.actionTakenCategory
+          : null,
+        occurred_at: trimOrNull(editForm.occurredAt),
+        detected_at: trimOrNull(editForm.detectedAt),
+        learning_recommended: editForm.learningRecommended,
+        policy_review_recommended: editForm.policyReviewRecommended,
+        client_communication_review_recommended:
+          editForm.clientCommunicationReviewRecommended,
+      };
+      await updateIncidentNearMissRecord(record.incident_id, body);
+      setFeedback({
+        kind: "success",
+        message: "Incident / near-miss record updated.",
+      });
+      setEditingIncidentId(null);
+      setEditForm(null);
+      await reloadAll();
+    } catch (err) {
+      setFeedback({ kind: "error", message: lifecycleErrorMessage(err) });
+    } finally {
+      setActingOnIncidentId(null);
+    }
+  }
+
   // ----- Derived -----
 
   const sortedMy = useMemo(() => sortByReportedDesc(myRecords ?? []), [myRecords]);
@@ -553,7 +783,32 @@ export function IncidentNearMissPage() {
                 No clinic-wide incident or near-miss records yet.
               </p>
             ) : (
-              <RecordList records={sortedAll} />
+              <RecordList
+                records={sortedAll}
+                adminActions={{
+                  vocab,
+                  actingOnIncidentId,
+                  editingIncidentId,
+                  editForm,
+                  setEditForm,
+                  voidPickerForIncidentId,
+                  voidReasonByIncident,
+                  setVoidReason: (incidentId, reason) =>
+                    setVoidReasonByIncident((prev) => ({
+                      ...prev,
+                      [incidentId]: reason,
+                    })),
+                  onMoveToReview: handleMoveToReview,
+                  onMarkActioned: handleMarkActioned,
+                  onClose: handleClose,
+                  onOpenVoidPicker: openVoidPicker,
+                  onConfirmVoid: confirmVoid,
+                  onCancelVoidPicker: cancelVoidPicker,
+                  onStartEdit: startEdit,
+                  onCancelEdit: cancelEdit,
+                  onSaveEdit: saveEdit,
+                }}
+              />
             )}
           </>
         )}
@@ -1041,17 +1296,41 @@ function FilterRow({
   );
 }
 
-function RecordList({ records }: { records: IncidentNearMissRecord[] }) {
+function RecordList({
+  records,
+  adminActions,
+}: {
+  records: IncidentNearMissRecord[];
+  adminActions?: AdminRowActions;
+}) {
   return (
     <ul className="mt-4 space-y-3">
       {records.map((r) => (
-        <RecordRow key={r.incident_id} record={r} />
+        <RecordRow key={r.incident_id} record={r} adminActions={adminActions} />
       ))}
     </ul>
   );
 }
 
-function RecordRow({ record }: { record: IncidentNearMissRecord }) {
+function RecordRow({
+  record,
+  adminActions,
+}: {
+  record: IncidentNearMissRecord;
+  adminActions?: AdminRowActions;
+}) {
+  const isAdmin = Boolean(adminActions);
+  const isEditing =
+    isAdmin && adminActions?.editingIncidentId === record.incident_id;
+  const isVoidPickerOpen =
+    isAdmin && adminActions?.voidPickerForIncidentId === record.incident_id;
+  const isBusy =
+    isAdmin && adminActions?.actingOnIncidentId === record.incident_id;
+  const isAnyRowBusy = isAdmin
+    ? adminActions?.actingOnIncidentId != null ||
+      adminActions?.editingIncidentId != null
+    : false;
+
   return (
     <li className="rounded-xl border border-slate-200 bg-slate-50 p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1072,6 +1351,21 @@ function RecordRow({ record }: { record: IncidentNearMissRecord }) {
         <DetailLine label="Reported" value={formatDateTime(record.reported_at)} />
         <DetailLine label="Occurred" value={formatDateTime(record.occurred_at)} />
         <DetailLine label="Detected" value={formatDateTime(record.detected_at)} />
+        {record.reviewed_at ? (
+          <DetailLine label="Reviewed" value={formatDateTime(record.reviewed_at)} />
+        ) : null}
+        {record.closed_at ? (
+          <DetailLine label="Closed" value={formatDateTime(record.closed_at)} />
+        ) : null}
+        {record.voided_at ? (
+          <DetailLine label="Voided" value={formatDateTime(record.voided_at)} />
+        ) : null}
+        {record.void_reason_category ? (
+          <DetailLine
+            label="Void reason"
+            value={titleCase(record.void_reason_category)}
+          />
+        ) : null}
         {record.action_taken_category ? (
           <DetailLine
             label="Action taken"
@@ -1144,7 +1438,317 @@ function RecordRow({ record }: { record: IncidentNearMissRecord }) {
           </span>
         </div>
       </div>
+
+      {isAdmin && adminActions ? (
+        <RecordAdminControls
+          record={record}
+          actions={adminActions}
+          isEditing={Boolean(isEditing)}
+          isVoidPickerOpen={Boolean(isVoidPickerOpen)}
+          isBusy={Boolean(isBusy)}
+          isAnyRowBusy={Boolean(isAnyRowBusy)}
+        />
+      ) : null}
     </li>
+  );
+}
+
+function RecordAdminControls({
+  record,
+  actions,
+  isEditing,
+  isVoidPickerOpen,
+  isBusy,
+  isAnyRowBusy,
+}: {
+  record: IncidentNearMissRecord;
+  actions: AdminRowActions;
+  isEditing: boolean;
+  isVoidPickerOpen: boolean;
+  isBusy: boolean;
+  isAnyRowBusy: boolean;
+}) {
+  const status = record.status;
+  const canMoveToReview = status === "open";
+  const canMarkActioned = status === "open" || status === "in_review";
+  const canClose =
+    status === "open" || status === "in_review" || status === "actioned";
+  const canVoid = status !== "voided";
+  const canEdit = status !== "closed" && status !== "voided";
+  const isVoided = status === "voided";
+  // Disable other actions in this row while a picker / editor is open.
+  const disableOthers = isAnyRowBusy && !isBusy;
+
+  if (isVoided) {
+    return (
+      <p className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+        Voided record.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-4 space-y-3">
+      <div className="flex flex-wrap gap-2">
+        {canMoveToReview ? (
+          <Button
+            variant="secondary"
+            onClick={() => actions.onMoveToReview(record)}
+            loading={isBusy}
+            disabled={isBusy || disableOthers}
+          >
+            Move to review
+          </Button>
+        ) : null}
+        {canMarkActioned ? (
+          <Button
+            variant="secondary"
+            onClick={() => actions.onMarkActioned(record)}
+            loading={isBusy}
+            disabled={isBusy || disableOthers}
+          >
+            Mark actioned
+          </Button>
+        ) : null}
+        {canClose ? (
+          <Button
+            variant="secondary"
+            onClick={() => actions.onClose(record)}
+            loading={isBusy}
+            disabled={isBusy || disableOthers}
+          >
+            Close
+          </Button>
+        ) : null}
+        {canVoid ? (
+          <Button
+            variant="secondary"
+            onClick={() => actions.onOpenVoidPicker(record)}
+            disabled={isBusy || disableOthers || isVoidPickerOpen}
+          >
+            Void
+          </Button>
+        ) : null}
+        {canEdit ? (
+          <Button
+            variant="secondary"
+            onClick={() => actions.onStartEdit(record)}
+            disabled={isBusy || disableOthers || isEditing}
+          >
+            Edit structured fields
+          </Button>
+        ) : null}
+      </div>
+
+      {isVoidPickerOpen ? (
+        <div className="rounded-xl border border-slate-200 bg-white p-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            Void reason category
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <select
+              value={
+                actions.voidReasonByIncident[record.incident_id] ??
+                actions.vocab?.void_reason_categories?.[0] ??
+                "duplicate"
+              }
+              disabled={isBusy}
+              onChange={(e) =>
+                actions.setVoidReason(
+                  record.incident_id,
+                  e.target.value as IncidentNearMissVoidReasonCategory,
+                )
+              }
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none"
+            >
+              {(actions.vocab?.void_reason_categories ?? []).map((r) => (
+                <option key={r} value={r}>
+                  {titleCase(r)}
+                </option>
+              ))}
+            </select>
+            <Button
+              onClick={() => actions.onConfirmVoid(record)}
+              loading={isBusy}
+              disabled={isBusy}
+            >
+              Confirm void
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={actions.onCancelVoidPicker}
+              disabled={isBusy}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {isEditing && actions.editForm && actions.vocab ? (
+        <RecordEditPanel
+          record={record}
+          actions={actions}
+          isBusy={isBusy}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function RecordEditPanel({
+  record,
+  actions,
+  isBusy,
+}: {
+  record: IncidentNearMissRecord;
+  actions: AdminRowActions;
+  isBusy: boolean;
+}) {
+  if (!actions.editForm || !actions.vocab) return null;
+  const form = actions.editForm;
+  const vocab = actions.vocab;
+  const setForm = actions.setEditForm;
+  const idBase = `edit-${record.incident_id}`;
+  const categoryOptions = makeOptions(vocab.categories);
+  const severityOptions = makeOptions(vocab.severities);
+  const sourceOptions = makeOptions(vocab.sources);
+  const outcomeOptions = makeOptions(vocab.outcomes);
+  const actionOptions = makeOptions(vocab.action_taken_categories);
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+        Edit structured fields
+      </p>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <EnumSelect<IncidentNearMissCategory>
+          id={`${idBase}-category`}
+          label="Category"
+          required
+          value={form.category}
+          options={categoryOptions}
+          disabled={isBusy}
+          onChange={(v) => setForm({ ...form, category: v })}
+        />
+        <EnumSelect<IncidentNearMissSeverity>
+          id={`${idBase}-severity`}
+          label="Severity"
+          required
+          value={form.severity}
+          options={severityOptions}
+          disabled={isBusy}
+          onChange={(v) => setForm({ ...form, severity: v })}
+        />
+        <EnumSelect<IncidentNearMissSource>
+          id={`${idBase}-source`}
+          label="Source"
+          required
+          value={form.source}
+          options={sourceOptions}
+          disabled={isBusy}
+          onChange={(v) => setForm({ ...form, source: v })}
+        />
+        <EnumSelect<IncidentNearMissOutcome>
+          id={`${idBase}-outcome`}
+          label="Outcome"
+          required
+          value={form.outcome}
+          options={outcomeOptions}
+          disabled={isBusy}
+          onChange={(v) => setForm({ ...form, outcome: v })}
+        />
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <EnumSelect<IncidentNearMissActionTakenCategory>
+          id={`${idBase}-action`}
+          label="Action taken category"
+          allowEmpty
+          emptyLabel="None / not yet decided"
+          value={form.actionTakenCategory}
+          options={actionOptions}
+          disabled={isBusy}
+          onChange={(v) => setForm({ ...form, actionTakenCategory: v })}
+        />
+        <div>
+          <label
+            htmlFor={`${idBase}-occurred`}
+            className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500"
+          >
+            Occurred at (optional)
+          </label>
+          <input
+            id={`${idBase}-occurred`}
+            type="datetime-local"
+            value={form.occurredAt}
+            disabled={isBusy}
+            onChange={(e) => setForm({ ...form, occurredAt: e.target.value })}
+            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label
+            htmlFor={`${idBase}-detected`}
+            className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500"
+          >
+            Detected at (optional)
+          </label>
+          <input
+            id={`${idBase}-detected`}
+            type="datetime-local"
+            value={form.detectedAt}
+            disabled={isBusy}
+            onChange={(e) => setForm({ ...form, detectedAt: e.target.value })}
+            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none"
+          />
+        </div>
+      </div>
+      <fieldset>
+        <legend className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Recommendations
+        </legend>
+        <div className="mt-2 flex flex-wrap gap-3">
+          <ToggleRow
+            id={`${idBase}-rec-learning`}
+            label="Learning recommended"
+            checked={form.learningRecommended}
+            disabled={isBusy}
+            onChange={(v) => setForm({ ...form, learningRecommended: v })}
+          />
+          <ToggleRow
+            id={`${idBase}-rec-policy`}
+            label="Policy review recommended"
+            checked={form.policyReviewRecommended}
+            disabled={isBusy}
+            onChange={(v) => setForm({ ...form, policyReviewRecommended: v })}
+          />
+          <ToggleRow
+            id={`${idBase}-rec-client`}
+            label="Client communication review recommended"
+            checked={form.clientCommunicationReviewRecommended}
+            disabled={isBusy}
+            onChange={(v) =>
+              setForm({ ...form, clientCommunicationReviewRecommended: v })
+            }
+          />
+        </div>
+      </fieldset>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          onClick={() => actions.onSaveEdit(record)}
+          loading={isBusy}
+          disabled={isBusy}
+        >
+          Save structured update
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={actions.onCancelEdit}
+          disabled={isBusy}
+        >
+          Cancel
+        </Button>
+      </div>
+    </div>
   );
 }
 
