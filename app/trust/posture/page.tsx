@@ -13,6 +13,7 @@ import type {
   TrustPackLearningDelta,
   TrustPostureResponse,
   TrustClientTransparencyBlock,
+  TrustIncidentNearMissBlock,
   TrustSelfAssessmentBlock,
 } from "@/lib/types";
 
@@ -286,6 +287,10 @@ export default function TrustPosturePage() {
 
             <ClientTransparencyEvidenceCard
               block={data.snapshot.client_transparency ?? null}
+            />
+
+            <IncidentNearMissEvidenceCard
+              block={data.snapshot.incident_near_miss ?? null}
             />
 
             <div className="grid gap-6 xl:grid-cols-2">
@@ -1153,6 +1158,195 @@ function ClientTransparencyEvidenceCard({
       {!activeProfileExists ? (
         <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
           No active client transparency profile yet.
+        </p>
+      ) : null}
+
+      {block.governance_note ? (
+        <p className="mt-3 text-[11px] leading-5 text-slate-500">
+          {block.governance_note}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// Phase 2A-5.8 - Incident / Near-Miss evidence tile. Aggregate metadata
+// only; no per-record rows, no incident IDs, no user IDs, no linked
+// UUIDs, no narrative or clinical content.
+function IncidentNearMissEvidenceCard({
+  block,
+}: {
+  block: TrustIncidentNearMissBlock | null;
+}) {
+  if (!block) {
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          Evidence
+        </p>
+        <h2 className="mt-1 text-lg font-semibold text-slate-900">
+          Incident and near-miss evidence
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-slate-600">
+          Incident and near-miss evidence is not available yet.
+        </p>
+      </div>
+    );
+  }
+
+  const totalRecords = block.records_total ?? 0;
+  const hasAnyActivity =
+    totalRecords > 0 ||
+    (block.records_last_30d ?? 0) > 0 ||
+    Boolean(block.last_reported_at);
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            Evidence
+          </p>
+          <h2 className="mt-1 text-lg font-semibold text-slate-900">
+            Incident and near-miss evidence
+          </h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+            Aggregate metadata-only evidence showing structured AI-use incident
+            and near-miss review signals recorded by the clinic. Human
+            professional review remains required.
+          </p>
+        </div>
+        <Link
+          href="/settings/incidents"
+          className="rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+        >
+          Open incident logging
+        </Link>
+      </div>
+
+      <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Total records
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {totalRecords}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Records in last {block.window_days ?? 30} days
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {block.records_last_30d ?? 0}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            Last reported
+          </div>
+          <div className="mt-2 text-sm font-medium text-slate-900">
+            {block.last_reported_at ? formatDate(block.last_reported_at) : "-"}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">
+            High or critical
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-900">
+            {block.high_or_critical_records ?? 0}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Status mix
+        </p>
+        <div className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="text-xs text-slate-500">Open</div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
+              {block.open_records ?? 0}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="text-xs text-slate-500">In review</div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
+              {block.in_review_records ?? 0}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="text-xs text-slate-500">Actioned</div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
+              {block.actioned_records ?? 0}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="text-xs text-slate-500">Closed</div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
+              {block.closed_records ?? 0}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="text-xs text-slate-500">Voided</div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
+              {block.voided_records ?? 0}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Review signals
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-700">
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Privacy-related: {block.privacy_related_records ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Linked receipts: {block.linked_receipt_records ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Learning recommendations: {block.learning_recommended_count ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Policy review recommendations: {block.policy_review_recommended_count ?? 0}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            Client communication review recommendations:{" "}
+            {block.client_communication_review_recommended_count ?? 0}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Honest disclosure
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-700">
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+            Raw content included: No
+          </span>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+            Clinical content included: No
+          </span>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+            Staff identifiers included: No
+          </span>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+            Client identifiers included: No
+          </span>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+            Patient identifiers included: No
+          </span>
+        </div>
+      </div>
+
+      {!hasAnyActivity ? (
+        <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          No incident or near-miss records have been logged yet.
         </p>
       ) : null}
 
