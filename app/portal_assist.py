@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # app/portal_assist.py
 #
-# Portal Assist (OUTPUT gate) — minimal endpoint that generates assistant output
+# Portal Assist (OUTPUT gate) - minimal endpoint that generates assistant output
 # and applies governance replacement (neutrality scoring + hard-block rules).
 #
 # Privacy posture:
@@ -307,8 +307,133 @@ def _build_sparse_client_comm(text_value: str) -> str:
     return (
         "Hello,\n\n"
         f"Thank you for your message regarding {ref}.\n\n"
-        "We have noted your concern and a member of the team will review the matter and follow up with you as appropriate.\n\n"
+        "We have noted your enquiry and a member of the team will review the matter and follow up with you as appropriate. "
+        "This draft is prepared for human review before being sent.\n\n"
         "Kind regards,\n"
+        "The clinic team\n"
+    )
+
+
+# ---------------------------------------------------------------------
+# 2A-C.5A - deterministic source-aware client communication builder
+# ---------------------------------------------------------------------
+#
+# Two pragmatic source-type lanes:
+#   * AI-use transparency  -> plain-language transparency message
+#   * appointment / admin  -> polite client-facing reply using
+#                              concrete facts extracted from source
+# Falls through to a polished neutral draft otherwise.
+#
+# All paths end with "Kind regards, / The clinic team" and remain
+# review-required. No echo of the source paragraph.
+
+_AI_TRANSPARENCY_RE = re.compile(
+    r"\b(ai[- ]?use|ai tools?|ai assistance|artificial intelligence|"
+    r"transparency|machine learning|chatbot|llm|policy on ai|"
+    r"how (we|the clinic) (use|uses) ai)\b",
+    flags=re.I,
+)
+_APPOINTMENT_ADMIN_RE = re.compile(
+    r"\b(appointment|booking|rebook|reschedul|cancel|reminder|"
+    r"vaccin|repeat (script|prescription)|opening hours|fees?|"
+    r"invoice|payment|collect|pick[- ]?up|drop[- ]?off|out[- ]?of[- ]?hours)\b",
+    flags=re.I,
+)
+
+# Identifier-shaped tokens we explicitly do not echo back to the
+# client draft, even if the staff member typed them into source.
+_IDENTIFIER_LIKE_RE = re.compile(
+    r"(\b\d{10,}\b"                          # long digit runs
+    r"|\b[\w.+-]+@[\w-]+\.[\w.-]+\b"          # email
+    r"|\b\d{15}\b"                           # microchip
+    r"|\bM?RCVS\s*\d{3,}\b)",                # MRCVS membership
+    flags=re.I,
+)
+
+
+def _strip_identifier_like(value: str) -> str:
+    return _IDENTIFIER_LIKE_RE.sub("[removed]", value)
+
+
+def _appointment_facts(text_value: str) -> List[str]:
+    """Pull short, concrete, identifier-free phrases out of an
+    appointment/admin source. Order-preserving, de-duped, capped."""
+    facts: List[str] = []
+    seen = set()
+    candidates = re.split(r"(?<=[.!?])\s+|\n+", _normalize_whitespace(text_value))
+    for raw in candidates:
+        cleaned = _strip_identifier_like(_clean_topic_text(raw)).strip(" ,.;:")
+        if not cleaned:
+            continue
+        if len(cleaned) > 160:
+            cleaned = cleaned[:160].rstrip(" ,.;:") + "..."
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if cleaned[0].islower():
+            cleaned = cleaned[0].upper() + cleaned[1:]
+        facts.append(cleaned)
+        if len(facts) >= 4:
+            break
+    return facts
+
+
+def _build_client_comm_transparency() -> str:
+    return (
+        "Hello,\n\n"
+        "Thank you for getting in touch. Our clinic may use AI tools to "
+        "support tasks such as drafting client communications, internal "
+        "summarisation, learning, and governance review. A veterinary "
+        "professional remains responsible for checking AI-assisted "
+        "information before it is used.\n\n"
+        "AI does not make clinical decisions for the clinic, and we do "
+        "not enter identifiable client or patient details into "
+        "unsupported tools. If you have any questions about how AI was "
+        "used in a specific situation, please ask the team and we will "
+        "be happy to explain.\n\n"
+        "Kind regards,\n"
+        "The clinic team\n"
+    )
+
+
+def _build_client_comm_appointment(text_value: str) -> str:
+    facts = _appointment_facts(text_value)
+    if not facts:
+        return _build_sparse_client_comm(text_value)
+    bullet_block = "\n".join(f"- {f}" for f in facts)
+    return (
+        "Hello,\n\n"
+        "Thank you for getting in touch. To confirm what we have noted:\n\n"
+        f"{bullet_block}\n\n"
+        "A member of the team will review these details and follow up "
+        "if anything needs adjusting. This draft is prepared for human "
+        "review before being sent.\n\n"
+        "Kind regards,\n"
+        "The clinic team\n"
+    )
+
+
+def _build_client_comm_neutral(text_value: str, *, formal: bool) -> str:
+    topic = _normalize_whitespace(_extract_topic_phrase(text_value))
+    topic = _strip_identifier_like(topic) if topic else ""
+    if len(topic) > 140:
+        topic = topic[:140].rstrip(" ,.;:") + "..."
+    greeting = "Dear client," if formal else "Hello,"
+    body = (
+        f"Thank you for your message regarding {topic}. "
+        "A member of the veterinary team will review the details and "
+        "respond to you shortly."
+        if topic
+        else
+        "Thank you for your message. A member of the veterinary team "
+        "will review the details and respond to you shortly."
+    )
+    return (
+        f"{greeting}\n\n"
+        f"{body} This draft is prepared for human review before being sent.\n\n"
+        "Kind regards,\n"
+        "The clinic team\n"
     )
 
 
@@ -317,35 +442,42 @@ def _build_client_comm(text_value: str, instruction: str) -> str:
     instr = _sanitize_instruction(instruction)
     sparse = _word_count(t) < 14
 
+    # Pass-through: if the staff member already drafted a greeting,
+    # don't second-guess them (legacy behaviour preserved).
     if re.match(r"(?is)^\s*(hello|hi|dear)\b", t):
         cleaned = t.strip()
         if not cleaned.endswith("\n"):
             cleaned += "\n"
         return cleaned
 
+    combined = f"{instr} {t}"
+
+    # AI-use transparency: plain-language transparency message.
+    if _AI_TRANSPARENCY_RE.search(combined):
+        return _build_client_comm_transparency()
+
+    # Appointment / admin: polite reply built from concrete facts.
+    if _APPOINTMENT_ADMIN_RE.search(combined) and not sparse:
+        return _build_client_comm_appointment(t)
+
     if sparse:
         return _build_sparse_client_comm(t)
 
-    core = _strip_request_wrapper(t)
-    core = _normalize_sentence(core)
-
-    warm = bool(re.search(r"\b(warm|empathetic|kind)\b", instr, flags=re.I))
     formal = bool(re.search(r"\b(formal|very formal)\b", instr, flags=re.I))
+    return _build_client_comm_neutral(t, formal=formal)
 
-    greeting = "Hello,"
-    signoff = "Kind regards,"
 
-    if formal:
-        greeting = "Dear client,"
-
-    return (
-        f"{greeting}\n\n"
-        f"{core}\n\n"
-        f"{signoff}\n"
-    )
+_CLINICAL_NOTE_REVIEW_FOOTER = (
+    "Human professional review is required before this clinical note "
+    "is used. AI does not provide a diagnosis, treatment plan, or "
+    "prescribing decision."
+)
 
 
 def _build_clinical_note(text_value: str, instruction: str) -> str:
+    """Conservative clinical-note formatter. v1 doctrine: ONLY format
+    SOAP-style structure or stub a SOAP scaffold. No clinical decision
+    content is added by the deterministic layer."""
     t = (text_value or "").strip()
 
     if _looks_like_soap(t):
@@ -361,7 +493,7 @@ def _build_clinical_note(text_value: str, instruction: str) -> str:
                 out_lines.append(ln)
         cleaned = "\n".join(out_lines)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-        return cleaned + ("\n" if not cleaned.endswith("\n") else "")
+        return cleaned + "\n\n" + _CLINICAL_NOTE_REVIEW_FOOTER + "\n"
 
     cleaned = _normalize_sentence(t)
 
@@ -373,7 +505,8 @@ def _build_clinical_note(text_value: str, instruction: str) -> str:
         "A:\n"
         "- \n\n"
         "P:\n"
-        "- \n"
+        "- \n\n"
+        f"{_CLINICAL_NOTE_REVIEW_FOOTER}\n"
     )
 
 
@@ -468,6 +601,123 @@ def _build_internal_email(*, text_value: str, profile: str, wants_bullets: bool,
     return "\n".join(parts) + "\n"
 
 
+# ---------------------------------------------------------------------
+# 2A-C.5A - deterministic internal-staff + governance-review builders
+# ---------------------------------------------------------------------
+#
+# Both builders share a "salient point extraction" pass that:
+#   * splits source into short clauses
+#   * strips request-wrapper boilerplate and identifier-shaped tokens
+#   * de-dups and caps at a small bullet count
+#
+# The internal-summary builder produces a 4-section structured brief:
+#   heading / Summary / Key points / Action checklist.
+# The governance-review builder produces a 5-section structured note:
+#   heading / Governance boundary / What to check / Recommended next
+#   action / Human review reminder.
+#
+# Neither path echoes the source as a paragraph and neither adds
+# clinical advice. ANCHOR / governed-workflow language is added only
+# when the source / instruction already references it.
+
+_MIN_BULLET_LEN = 12
+_MAX_BULLET_LEN = 200
+_MAX_BULLETS = 6
+
+
+def _split_into_clauses(text_value: str) -> List[str]:
+    """Split source into short clauses. Combines sentence-boundary
+    split and newline split so bullet-formatted source also splits
+    cleanly."""
+    text_norm = (text_value or "").strip()
+    if not text_norm:
+        return []
+    # Split on sentence terminators OR newlines OR semicolons.
+    parts = re.split(r"(?<=[.!?])\s+|\n+|;\s+", text_norm)
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def _salient_points_from_source(text_value: str) -> List[str]:
+    """Extract short, identifier-free, paraphrase-able points from
+    source. Order-preserving, de-duped, capped at `_MAX_BULLETS`."""
+    out: List[str] = []
+    seen: set = set()
+    for raw in _split_into_clauses(text_value):
+        # Strip request-wrapper boilerplate and identifier-shaped
+        # tokens. Also discard generic instruction-shaped clauses
+        # (e.g. "please write an email").
+        cleaned = _strip_identifier_like(
+            _clean_topic_text(_strip_request_wrapper(raw))
+        ).strip(" ,.;:")
+        if not cleaned:
+            continue
+        if re.match(r"(?is)^(include|with|please)\s", cleaned):
+            continue
+        if len(cleaned) < _MIN_BULLET_LEN:
+            continue
+        if len(cleaned) > _MAX_BULLET_LEN:
+            cleaned = cleaned[: _MAX_BULLET_LEN].rstrip(" ,.;:") + "..."
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if cleaned[0].islower():
+            cleaned = cleaned[0].upper() + cleaned[1:]
+        if cleaned[-1] not in ".!?":
+            cleaned += "."
+        out.append(cleaned)
+        if len(out) >= _MAX_BULLETS:
+            break
+    return out
+
+
+# Default safety bullets shared across internal builders. These are
+# safe to surface even when the source is sparse, because they are
+# governance reminders rather than clinical claims.
+_DEFAULT_SUMMARY_KEY_POINTS: List[str] = [
+    "Do not enter client identifiers, patient identifiers, full "
+    "clinical notes, or confidential material into unsupported "
+    "external AI tools.",
+    "AI-assisted drafts must be checked by a veterinary "
+    "professional before use.",
+    "Uncertain or high-risk outputs should be escalated before "
+    "operational use.",
+]
+
+_DEFAULT_SUMMARY_ACTIONS: List[str] = [
+    "Check AI-assisted text before use.",
+    "Remove identifiers before using external tools.",
+    "Escalate uncertain or high-risk outputs.",
+]
+
+
+_DEFAULT_GOVERNANCE_CHECKS: List[str] = [
+    "Confirm no client or patient identifiers are included.",
+    "Confirm any AI-assisted client communication is reviewed before "
+    "sending.",
+    "Escalate outputs that appear misleading, unsafe, overconfident, "
+    "or inconsistent with clinic policy.",
+]
+
+
+_GOVERNANCE_BOUNDARY_LINE = (
+    "AI tools may support administrative drafting, internal "
+    "summarisation, and governance review. They should not be used "
+    "as a substitute for professional judgement or for autonomous "
+    "clinical decisions."
+)
+
+
+def _references_anchor_workflow(combined: str) -> bool:
+    return bool(re.search(r"\b(anchor|governed workflow|recorded through)\b", combined, flags=re.I))
+
+
+def _format_section(heading: str, bullets: List[str]) -> List[str]:
+    out = [f"{heading}:"]
+    out.extend(f"- {b}" for b in bullets)
+    return out
+
+
 def _build_internal_governance_review(text_value: str, instruction: str, role: Optional[str]) -> str:
     shape = _infer_request_shape(mode="internal_summary", role=role, instruction=instruction, text_value=text_value)
 
@@ -481,19 +731,43 @@ def _build_internal_governance_review(text_value: str, instruction: str, role: O
             sparse=shape["sparse"],
         )
 
-    topic = _normalize_sentence(_extract_topic_phrase(text_value))
-    bullets = [
-        f"Topic: {topic}",
-        "Purpose: internal governance review requested.",
-        "Status: requires human review before operational use.",
-    ]
+    combined = f"{instruction or ''} {text_value or ''}"
+    salient = _salient_points_from_source(text_value)
 
-    if shape["wants_bullets"]:
-        bullets.append("Discussion details should be confirmed during human review.")
+    # "What to check" combines safe defaults with up to two source-
+    # derived checks (paraphrased as "Confirm ...").
+    what_to_check: List[str] = list(_DEFAULT_GOVERNANCE_CHECKS)
+    if _references_anchor_workflow(combined):
+        what_to_check.append(
+            "Record governed workflows through ANCHOR where appropriate."
+        )
+    extra_from_source: List[str] = []
+    for point in salient[:2]:
+        if any(point.lower() == c.lower() for c in what_to_check):
+            continue
+        # Prefix with "Confirm" to make it a check rather than a
+        # clinical claim.
+        if not point.lower().startswith(("confirm", "ensure", "verify", "check")):
+            point = "Confirm: " + point
+        extra_from_source.append(point)
+    what_to_check = what_to_check + extra_from_source
 
-    lines = ["Internal governance review note:"]
-    lines.extend([f"- {item}" for item in bullets])
-    return "\n".join(lines) + "\n"
+    next_action = (
+        "Use this reminder in the next staff briefing or SOP update, "
+        "then confirm staff acknowledgement through the active AI-use "
+        "policy workflow."
+    )
+
+    parts: List[str] = ["Internal governance review note", ""]
+    parts.extend(_format_section("Governance boundary", [_GOVERNANCE_BOUNDARY_LINE]))
+    parts.append("")
+    parts.extend(_format_section("What to check", what_to_check))
+    parts.append("")
+    parts.append("Recommended next action:")
+    parts.append(f"- {next_action}")
+    parts.append("")
+    parts.append("Human review remains required before operational use.")
+    return "\n".join(parts) + "\n"
 
 
 def _build_internal_summary(text_value: str, instruction: str, role: Optional[str]) -> str:
@@ -517,18 +791,68 @@ def _build_internal_summary(text_value: str, instruction: str, role: Optional[st
         first = _normalize_sentence(_clean_topic_text(text_value))
         return first + "\n" if first else ""
 
-    topic = _normalize_sentence(_extract_topic_phrase(text_value))
-    lines = [
-        "Internal summary:",
-        f"- Topic: {topic}",
-        "- Context: summary prepared for internal review.",
-        "- Status: requires human review before operational use.",
-    ]
+    combined = f"{instruction or ''} {text_value or ''}"
+    salient = _salient_points_from_source(text_value)
 
-    if shape["wants_bullets"]:
-        lines.append("- Discussion details should be confirmed during human review.")
+    # Heading + summary line. Summary is a one-line paraphrase of the
+    # source intent rather than an echo.
+    topic = _strip_identifier_like(
+        _normalize_whitespace(_extract_topic_phrase(text_value))
+    )
+    if topic:
+        if len(topic) > 140:
+            topic = topic[:140].rstrip(" ,.;:") + "..."
+        summary_line = (
+            f"The clinic is reinforcing responsible AI-use expectations "
+            f"for: {topic}."
+        )
+    else:
+        summary_line = (
+            "The clinic is reinforcing responsible AI-use expectations "
+            "for internal workflows and client communication."
+        )
 
-    return "\n".join(lines) + "\n"
+    # Key points: source-derived first (deduped against defaults),
+    # padded with safe defaults to reach a useful brief.
+    key_points: List[str] = []
+    seen_lower: set = set()
+    for point in salient:
+        if len(key_points) >= 5:
+            break
+        lower = point.lower()
+        if lower in seen_lower:
+            continue
+        seen_lower.add(lower)
+        key_points.append(point)
+    for default in _DEFAULT_SUMMARY_KEY_POINTS:
+        if len(key_points) >= 5:
+            break
+        if default.lower() in seen_lower:
+            continue
+        seen_lower.add(default.lower())
+        key_points.append(default)
+    if _references_anchor_workflow(combined):
+        anchor_line = (
+            "Governed workflows should be recorded through ANCHOR "
+            "where appropriate."
+        )
+        if anchor_line.lower() not in seen_lower and len(key_points) < 6:
+            key_points.append(anchor_line)
+
+    actions = list(_DEFAULT_SUMMARY_ACTIONS)
+    if _references_anchor_workflow(combined):
+        actions.append("Record governed workflows where appropriate.")
+
+    parts: List[str] = ["Internal staff briefing", ""]
+    parts.append("Summary:")
+    parts.append(summary_line)
+    parts.append("")
+    parts.extend(_format_section("Key points", key_points))
+    parts.append("")
+    parts.extend(_format_section("Action checklist", actions))
+    parts.append("")
+    parts.append("Human review remains required before operational use.")
+    return "\n".join(parts) + "\n"
 
 
 def _stub_llm_generate(*, mode: str, user_text: str, instruction: Optional[str], role: Optional[str] = None) -> str:
