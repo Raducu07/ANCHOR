@@ -21,7 +21,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -37,6 +37,10 @@ from app.portal_submit import (
 )
 from app.portal_governance_engine import evaluate_input_governance, extract_neutrality_version
 from app.governance import govern_output
+from app.workspace_generation import (
+    build_metadata_subobject as _workspace_generation_metadata,
+    generate_workspace_output,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,12 @@ class PortalAssistRequest(BaseModel):
 
 
 class PortalAssistResponse(BaseModel):
+    # `model_provider` / `model_name` collide with Pydantic v2's
+    # protected `model_` namespace. Same handling as
+    # AssistantRunMetadata in portal_assistant.py - field names are
+    # part of the wire contract and must not be renamed.
+    model_config = ConfigDict(protected_namespaces=())
+
     request_id: uuid.UUID
     mode: str
     final_text: str
@@ -83,6 +93,15 @@ class PortalAssistResponse(BaseModel):
     policy_sha256: Optional[str] = None
     rules_fired: Optional[dict] = None
     created_at_utc: str
+
+    # 2A-C.5C - additive Workspace generation metadata. Populated when
+    # the orchestrator runs (i.e. the request was not hard-blocked at
+    # the input governance stage). All fields are optional so legacy
+    # consumers and the frontend continue to work unchanged.
+    generation_source: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    model_provider: Optional[str] = None
+    model_name: Optional[str] = None
 
 
 # ----------------------------
@@ -902,6 +921,12 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
         policy=policy_obj,
     )
 
+    generation_source: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    model_provider: Optional[str] = None
+    model_name: Optional[str] = None
+    workspace_generation_meta: Optional[Dict[str, Any]] = None
+
     if ig.decision == "blocked":
         final_text = "Submission blocked by clinic policy."
         governance_replaced = False
@@ -912,12 +937,34 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
         governance_grade = None
         rules_fired = ig.rules_fired
     else:
-        candidate = _stub_llm_generate(
+        # 2A-C.5C - route through the Workspace generation orchestrator.
+        # The orchestrator decides live vs deterministic and always
+        # returns a non-empty `text`. Deterministic builders are passed
+        # in as a zero-arg closure so the orchestrator can invoke them
+        # for fallback without re-importing portal_assist internals.
+        def _deterministic_builder() -> str:
+            return _stub_llm_generate(
+                mode=mode,
+                user_text=payload.text,
+                instruction=payload.instruction,
+                role=payload.role,
+            )
+
+        gen_result = generate_workspace_output(
             mode=mode,
             user_text=payload.text,
             instruction=payload.instruction,
             role=payload.role,
+            clinic_id=clinic_id,
+            db=db,
+            deterministic_builder=_deterministic_builder,
         )
+        candidate = gen_result.text
+        generation_source = gen_result.generation_source
+        fallback_reason = gen_result.fallback_reason
+        model_provider = gen_result.model_provider
+        model_name = gen_result.model_name
+        workspace_generation_meta = _workspace_generation_metadata(gen_result)
 
         gov_policy = dict(policy_obj or {})
         gov_policy.setdefault("policy_version", f"clinic-policy-v{policy_version}")
@@ -945,6 +992,10 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
             "input": ig.rules_fired,
             "output": (audit.get("decision_trace") if isinstance(audit, dict) else None),
         }
+        # 2A-C.5C - additive Workspace generation evidence inside the
+        # existing rules_fired JSONB. No schema change required.
+        if workspace_generation_meta is not None:
+            rules_fired["workspace_generation"] = workspace_generation_meta
 
     event_sha256 = _compute_event_sha256(
         clinic_id=clinic_id,
@@ -1075,6 +1126,10 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
             policy_sha256=policy_sha256,
             rules_fired=rules_fired,
             created_at_utc=created_at_utc,
+            generation_source=generation_source,
+            fallback_reason=fallback_reason,
+            model_provider=model_provider,
+            model_name=model_name,
         )
 
     except HTTPException:
