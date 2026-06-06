@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.auth_and_rls import require_clinic_user
 from app.db import get_db
+from app.rate_limit import enforce_authed
 from app.portal_submit import (
     _set_rls_context,
     _get_active_policy_version,
@@ -903,6 +904,18 @@ def portal_assist(payload: PortalAssistRequest, request: Request, db: Session = 
     clinic_user_id = getattr(request.state, "clinic_user_id", None)
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
+
+    # 2A-D.1 Patch 2 (M-5): the live-eligible OUTPUT gate. Rate-limit
+    # BEFORE governance evaluation and BEFORE the Workspace orchestrator
+    # picks live vs deterministic, so bursts are damped regardless of
+    # which path is taken. Production-off live-generation gate in
+    # workspace_generation.is_live_generation_enabled() is unchanged.
+    enforce_authed(
+        request,
+        clinic_id=str(clinic_id),
+        clinic_user_id=str(clinic_user_id),
+        group="assistant_submit",
+    )
 
     _set_rls_context(db, clinic_id=clinic_id, clinic_user_id=clinic_user_id)
 

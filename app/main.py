@@ -33,7 +33,6 @@ from app.admin_tokens import router as admin_tokens_router
 from app.public_intake import router as public_intake_router
 from app.db import db_ping, SessionLocal
 from app.migrate import run_migrations
-from app.rate_limit import enforce_rate_limit
 
 # Routers
 from app.auth_and_rls import router as clinic_auth_router
@@ -305,67 +304,17 @@ async def request_logging_middleware(request: Request, call_next):
     path = request.url.path
 
     # ---------------------------
-    # M3: rate limiting (metadata-only)
-    # Must run BEFORE call_next()
+    # Rate limiting note (2A-D.1 Patch 2):
+    # The global middleware-level limiter path that used to live here was
+    # dead code — `enforce_rate_limit` was called without a `request`
+    # positional and read keys that did not exist on the returned dict, so
+    # it never blocked anything and never logged the rate-limited event.
+    # Real rate limiting is performed at the route level by
+    # `enforce_ip` / `enforce_authed` / `enforce_admin_token` (see
+    # app/rate_limit.py and the per-router wiring). The TEMP DEBUG block
+    # that emitted internal limiter state for /v1/portal/assist is also
+    # removed here.
     # ---------------------------
-    clinic_user_id = getattr(request.state, "clinic_user_id", None)
-
-    rl_meta = enforce_rate_limit(
-        path=path,
-        method=request.method,
-        clinic_user_id=clinic_user_id,
-        ip_hash=ip_hash,
-        ip=None,  # avoid raw IP
-    )
-
-    # TEMP DEBUG (remove after test)
-    if path == "/v1/portal/assist":
-        log_event(
-            logging.INFO,
-            "http.rate_limit.debug",
-            request_id=req_id,
-            path=path,
-            method=request.method,
-            client_ip_hash=ip_hash,
-            rule=rl_meta.get("rule"),
-            rate_limit_applied=rl_meta.get("rate_limit_applied"),
-            rate_limited=rl_meta.get("rate_limited"),
-            limit=rl_meta.get("limit"),
-            window_sec=rl_meta.get("window_sec"),
-        )
-    
-    if rl_meta.get("rate_limited"):
-        # Log metadata only (no content)
-        log_event(
-            logging.WARNING,
-            "http.request.rate_limited",
-            request_id=req_id,
-            method=request.method,
-            path=path,
-            host=_host(request),
-            client_ip_hash=ip_hash,
-            user_agent_hash=ua_hash,
-            clinic_id=getattr(request.state, "clinic_id", None),
-            clinic_user_id=clinic_user_id,
-            rule=rl_meta.get("rule"),
-            limit=rl_meta.get("limit"),
-            window_sec=rl_meta.get("window_sec"),
-            retry_after_sec=rl_meta.get("retry_after_sec"),
-        )
-
-        retry_after = int(rl_meta.get("retry_after_sec") or 60)
-        return JSONResponse(
-            status_code=429,
-            content={
-                "detail": {
-                    "error": "rate_limited",
-                    "rule": rl_meta.get("rule"),
-                    "retry_after_sec": retry_after,
-                    "request_id": req_id,
-                }
-            },
-            headers={"X-Request-ID": req_id, "Retry-After": str(retry_after)},
-        )
 
     # ---------------------------
     # Normal request logging

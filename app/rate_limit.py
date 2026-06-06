@@ -107,6 +107,16 @@ def rules_from_env() -> Dict[str, RateLimitRule]:
         # Authed clinic
         "receipt": RateLimitRule(window_s=_int("RL_RECEIPT_WINDOW_S", 60), limit=_int("RL_RECEIPT_LIMIT", 30)),
         "export": RateLimitRule(window_s=_int("RL_EXPORT_WINDOW_S", 300), limit=_int("RL_EXPORT_LIMIT", 5)),
+        # 2A-D.1 Patch 2: Assistant submission paths (POST /v1/assistant/runs
+        # and POST /v1/portal/assist). Applied per (clinic, user, group)
+        # before any expensive validation or provider call so that bursts
+        # are damped regardless of whether the live or deterministic path
+        # is taken downstream. Per-clinic daily/monthly Assistant caps
+        # remain in force separately.
+        "assistant_submit": RateLimitRule(
+            window_s=_int("RL_ASSISTANT_SUBMIT_WINDOW_S", 60),
+            limit=_int("RL_ASSISTANT_SUBMIT_LIMIT", 10),
+        ),
         # Admin
         "admin": RateLimitRule(window_s=_int("RL_ADMIN_WINDOW_S", 60), limit=_int("RL_ADMIN_LIMIT", 60)),
         "admin_bootstrap": RateLimitRule(

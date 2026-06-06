@@ -78,6 +78,7 @@ def _isolated_limiter(monkeypatch):
             "invite": rl.RateLimitRule(window_s=60, limit=2),
             "receipt": rl.RateLimitRule(window_s=60, limit=2),
             "export": rl.RateLimitRule(window_s=60, limit=2),
+            "assistant_submit": rl.RateLimitRule(window_s=60, limit=2),
             "admin": rl.RateLimitRule(window_s=60, limit=2),
             "admin_bootstrap": rl.RateLimitRule(window_s=60, limit=2),
         },
@@ -135,6 +136,38 @@ def test_receipt_and_export_are_distinct_authed_buckets(monkeypatch):
         )
     )
 
+    rl.enforce_authed(
+        request,
+        clinic_id=str(request.state.clinic_id),
+        clinic_user_id=str(request.state.clinic_user_id),
+        group="export",
+    )
+
+
+def test_assistant_submit_is_distinct_from_receipt_and_export(monkeypatch):
+    """2A-D.1 Patch 2: assistant_submit must be its own bucket so a noisy
+    Assistant POST burst does not consume the receipt/export budget."""
+    now = {"t": 1_700_000_000.0}
+    monkeypatch.setattr(rl.time, "time", lambda: now["t"])
+
+    request = _make_request("/v1/assistant/runs")
+
+    _hit_until_429(
+        lambda: rl.enforce_authed(
+            request,
+            clinic_id=str(request.state.clinic_id),
+            clinic_user_id=str(request.state.clinic_user_id),
+            group="assistant_submit",
+        )
+    )
+
+    # Receipt and export buckets remain unaffected.
+    rl.enforce_authed(
+        request,
+        clinic_id=str(request.state.clinic_id),
+        clinic_user_id=str(request.state.clinic_user_id),
+        group="receipt",
+    )
     rl.enforce_authed(
         request,
         clinic_id=str(request.state.clinic_id),

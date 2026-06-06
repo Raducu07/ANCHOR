@@ -78,6 +78,7 @@ from app.assistant_usage_limits import (
 )
 from app.auth_and_rls import require_clinic_user
 from app.db import get_db
+from app.rate_limit import enforce_authed
 
 logger = logging.getLogger(__name__)
 
@@ -1634,6 +1635,15 @@ def get_assistant_run_receipt(
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
 
+    # 2A-D.1 Patch 2 (M-3): damp UUID-enumeration / cross-clinic 404 fishing
+    # before any DB lookup. Tenant-scoped via (clinic_id, clinic_user_id).
+    enforce_authed(
+        request,
+        clinic_id=str(clinic_id),
+        clinic_user_id=str(clinic_user_id),
+        group="receipt",
+    )
+
     clinic_id_s = str(clinic_id)
 
     run = _fetch_run_for_clinic(db, clinic_id=clinic_id_s, run_id=run_id)
@@ -1712,6 +1722,16 @@ def lookup_assistant_receipt(
     clinic_user_id = getattr(request.state, "clinic_user_id", None)
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
+
+    # 2A-D.1 Patch 2 (M-3): damp UUID-enumeration / cross-clinic 404 fishing
+    # before any DB lookup. Same group as the per-run receipt endpoint so
+    # both discovery paths share one bucket per clinic-user.
+    enforce_authed(
+        request,
+        clinic_id=str(clinic_id),
+        clinic_user_id=str(clinic_user_id),
+        group="receipt",
+    )
 
     clinic_id_s = str(clinic_id)
 
@@ -2050,6 +2070,18 @@ def create_assistant_run(
     clinic_user_id = getattr(request.state, "clinic_user_id", None)
     if not clinic_id or not clinic_user_id:
         raise HTTPException(status_code=401, detail="missing clinic context")
+
+    # 2A-D.1 Patch 2 (M-4): request-rate damping ahead of the per-clinic
+    # daily/monthly caps. Applied before mode validation, policy load,
+    # input hashing, the assistant_runs INSERT, the input-safety gate, and
+    # any provider call — so a burst cannot drain the daily quota in
+    # seconds or hit the live LLM path on a misconfigured rollout.
+    enforce_authed(
+        request,
+        clinic_id=str(clinic_id),
+        clinic_user_id=str(clinic_user_id),
+        group="assistant_submit",
+    )
 
     mode = (payload.mode or "").strip()
     if mode not in _KNOWN_MODES:
