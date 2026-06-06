@@ -40,8 +40,30 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# Claude agent state and nested worktrees
-.claude/
+# Claude agent state and nested worktrees.
+# Ignore everything under .claude/ by default. The trailing /* (not /) lets git
+# descend so the !-carve-outs below can re-include specific scaffold paths.
+# Local/private Claude runtime state (settings.local.json, logs, cache,
+# sessions, arbitrary runtime files) stays ignored because it is not carved out.
+.claude/*
+
+# ANCHOR Claude Code scaffold — narrow carve-outs so only the project-local
+# skills, agents, and hooks README are tracked.
+!.claude/skills/
+!.claude/skills/**
+!.claude/agents/
+!.claude/agents/**
+!.claude/hooks/
+!.claude/hooks/README.md
+
+# Re-assert exclusion of local/private runtime state in case any tooling ever
+# drops state under the carved-out directories.
+.claude/skills/**/.cache/
+.claude/skills/**/*.log
+.claude/agents/**/.cache/
+.claude/agents/**/*.log
+.claude/hooks/*
+!.claude/hooks/README.md
 
 # ANCHOR canonical strategy docs: ignore heavy/binary artefacts only;
 # markdown source-discipline notes are tracked.

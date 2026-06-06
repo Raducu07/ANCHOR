@@ -100,7 +100,7 @@ Always report:
 
 ## Public copy discipline
 
-Any copy that appears to a clinic user, a clinic admin, or a pet owner must be checked against the wording controls in `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1.docx` §2.
+Any copy that appears to a clinic user, a clinic admin, or a pet owner must be checked against the wording controls in `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1_1_COMPLETE.md` §2 (operative; v1 retained for historical reference only).
 
 **Use**: "governance and readiness infrastructure", "metadata-only evidence", "supports CPD-recordable AI literacy activity", "aligned with", "human review required", "not chat history", "architected for vendor-neutrality", "vendor-neutral over time".
 
@@ -144,12 +144,19 @@ Authorised by `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3` (6 June 
 
 ## Canonical documents (cross-reference, do not duplicate doctrine here)
 
-Located in `/docs/canonical/` in this repo:
+Located in `/docs/canonical/` in this repo.
 
-- `ANCHOR_Roadmap_v2_5_May_2026.docx` — canonical roadmap; §1 doctrine; §4 M6 Assistant track as-built
-- `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1.docx` — §2 wording controls (operative for all clinic-facing copy); §3 RCVS principles; §4 EU AI Act articles
-- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` — Phase 2A ordering; buyer conversations parallel-not-blocking; §5 Phase 2A-1 scope; §10 wording controls for 2A-1
-- `Phase_2A_1_Engineering_Brief_v1_1.md` — Phase 2A-1 implementation contract; confirmed implementation decisions; backend/frontend scope
-- `Official_EU_AI_Act_Source_Note_v1.md` — source-discipline document for any EU AI Act reference; EUR-Lex is the only acceptable primary source; cite Article 113 for all applicability dates.
-- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3` — OPERATIVE decision; supersedes Memo v1.1 and Addendum v1.2 where they differ; authorises reconciliation (2A-D.0); records the conviction-based (no buyer-discovery) position
-- NOTE: Roadmap v2.6 and Readiness Map v1.1 supersede v2.5 and v1 once issued; until then treat v2.5/v1 status fields as stale and defer to Addendum v1.3
+**Operative set (current canonical state — defer to these):**
+
+- `ANCHOR_Roadmap_v2_6_June_2026_CORRECTED.md` — operative roadmap; as-built reconciliation; §1 doctrine; current phase 2A-D.0 release-candidate hardening; M6.12 / M6.13 recorded as gated future; M4.6 deferred by decision; live Workspace generation Anthropic-coupled and production-off.
+- `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1_1_COMPLETE.md` — operative readiness artefact; §2 wording controls (operative for all clinic-facing copy); §3 RCVS principles; §4 EU AI Act articles; vendor-neutrality framed as future-tense only.
+- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3.md` — OPERATIVE decision; supersedes Memo v1.1 and Addendum v1.2 where they differ; authorises reconciliation (2A-D.0); records the conviction-based position (no buyer-discovery requirement, no parallel listening cadence).
+- `Official_EU_AI_Act_Source_Note_v1_1.md` — operative EU AI Act source-discipline note; EUR-Lex is the only acceptable primary source; cite Article 113 for applicability dates; use "from August 2026" softening and Article 4 amendment-watch caveat.
+
+**Historical / supporting records (NOT current targets; consult only for provenance):**
+
+- `ANCHOR_Roadmap_v2_5_May_2026.docx` — superseded by v2.6.
+- `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1.docx` — superseded by v1.1.
+- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` — superseded by Addendum v1.3 where they differ; buyer-conversation framing in Memo v1.1 is corrected by Addendum v1.3.
+- `Phase_2A_1_Engineering_Brief_v1_1.md` — Phase 2A-1 is shipped; brief retained as historical implementation record only; not the current Claude Code target.
+- `Official_EU_AI_Act_Source_Note_v1.md` — superseded by v1.1.
