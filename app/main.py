@@ -17,7 +17,15 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from sqlalchemy import text
 
-from app.anchor_logging import ensure_logging_configured, get_app_env, hash_with_salt, log_event, utc_iso
+from app.anchor_logging import (
+    assert_hash_salt_for_prod,
+    ensure_logging_configured,
+    get_app_env,
+    hash_with_salt,
+    log_event,
+    utc_iso,
+)
+from app.admin_auth import assert_admin_pepper_for_prod
 from app.admin_audit import router as admin_audit_router
 from app.admin_intake import router as admin_intake_router
 from app.admin_ops import router as admin_ops_router
@@ -75,6 +83,22 @@ def _env_truthy(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+_LOCALHOST_CORS_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+
+
+def _compute_cors_origin_regex(app_env: str) -> Optional[str]:
+    """Return the CORS allow-origin regex appropriate for the current env.
+
+    In production we MUST NOT silently permit ``localhost`` / ``127.0.0.1``
+    origins — that would defeat CORS as a tenant-safety boundary on a
+    browser-logged-in clinic user. Outside production (dev/staging/test)
+    we keep the localhost regex so local dev tooling keeps working.
+    """
+    if (app_env or "").strip().lower() == "prod":
+        return None
+    return _LOCALHOST_CORS_REGEX
+
+
 def _configure_edge_middlewares(app: FastAPI) -> None:
     trusted_hosts = _parse_csv_env("TRUSTED_HOSTS")
     if trusted_hosts:
@@ -95,7 +119,7 @@ def _configure_edge_middlewares(app: FastAPI) -> None:
         cors_allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
         cors_allow_headers = ["*"]
         cors_max_age = 600
-        cors_allow_origin_regex = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+        cors_allow_origin_regex = _compute_cors_origin_regex(get_app_env())
 
         app.add_middleware(
             CORSMiddleware,
@@ -133,11 +157,19 @@ async def lifespan(app: FastAPI):
             # Optional dotenv for local runs
             try:
                 from dotenv import load_dotenv  # type: ignore
-                
+
                 load_dotenv()
                 log_event(logging.INFO, "dotenv_loaded")
             except Exception:
                 log_event(logging.INFO, "dotenv_not_loaded")
+
+        # --- Production secret-hygiene fail-closed checks (no-ops outside prod) ---
+        # 2A-D.1 M-2 / S-4 hardening: refuse to start in prod if the metadata
+        # hash salt or admin token pepper are missing or still equal to the
+        # default fallback literals. Doctrine-relevant: metadata-only hashing
+        # discipline depends on a non-default salt.
+        assert_hash_salt_for_prod()
+        assert_admin_pepper_for_prod()
 
         # --- Migrations (fail-fast) ---
         with SessionLocal() as db:

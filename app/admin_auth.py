@@ -30,9 +30,36 @@ def _hash_with_salt(value: str, salt: str) -> str:
     return sha256_hex(f"{salt}:{value}")
 
 
+# Default admin-pepper fallback literal. Acceptable for local/dev/test runs;
+# rejected at startup when APP_ENV=prod (see assert_admin_pepper_for_prod).
+DEFAULT_ADMIN_PEPPER_LITERAL = "anchor-admin-pepper-default"
+
+
 def _get_admin_pepper() -> str:
     # Pepper for token hashing. Rotate carefully.
-    return (os.getenv("ANCHOR_ADMIN_PEPPER") or "anchor-admin-pepper-default").strip()
+    return (os.getenv("ANCHOR_ADMIN_PEPPER") or DEFAULT_ADMIN_PEPPER_LITERAL).strip()
+
+
+def assert_admin_pepper_for_prod() -> None:
+    """Fail-closed in production if ANCHOR_ADMIN_PEPPER is missing or still
+    equal to the default fallback literal. No-op outside production. Called
+    from the FastAPI lifespan at startup so a misconfigured prod deploy
+    aborts before serving requests."""
+    from app.anchor_logging import get_app_env
+
+    if get_app_env() != "prod":
+        return
+    raw = (os.getenv("ANCHOR_ADMIN_PEPPER") or "").strip()
+    if not raw:
+        raise RuntimeError(
+            "ANCHOR_ADMIN_PEPPER must be set when APP_ENV=prod; "
+            "default fallback is not permitted in production."
+        )
+    if raw == DEFAULT_ADMIN_PEPPER_LITERAL:
+        raise RuntimeError(
+            "ANCHOR_ADMIN_PEPPER must not equal the default fallback literal "
+            "when APP_ENV=prod."
+        )
 
 
 def _legacy_env_tokens() -> set[str]:

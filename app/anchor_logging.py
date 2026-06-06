@@ -40,8 +40,40 @@ def get_app_version() -> Optional[str]:
     return v or None
 
 
+# Default hash-salt fallback literal. Acceptable for local/dev/test runs;
+# rejected at startup when APP_ENV=prod (see assert_hash_salt_for_prod).
+DEFAULT_HASH_SALT_LITERAL = "anchor-default-salt"
+
+
 def get_hash_salt() -> str:
-    return (os.getenv("ANCHOR_HASH_SALT") or os.getenv("ANCHOR_LOG_SALT") or "anchor-default-salt").strip()
+    return (
+        os.getenv("ANCHOR_HASH_SALT")
+        or os.getenv("ANCHOR_LOG_SALT")
+        or DEFAULT_HASH_SALT_LITERAL
+    ).strip()
+
+
+def assert_hash_salt_for_prod() -> None:
+    """Fail-closed in production if ANCHOR_HASH_SALT / ANCHOR_LOG_SALT are
+    missing or still equal to the default fallback literal.
+
+    No-op outside production. Called from the FastAPI lifespan at startup
+    so a misconfigured prod deploy aborts before serving requests."""
+    if get_app_env() != "prod":
+        return
+    raw_primary = (os.getenv("ANCHOR_HASH_SALT") or "").strip()
+    raw_fallback = (os.getenv("ANCHOR_LOG_SALT") or "").strip()
+    resolved = (raw_primary or raw_fallback).strip()
+    if not resolved:
+        raise RuntimeError(
+            "ANCHOR_HASH_SALT (or ANCHOR_LOG_SALT) must be set when APP_ENV=prod; "
+            "default fallback is not permitted in production."
+        )
+    if resolved == DEFAULT_HASH_SALT_LITERAL:
+        raise RuntimeError(
+            "ANCHOR_HASH_SALT must not equal the default fallback literal "
+            "when APP_ENV=prod."
+        )
 
 
 def sha256_hex(s: str) -> str:
