@@ -9,6 +9,20 @@
 -- Notes:
 --  - Requires app_current_clinic_id() to exist (created in schema.sql)
 --  - Do NOT run from app boot migrations if Render keeps failing
+--
+-- 2A-D.1 Patch 4A — HISTORICAL / MANUAL REFERENCE.
+-- The replayable legacy RLS policy source for the clinic-scoped tables
+-- (clinics, clinic_users, clinic_user_invites, clinic_policies,
+-- clinic_policy_state, clinic_privacy_profile, clinic_governance_events,
+-- ops_metrics_events) now lives in:
+--     migrations/10014_legacy_rls_policies.sql
+-- That migration is idempotent and is applied automatically at startup
+-- by app/migrate.py. This file is retained for historical reference and
+-- for the `clinics_public` view + `resolve_clinic_id_by_slug` function
+-- + role grants below, which are still applied manually.
+-- The `rls_admin_audit_tenant` policy in section 5 below is dead-weight
+-- (FORCE RLS is not on admin_audit_events, writes happen outside a
+-- clinic context). Cleanup is tracked separately as a follow-up patch.
 -- =========================
 
 -- 1) Safe public view for login (slug + active only)
