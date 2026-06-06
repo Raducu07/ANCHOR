@@ -25,7 +25,7 @@ from app.anchor_logging import (
     log_event,
     utc_iso,
 )
-from app.admin_auth import assert_admin_pepper_for_prod
+from app.admin_auth import assert_admin_mode_for_prod, assert_admin_pepper_for_prod
 from app.admin_audit import router as admin_audit_router
 from app.admin_intake import router as admin_intake_router
 from app.admin_ops import router as admin_ops_router
@@ -169,6 +169,10 @@ async def lifespan(app: FastAPI):
         # discipline depends on a non-default salt.
         assert_hash_salt_for_prod()
         assert_admin_pepper_for_prod()
+        # 2A-D.1 Patch 4B (F-2): refuse to start in prod when
+        # ANCHOR_ADMIN_MODE=env, or for any unknown value. Unset/blank
+        # resolves to "db" via _admin_mode() — no startup raise needed.
+        assert_admin_mode_for_prod()
 
         # --- Migrations (fail-fast) ---
         with SessionLocal() as db:

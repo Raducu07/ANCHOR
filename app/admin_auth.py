@@ -82,14 +82,99 @@ def _legacy_env_tokens() -> set[str]:
     return toks
 
 
+# 2A-D.1 Patch 4B: production-mode admin lockdown.
+#
+# Valid ANCHOR_ADMIN_MODE values. Kept narrow so a typo cannot silently
+# resolve to a permissive default.
+_ADMIN_MODE_DB = "db"
+_ADMIN_MODE_HYBRID = "hybrid"
+_ADMIN_MODE_ENV = "env"
+_VALID_ADMIN_MODES = frozenset({_ADMIN_MODE_DB, _ADMIN_MODE_HYBRID, _ADMIN_MODE_ENV})
+
+
 def _admin_mode() -> str:
     """
     Modes:
-      - "hybrid" (default): accept DB tokens OR legacy env tokens
-      - "db": accept DB tokens only
-      - "env": accept legacy env tokens only (not recommended)
+      - "hybrid": accept DB tokens OR legacy env tokens.
+      - "db": accept DB tokens only (default in production).
+      - "env": accept legacy env tokens only (NEVER the default; refused
+        in production by assert_admin_mode_for_prod()).
+
+    Resolution rules:
+      - Non-prod: if ANCHOR_ADMIN_MODE is unset/blank, default to "hybrid"
+        so existing dev/test flows that rely on env-token bootstrap keep
+        working.
+      - Prod: if ANCHOR_ADMIN_MODE is unset/blank, default to "db" so a
+        deploy that forgets to set the variable does NOT silently fall
+        into the env-token-accepting hybrid mode. An explicit
+        ANCHOR_ADMIN_MODE=hybrid remains permitted as an operator
+        override.
+      - "env" is never selected by default. assert_admin_mode_for_prod()
+        refuses it at startup in prod.
+      - Unknown / typo values fall back to the env-appropriate default
+        (db in prod, hybrid in non-prod). The assert helper logs and
+        refuses startup in prod for an unknown explicit value too.
     """
-    return (os.getenv("ANCHOR_ADMIN_MODE") or "hybrid").strip().lower()
+    # Defer the import to avoid a module-level cycle with anchor_logging
+    # (which is imported at the top of this file already, but
+    # _admin_mode() is called inside dependencies — keeping the import
+    # local here matches the pattern used by assert_admin_pepper_for_prod
+    # for consistency).
+    from app.anchor_logging import get_app_env
+
+    raw = (os.getenv("ANCHOR_ADMIN_MODE") or "").strip().lower()
+    is_prod = get_app_env() == "prod"
+
+    if not raw:
+        return _ADMIN_MODE_DB if is_prod else _ADMIN_MODE_HYBRID
+
+    if raw not in _VALID_ADMIN_MODES:
+        # Defensive fallback. assert_admin_mode_for_prod() will refuse
+        # startup in prod for an unknown explicit value, so this branch
+        # only affects non-prod runtime.
+        return _ADMIN_MODE_DB if is_prod else _ADMIN_MODE_HYBRID
+
+    return raw
+
+
+def assert_admin_mode_for_prod() -> None:
+    """Fail-closed in production for unsafe ANCHOR_ADMIN_MODE values.
+
+    No-op outside production. Called from the FastAPI lifespan at startup
+    so a misconfigured prod deploy aborts before serving requests.
+
+    Refuses:
+      * ANCHOR_ADMIN_MODE=env in prod — env-only admin removes DB-side
+        rotation/revocation and per-token audit linkage. Bootstrap should
+        use explicit "hybrid" (which still requires DB tokens to be
+        provisioned alongside the env token).
+      * Unknown / typo values in prod — fail loudly instead of silently
+        falling back to the prod default.
+    """
+    from app.anchor_logging import get_app_env
+
+    if get_app_env() != "prod":
+        return
+
+    raw = (os.getenv("ANCHOR_ADMIN_MODE") or "").strip().lower()
+
+    # Unset / blank is fine — _admin_mode() resolves to "db" in prod.
+    if not raw:
+        return
+
+    if raw == _ADMIN_MODE_ENV:
+        raise RuntimeError(
+            "ANCHOR_ADMIN_MODE='env' is not permitted when APP_ENV=prod; "
+            "env-only admin tokens cannot be revoked or audited per-token. "
+            "Use 'db' (default) or, only if an explicit bootstrap step "
+            "requires it, 'hybrid'."
+        )
+
+    if raw not in _VALID_ADMIN_MODES:
+        raise RuntimeError(
+            f"ANCHOR_ADMIN_MODE={raw!r} is not a valid admin mode when "
+            "APP_ENV=prod. Valid values are: 'db' (default), 'hybrid'."
+        )
 
 
 def _extract_admin_token(

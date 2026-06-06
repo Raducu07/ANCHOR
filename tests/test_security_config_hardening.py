@@ -21,6 +21,8 @@ import pytest
 
 from app.admin_auth import (
     DEFAULT_ADMIN_PEPPER_LITERAL,
+    _admin_mode,
+    assert_admin_mode_for_prod,
     assert_admin_pepper_for_prod,
 )
 from app.anchor_logging import (
@@ -220,3 +222,126 @@ def test_admin_pepper_passes_on_real_value_in_prod(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("ANCHOR_ADMIN_PEPPER", "rotated-prod-admin-pepper-v1")
     assert_admin_pepper_for_prod()  # must not raise
+
+
+# ---------------------------------------------------------------------
+# 2A-D.1 Patch 4B (F-2): admin mode production lockdown
+# ---------------------------------------------------------------------
+
+
+def _clear_admin_mode_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANCHOR_ADMIN_MODE", raising=False)
+
+
+# --- Resolution: _admin_mode() ----------------------------------------
+
+
+def test_admin_mode_unset_in_prod_resolves_to_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    _clear_admin_mode_env(monkeypatch)
+    assert _admin_mode() == "db"
+
+
+def test_admin_mode_blank_in_prod_resolves_to_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("ANCHOR_ADMIN_MODE", "   ")
+    assert _admin_mode() == "db"
+
+
+def test_admin_mode_unset_in_nonprod_keeps_hybrid_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-prod local/dev flows that rely on env-token bootstrap must
+    continue to work — preserve the historical hybrid default."""
+    monkeypatch.setenv("APP_ENV", "dev")
+    _clear_admin_mode_env(monkeypatch)
+    assert _admin_mode() == "hybrid"
+
+
+def test_admin_mode_explicit_db_in_prod_is_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("ANCHOR_ADMIN_MODE", "db")
+    assert _admin_mode() == "db"
+
+
+def test_admin_mode_explicit_hybrid_in_prod_is_hybrid_operator_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("ANCHOR_ADMIN_MODE", "hybrid")
+    assert _admin_mode() == "hybrid"
+
+
+def test_admin_mode_explicit_env_in_nonprod_is_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-prod env-only mode remains operationally usable (e.g. for a
+    local smoke test that doesn't have a DB token provisioned)."""
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("ANCHOR_ADMIN_MODE", "env")
+    assert _admin_mode() == "env"
+
+
+def test_admin_mode_unknown_value_in_prod_falls_back_to_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defensive resolution: a typo must not silently widen the allowed
+    set. The startup assertion still refuses such a value."""
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("ANCHOR_ADMIN_MODE", "DBMODE")
+    assert _admin_mode() == "db"
+
+
+def test_admin_mode_unknown_value_in_nonprod_falls_back_to_hybrid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("ANCHOR_ADMIN_MODE", "yolo")
+    assert _admin_mode() == "hybrid"
+
+
+# --- Startup assertion: assert_admin_mode_for_prod() ------------------
+
+
+def test_admin_mode_assertion_noop_outside_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("ANCHOR_ADMIN_MODE", "env")
+    assert_admin_mode_for_prod()  # must not raise
+
+
+def test_admin_mode_assertion_passes_when_unset_in_prod(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    _clear_admin_mode_env(monkeypatch)
+    assert_admin_mode_for_prod()  # unset is fine; resolves to "db"
+
+
+def test_admin_mode_assertion_passes_for_db_in_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("ANCHOR_ADMIN_MODE", "db")
+    assert_admin_mode_for_prod()
+
+
+def test_admin_mode_assertion_passes_for_explicit_hybrid_in_prod(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("ANCHOR_ADMIN_MODE", "hybrid")
+    assert_admin_mode_for_prod()
+
+
+def test_admin_mode_assertion_rejects_env_in_prod(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("ANCHOR_ADMIN_MODE", "env")
+    with pytest.raises(RuntimeError, match="env-only admin tokens"):
+        assert_admin_mode_for_prod()
+
+
+def test_admin_mode_assertion_rejects_unknown_value_in_prod(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("ANCHOR_ADMIN_MODE", "yolo")
+    with pytest.raises(RuntimeError, match="not a valid admin mode"):
+        assert_admin_mode_for_prod()
