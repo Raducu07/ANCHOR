@@ -93,29 +93,19 @@ Always report:
 
 ---
 
-## Current implementation target: Phase 2A-1 — CPD-Recordable AI Literacy
+## Current implementation target: 2A-D.0 — Canonical reconciliation / Release-candidate hardening
 
-Scope authorised by `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` and `Phase_2A_1_Engineering_Brief_v1_1.md`. Substantive build may proceed from the approved engineering brief. M5.6 buyer conversations run in parallel and may trigger in-flight scope revision, but they are not a build blocker.
+Authorised by `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3` (6 June 2026), operative over Memo v1.1 and Addendum v1.2 where they differ.
 
-**Backend scope (provisional, full detail in engineering brief)**:
+**Built and shipped — do NOT rebuild:** Phase 2A-1 (CPD-Recordable AI Literacy), 2A-2 (Policy Library + Staff Attestation), 2A-3 (RCVS Self-Assessment + Evidence Closure), 2A-4 (Client-Facing Transparency Layer), 2A-5 (Incident / Near-Miss Logging), 2A-C presentation hardening, M6.10, M6.11. Readiness discipline R1–R4 complete. Both honest M6 gaps closed.
 
-- New database objects: `learning_modules`, `learning_completions`, derived view `v_cpd_records`, and `cpd_exports`
-- RLS + FORCE RLS on clinic-scoped tables (`learning_completions`, `cpd_exports`); `WITH CHECK (clinic_id = current_setting('app.clinic_id')::UUID)` required on every clinic-scoped RLS policy
-- Endpoints (provisional): list modules; record completion; void completion with reason; generate per-staff CPD record export; aggregate Trust Pack delta
-- Module metadata: `module_id`, `version`, `title`, `role_applicability`, `cpd_minutes`, `rcvs_principle_mappings[]`, `eu_ai_act_article_mappings[]`
-- No raw learning content stored in the database; module content references markdown files in `docs/learn/modules/`
-- All evidence artefacts metadata-only; completion corrections use a void-with-reason pattern, not silent deletion or overwrite
+**Current target is reconciliation, not feature build.** No new feature work without explicit founder instruction. ANCHOR proceeds on regulatory/professional-governance conviction — there is no buyer-discovery step.
 
-**Out of scope for Phase 2A-1** (deferred to 2A-2 or M4.6):
+**Live generation is production-off.** The Workspace live integration (2A-C.5B/5C) is built directly on the Anthropic API and is NOT vendor-neutral. Do not enable live generation in production until the local/staging safety gate (2A-C.5E) passes and the hard-refusal boundary (diagnosis/treatment/prescribing) is proven on the live path. The hard-refusal harness ships *with* live LLM calls, never after. Anthropic becomes a subprocessor the moment live generation is enabled — flag any change that would activate it.
 
-- Staff Attestation Layer
-- Governance Policy Library
-- Quiz grading / assessment scoring
-- Role-based learning paths
-- Scenario onboarding
-- Adaptive recommendations
-- Leadership dashboards on training uptake
-- External LMS integration
+**M6.12 / M6.13 are gated future, not current work.** Do not start either without an explicit founder decision recorded in an addendum.
+
+**Next backend tasks (RC hardening — only when explicitly instructed, with scope):** security audit (auth/JWT, admin token, RLS/FORCE RLS, route protection, RBAC, CORS, rate limiting, export/receipt access limits, dependency + secret scan); operational resilience (backups, tested restore); 2A-C.4 backend Trust Pack source-of-truth polish; Workspace↔Receipt review-state coherence; policy content-hash fix.
 
 ---
 
@@ -128,10 +118,10 @@ Scope authorised by `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` and `P
 
 ---
 
-## Honest M6 gaps (informational, parallel to Phase 2A-1, not blocking)
+## M6 gaps — CLOSED (informational)
 
-- Formal Assistant evaluation / golden-test set — dual purpose: product safety + EU AI Act Article 12 record-keeping
-- Why-flagged → Learn linkage — Phase 2A-1 creates the module catalogue this will deep-link into; closure can be folded in if scope permits
+* Formal Assistant evaluation / golden-test set — closed via R3 (Evaluation / Golden-Test Registry v1).
+* Why-flagged → Learn linkage — closed; the Learn module catalogue it deep-links into now exists.
 
 ---
 
@@ -143,5 +133,7 @@ Located in `/docs/canonical/` in this repo:
 - `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1.docx` — Phase 2A defensibility artefact; §2 wording controls; §3 RCVS principles; §4 EU AI Act articles
 - `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` — Phase 2A ordering; buyer conversations parallel-not-blocking; §5 Phase 2A-1 scope; §10 wording controls for 2A-1
 - `Phase_2A_1_Engineering_Brief_v1_1.md` — Phase 2A-1 implementation contract; confirmed implementation decisions; backend/frontend scope
+- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3` — OPERATIVE decision; supersedes Memo v1.1 and Addendum v1.2 where they differ; authorises reconciliation (2A-D.0); records the conviction-based (no buyer-discovery) position
+- NOTE: Roadmap v2.6 and Readiness Map v1.1 supersede v2.5 and v1 once issued; until then treat v2.5/v1 status fields as stale and defer to Addendum v1.3
 
 For any wording that will appear in API responses, error messages, or anywhere clinic-facing: check Readiness Map §2 first.
