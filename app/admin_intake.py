@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, Literal, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterable, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
 from app.admin_auth import AdminContext, require_admin, write_admin_audit_event
@@ -417,3 +419,257 @@ def admin_update_intake_request(
     )
 
     return {"status": "ok", "kind": kind, "request": item}
+
+
+# ---------------------------------------------------------------------
+# 2A-D.1 Patch 3: public intake retention prune endpoint
+# ---------------------------------------------------------------------
+#
+# Doctrine:
+#   * Public intake (demo_requests / start_requests / public_site_chat_events)
+#     sits OUTSIDE the clinic-governance metadata-only perimeter. It holds
+#     public contact PII and visitor free text. This endpoint exists so an
+#     operator can age that personal data off without writing raw SQL.
+#   * Admin-token gated. Audit-logged.
+#   * Dry-run by default. Destructive runs require an explicit confirm
+#     literal so a misclick does not erase rows.
+#   * Per-call hard cap of 50_000 rows so a misconfigured cutoff cannot
+#     lock a table.
+#   * No scheduler / cron is introduced here — automation is deferred.
+#
+# Suggested operator-side defaults for `older_than_days` (NOT enforced):
+#   * demo_requests   : 365
+#   * start_requests  : 365
+#   * public_site_chat_events : 90
+# The caller must pass an explicit value; this comment is only guidance.
+
+_PRUNE_TABLE_BY_KIND: Dict[str, str] = {
+    # Internal allowlist mapping. The endpoint NEVER interpolates kind
+    # strings directly into SQL; it looks the table name up here so the
+    # set of touchable tables is bounded by code, not by request input.
+    "demo": "demo_requests",
+    "start": "start_requests",
+    "chat": "public_site_chat_events",
+}
+
+_PRUNE_KINDS_ALL: tuple[str, ...] = ("demo", "start", "chat")
+
+_PRUNE_CONFIRM_LITERAL = "I-UNDERSTAND"
+_PRUNE_MAX_TOTAL_ROWS = 50_000
+
+
+class _IntakePruneRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    kind: Literal["demo", "start", "chat", "all"] = Field(
+        ...,
+        description=(
+            "Which public-intake table to prune. 'all' prunes demo, start, "
+            "and chat in one call."
+        ),
+    )
+    older_than_days: int = Field(
+        ...,
+        ge=1,
+        le=3650,
+        description="Rows with created_at < now() - this interval are eligible for prune.",
+    )
+    dry_run: bool = Field(
+        default=True,
+        description=(
+            "When true (default) the endpoint only counts eligible rows. "
+            "When false an explicit confirm literal is required."
+        ),
+    )
+    confirm: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "When dry_run=false, must be set to 'I-UNDERSTAND' so a misclick "
+            "does not erase rows."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _require_confirm_on_destructive(self) -> "_IntakePruneRequest":
+        if not self.dry_run and self.confirm != _PRUNE_CONFIRM_LITERAL:
+            raise ValueError("confirm must equal 'I-UNDERSTAND' when dry_run=false")
+        return self
+
+
+def _selected_kinds(kind: str) -> List[str]:
+    if kind == "all":
+        return list(_PRUNE_KINDS_ALL)
+    return [kind]
+
+
+def _count_eligible_rows(db, *, table_name: str, cutoff: datetime) -> int:
+    """Count rows older than the cutoff. Caller is responsible for ensuring
+    `table_name` came from the internal allowlist (`_PRUNE_TABLE_BY_KIND`)."""
+    row = db.execute(
+        text(
+            f"SELECT COUNT(*)::int AS c FROM {table_name} WHERE created_at < :cutoff"
+        ),
+        {"cutoff": cutoff},
+    ).mappings().first()
+    return int((row or {}).get("c") or 0)
+
+
+def _delete_eligible_rows(db, *, table_name: str, cutoff: datetime) -> int:
+    """Delete rows older than the cutoff. Caller is responsible for ensuring
+    `table_name` came from the internal allowlist."""
+    result = db.execute(
+        text(
+            f"DELETE FROM {table_name} WHERE created_at < :cutoff"
+        ),
+        {"cutoff": cutoff},
+    )
+    return int(result.rowcount or 0)
+
+
+@router.post("/prune")
+def admin_intake_prune(
+    body: _IntakePruneRequest,
+    request: Request,
+    ctx: AdminContext = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Prune aged rows from the public intake tables. Dry-run by default.
+
+    Behaviour:
+      * `dry_run=true` (default): runs SELECT COUNT(*) per selected table,
+        returns counts + cutoff; no DELETE is issued.
+      * `dry_run=false`: requires `confirm="I-UNDERSTAND"`. Counts first.
+        If the total across selected tables would exceed
+        `_PRUNE_MAX_TOTAL_ROWS` (50_000), refuses with 409 *before* any
+        DELETE. Otherwise issues `DELETE ... WHERE created_at < :cutoff`
+        per table.
+      * Both paths write an admin audit event with the resolved cutoff and
+        per-table counts.
+    """
+    selected_kinds = _selected_kinds(body.kind)
+
+    # Single resolved cutoff for the whole call so per-table reports use
+    # the same time anchor.
+    cutoff = datetime.now(timezone.utc) - timedelta(days=int(body.older_than_days))
+    cutoff_iso = cutoff.isoformat()
+
+    counts: Dict[str, int] = {}
+    deleted: Dict[str, int] = {}
+
+    try:
+        with SessionLocal() as db:
+            # Phase 1: count eligible rows per selected table. This runs
+            # for both dry-run and destructive paths so the operator gets
+            # a per-table picture either way.
+            for kind in selected_kinds:
+                table_name = _PRUNE_TABLE_BY_KIND[kind]
+                counts[kind] = _count_eligible_rows(
+                    db, table_name=table_name, cutoff=cutoff
+                )
+
+            total_eligible = sum(counts.values())
+
+            if body.dry_run:
+                db.rollback()
+                outcome = "dry_run"
+            else:
+                # Hard cap: refuse BEFORE any DELETE if the total would
+                # blow past the per-call budget. The operator can re-run
+                # with a tighter cutoff.
+                if total_eligible > _PRUNE_MAX_TOTAL_ROWS:
+                    db.rollback()
+                    write_admin_audit_event(
+                        action="admin.intake.prune.rejected_cap",
+                        method=request.method.upper(),
+                        route=request.url.path,
+                        status_code=409,
+                        admin_token_id=ctx.token_id,
+                        request_id=ctx.request_id,
+                        ip_hash=ctx.ip_hash,
+                        ua_hash=ctx.ua_hash,
+                        meta={
+                            "kind": body.kind,
+                            "older_than_days": int(body.older_than_days),
+                            "cutoff_utc": cutoff_iso,
+                            "counts": counts,
+                            "total_eligible": total_eligible,
+                            "cap": _PRUNE_MAX_TOTAL_ROWS,
+                        },
+                    )
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "intake_prune_rows_exceed_cap"
+                        ),
+                    )
+
+                for kind in selected_kinds:
+                    table_name = _PRUNE_TABLE_BY_KIND[kind]
+                    deleted[kind] = _delete_eligible_rows(
+                        db, table_name=table_name, cutoff=cutoff
+                    )
+
+                db.commit()
+                outcome = "deleted"
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log_event(
+            logging.ERROR,
+            "admin.intake.prune_failed",
+            request_id=ctx.request_id,
+            kind=body.kind,
+            older_than_days=int(body.older_than_days),
+            dry_run=bool(body.dry_run),
+            error_type=type(exc).__name__,
+            error=str(exc)[:240],
+        )
+        write_admin_audit_event(
+            action="admin.intake.prune.error",
+            method=request.method.upper(),
+            route=request.url.path,
+            status_code=500,
+            admin_token_id=ctx.token_id,
+            request_id=ctx.request_id,
+            ip_hash=ctx.ip_hash,
+            ua_hash=ctx.ua_hash,
+            meta={
+                "kind": body.kind,
+                "older_than_days": int(body.older_than_days),
+                "dry_run": bool(body.dry_run),
+                "error_type": type(exc).__name__,
+            },
+        )
+        raise HTTPException(status_code=500, detail="admin_intake_prune_failed")
+
+    write_admin_audit_event(
+        action="admin.intake.prune",
+        method=request.method.upper(),
+        route=request.url.path,
+        status_code=200,
+        admin_token_id=ctx.token_id,
+        request_id=ctx.request_id,
+        ip_hash=ctx.ip_hash,
+        ua_hash=ctx.ua_hash,
+        meta={
+            "kind": body.kind,
+            "older_than_days": int(body.older_than_days),
+            "dry_run": bool(body.dry_run),
+            "cutoff_utc": cutoff_iso,
+            "counts": counts,
+            "deleted": deleted,
+            "outcome": outcome,
+        },
+    )
+
+    return {
+        "status": "ok",
+        "outcome": outcome,
+        "kind": body.kind,
+        "older_than_days": int(body.older_than_days),
+        "cutoff_utc": cutoff_iso,
+        "dry_run": bool(body.dry_run),
+        "counts": counts,
+        "deleted": deleted,
+        "cap": _PRUNE_MAX_TOTAL_ROWS,
+    }

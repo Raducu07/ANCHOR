@@ -79,6 +79,7 @@ def _isolated_limiter(monkeypatch):
             "receipt": rl.RateLimitRule(window_s=60, limit=2),
             "export": rl.RateLimitRule(window_s=60, limit=2),
             "assistant_submit": rl.RateLimitRule(window_s=60, limit=2),
+            "public_intake": rl.RateLimitRule(window_s=60, limit=2),
             "admin": rl.RateLimitRule(window_s=60, limit=2),
             "admin_bootstrap": rl.RateLimitRule(window_s=60, limit=2),
         },
@@ -141,6 +142,27 @@ def test_receipt_and_export_are_distinct_authed_buckets(monkeypatch):
         clinic_id=str(request.state.clinic_id),
         clinic_user_id=str(request.state.clinic_user_id),
         group="export",
+    )
+
+
+def test_public_intake_is_distinct_from_auth_and_assistant_submit(monkeypatch):
+    """2A-D.1 Patch 3: public_intake must be its own per-IP bucket so
+    form-spam bursts do not consume the clinic auth or assistant_submit
+    budgets and vice versa."""
+    now = {"t": 1_700_000_000.0}
+    monkeypatch.setattr(rl.time, "time", lambda: now["t"])
+
+    request = _make_request("/v1/public/demo-request")
+
+    _hit_until_429(lambda: rl.enforce_ip(request, "public_intake"))
+
+    # Other groups still have budget.
+    rl.enforce_ip(request, "auth")
+    rl.enforce_authed(
+        request,
+        clinic_id=str(request.state.clinic_id),
+        clinic_user_id=str(request.state.clinic_user_id),
+        group="assistant_submit",
     )
 
 

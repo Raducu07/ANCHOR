@@ -10,6 +10,7 @@ from app.anchor_logging import hash_with_salt, log_event
 from app.db import SessionLocal
 from app.intake_common import has_honeypot_value, redact_contact_details
 from app.intake_notifications import NotificationDeliveryError, send_intake_notifications
+from app.rate_limit import enforce_ip
 from app.intake_schemas import (
     ChatLogResponse,
     DemoRequestCreate,
@@ -48,6 +49,11 @@ def _reject_honeypot(request: Request, *values: str | None) -> None:
 
 @router.post("/demo-request", response_model=IntakeCreateResponse)
 def create_demo_request(request: Request, body: DemoRequestCreate) -> IntakeCreateResponse:
+    # 2A-D.1 Patch 3 (M-1): per-IP rate-limit BEFORE honeypot / DB write
+    # so form-spam bursts are damped before they consume DB rows or
+    # webhook deliveries.
+    enforce_ip(request, "public_intake")
+
     _reject_honeypot(request, body.website, body.company_website)
 
     params = {
@@ -139,6 +145,9 @@ def create_demo_request(request: Request, body: DemoRequestCreate) -> IntakeCrea
 
 @router.post("/start-request", response_model=IntakeCreateResponse)
 def create_start_request(request: Request, body: StartRequestCreate) -> IntakeCreateResponse:
+    # 2A-D.1 Patch 3 (M-1): per-IP rate-limit before honeypot / DB write.
+    enforce_ip(request, "public_intake")
+
     _reject_honeypot(request, body.website, body.company_website)
 
     params = {
@@ -231,6 +240,12 @@ def create_start_request(request: Request, body: StartRequestCreate) -> IntakeCr
 
 @router.post("/site-chat/log", response_model=ChatLogResponse)
 def log_public_site_chat_event(request: Request, body: PublicSiteChatEventCreate) -> ChatLogResponse:
+    # 2A-D.1 Patch 3 (M-1): per-IP rate-limit before honeypot / DB write.
+    enforce_ip(request, "public_intake")
+
+    # 2A-D.1 Patch 3: honeypot parity with demo / start endpoints.
+    _reject_honeypot(request, body.website, body.company_website)
+
     redacted, contains_email, contains_phone = redact_contact_details(body.question_text)
 
     params = {

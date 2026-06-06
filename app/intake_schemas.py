@@ -4,7 +4,12 @@ from typing import Optional
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
-from app.intake_common import MAX_CHAT_QUESTION_LENGTH, MAX_TEXTAREA_LENGTH, clamp_text, normalize_optional_text
+from app.intake_common import (
+    MAX_CHAT_QUESTION_LENGTH,
+    MAX_INTAKE_MESSAGE_LENGTH,
+    MAX_TEXTAREA_LENGTH,
+    normalize_optional_text,
+)
 
 
 class _StrictModel(BaseModel):
@@ -21,7 +26,7 @@ class DemoRequestCreate(_StrictModel):
     biggest_concern: str = Field(..., min_length=2, max_length=500)
     clinic_size: Optional[str] = Field(default=None, max_length=100)
     phone: Optional[str] = Field(default=None, max_length=50)
-    message: Optional[str] = Field(default=None, max_length=MAX_TEXTAREA_LENGTH)
+    message: Optional[str] = Field(default=None, max_length=MAX_INTAKE_MESSAGE_LENGTH)
     consent: bool
     source_page: Optional[str] = Field(default=None, max_length=200)
     utm_source: Optional[str] = Field(default=None, max_length=200)
@@ -57,7 +62,7 @@ class StartRequestCreate(_StrictModel):
     rollout_timing: str = Field(..., min_length=2, max_length=100)
     phone: Optional[str] = Field(default=None, max_length=50)
     site_count: Optional[int] = Field(default=None, ge=0, le=10000)
-    message: Optional[str] = Field(default=None, max_length=MAX_TEXTAREA_LENGTH)
+    message: Optional[str] = Field(default=None, max_length=MAX_INTAKE_MESSAGE_LENGTH)
     consent: bool
     source_page: Optional[str] = Field(default=None, max_length=200)
     utm_source: Optional[str] = Field(default=None, max_length=200)
@@ -84,7 +89,11 @@ class StartRequestCreate(_StrictModel):
 
 class PublicSiteChatEventCreate(_StrictModel):
     session_id: Optional[str] = Field(default=None, max_length=128)
-    question_text: str = Field(..., min_length=1, max_length=MAX_TEXTAREA_LENGTH)
+    # 2A-D.1 Patch 3: enforce the 500-char cap at the schema level so
+    # over-long input is rejected (422) at the wire rather than silently
+    # truncated server-side. Matches the DB CHECK on
+    # public_site_chat_events.question_text.
+    question_text: str = Field(..., min_length=1, max_length=MAX_CHAT_QUESTION_LENGTH)
     question_category: Optional[str] = Field(default=None, max_length=100)
     matched_topic: Optional[str] = Field(default=None, max_length=100)
     answer_confidence: Optional[str] = Field(default=None, max_length=32)
@@ -93,6 +102,15 @@ class PublicSiteChatEventCreate(_StrictModel):
     utm_source: Optional[str] = Field(default=None, max_length=200)
     utm_medium: Optional[str] = Field(default=None, max_length=200)
     utm_campaign: Optional[str] = Field(default=None, max_length=200)
+    # 2A-D.1 Patch 3: honeypot fields. Same shape and alias pattern as the
+    # demo / start schemas. Any non-empty value triggers _reject_honeypot
+    # in the handler.
+    website: Optional[str] = Field(default=None, max_length=200)
+    company_website: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        validation_alias=AliasChoices("company_website", "honeypot"),
+    )
 
     @field_validator(
         "session_id",
@@ -108,11 +126,6 @@ class PublicSiteChatEventCreate(_StrictModel):
     @classmethod
     def _normalize_optional(cls, value: Optional[str]) -> Optional[str]:
         return normalize_optional_text(value)
-
-    @field_validator("question_text")
-    @classmethod
-    def _normalize_question_text(cls, value: str) -> str:
-        return clamp_text(value, max_length=MAX_CHAT_QUESTION_LENGTH)
 
 
 class IntakeCreateResponse(_StrictModel):

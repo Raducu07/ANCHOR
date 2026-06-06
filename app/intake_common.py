@@ -8,6 +8,10 @@ START_REQUEST_STATUSES = ("new", "contacted", "onboarding", "qualified", "closed
 
 MAX_CHAT_QUESTION_LENGTH = 500
 MAX_TEXTAREA_LENGTH = 4000
+# 2A-D.1 Patch 3: tightened cap for free-text public intake messages on
+# demo / start submissions. Reduces the raw-content surface stored in
+# demo_requests / start_requests without breaking realistic contact forms.
+MAX_INTAKE_MESSAGE_LENGTH = 1000
 
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _PHONE_RE = re.compile(

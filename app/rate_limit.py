@@ -117,6 +117,17 @@ def rules_from_env() -> Dict[str, RateLimitRule]:
             window_s=_int("RL_ASSISTANT_SUBMIT_WINDOW_S", 60),
             limit=_int("RL_ASSISTANT_SUBMIT_LIMIT", 10),
         ),
+        # 2A-D.1 Patch 3: Public intake endpoints (POST /v1/public/demo-request,
+        # /start-request, /site-chat/log). Unauthenticated; per-IP bucket.
+        # Public marketing forms see human-scale traffic — 5 req / 60 s per IP
+        # is generous for a real visitor and crushing for basic form-spam.
+        # Public intake is OUTSIDE the clinic-governance metadata-only
+        # perimeter (it stores public contact PII and visitor free text),
+        # but doctrine still requires rate-limiting and admin-gated retention.
+        "public_intake": RateLimitRule(
+            window_s=_int("RL_PUBLIC_INTAKE_WINDOW_S", 60),
+            limit=_int("RL_PUBLIC_INTAKE_LIMIT", 5),
+        ),
         # Admin
         "admin": RateLimitRule(window_s=_int("RL_ADMIN_WINDOW_S", 60), limit=_int("RL_ADMIN_LIMIT", 60)),
         "admin_bootstrap": RateLimitRule(
