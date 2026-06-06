@@ -103,7 +103,7 @@ Authorised by `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3` (6 June 
 
 **Live generation is production-off.** The Workspace live integration (2A-C.5B/5C) is built directly on the Anthropic API and is NOT vendor-neutral. Do not enable live generation in production until the local/staging safety gate (2A-C.5E) passes and the hard-refusal boundary (diagnosis/treatment/prescribing) is proven on the live path. The hard-refusal harness ships *with* live LLM calls, never after. Anthropic becomes a subprocessor the moment live generation is enabled — flag any change that would activate it.
 
-**M6.12 / M6.13 are gated future, not current work.** Do not start either without an explicit founder decision recorded in an addendum.
+**M6.12 / M6.13 are gated future, not current work.** Do not start either without an explicit founder decision recorded in an addendum. **M4.6 is deferred by decision** — not in scope for RC hardening.
 
 **Next backend tasks (RC hardening — only when explicitly instructed, with scope):** security audit (auth/JWT, admin token, RLS/FORCE RLS, route protection, RBAC, CORS, rate limiting, export/receipt access limits, dependency + secret scan); operational resilience (backups, tested restore); 2A-C.4 backend Trust Pack source-of-truth polish; Workspace↔Receipt review-state coherence; policy content-hash fix.
 
@@ -129,11 +129,17 @@ Authorised by `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3` (6 June 
 
 Located in `/docs/canonical/` in this repo:
 
-- `ANCHOR_Roadmap_v2_5_May_2026.docx` — canonical roadmap; §1 doctrine; §4 M6 Assistant track as-built; §6 sustainability design
-- `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1.docx` — Phase 2A defensibility artefact; §2 wording controls; §3 RCVS principles; §4 EU AI Act articles
-- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` — Phase 2A ordering; buyer conversations parallel-not-blocking; §5 Phase 2A-1 scope; §10 wording controls for 2A-1
-- `Phase_2A_1_Engineering_Brief_v1_1.md` — Phase 2A-1 implementation contract; confirmed implementation decisions; backend/frontend scope
-- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3` — OPERATIVE decision; supersedes Memo v1.1 and Addendum v1.2 where they differ; authorises reconciliation (2A-D.0); records the conviction-based (no buyer-discovery) position
-- NOTE: Roadmap v2.6 and Readiness Map v1.1 supersede v2.5 and v1 once issued; until then treat v2.5/v1 status fields as stale and defer to Addendum v1.3
+**Operative canon (use these):**
 
-For any wording that will appear in API responses, error messages, or anywhere clinic-facing: check Readiness Map §2 first.
+- `ANCHOR_Roadmap_v2_6_June_2026_CORRECTED.md` / `.docx` — **operative roadmap**; supersedes v2.5; §1 doctrine; §4 M6 Assistant track as-built; §6 sustainability design
+- `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1_1_COMPLETE.md` / `.docx` — **operative readiness artefact**; supersedes v1; §2 wording controls; §3 RCVS principles; §4 EU AI Act articles
+- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3` — **operative decision**; supersedes Memo v1.1 and Addendum v1.2 where they differ; authorises reconciliation (2A-D.0); records the conviction-based (no buyer-discovery) position
+- `Phase_2A_1_Engineering_Brief_v1_1.md` — Phase 2A-1 implementation contract (Phase 2A-1 is shipped; retained for reference)
+
+**Superseded / historical (do not use as current guidance — read only for lineage):**
+
+- `ANCHOR_Roadmap_v2_5_May_2026.docx` — superseded by v2.6
+- `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1.docx` — superseded by v1.1
+- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` — superseded by Addendum v1.3 where they differ; the "buyer conversations parallel-not-blocking" framing is **withdrawn** — there is no buyer-discovery step
+
+For any wording that will appear in API responses, error messages, or anywhere clinic-facing: check Readiness Map v1.1 §2 first.
