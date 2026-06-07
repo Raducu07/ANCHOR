@@ -11,11 +11,13 @@ These documents do **not** grant compliance, certification, RCVS approval, regul
 - [`intake_retention.md`](./intake_retention.md) — Operator runbook for `POST /v1/admin/intake/prune`. Data boundary, endpoint contract, recommended retention defaults (90 / 365 / 365), pre-run checklist, dry-run procedure, dry-run evidence template, destructive procedure (founder-approval-gated, confirm literal `I-UNDERSTAND`), destructive evidence template, failure-mode playbook, cadence, first-run plan. First production dry-run executed on 2026-06-07 and passed; no destructive prune has been executed.
 - [`incident_response.md`](./incident_response.md) — Operator runbook for operational, security, privacy, governance, availability, migration, and AI-governance incidents on the ANCHOR backend. Severity ladder (SEV-0 through SEV-3), first-15-minutes checklist, role/responsibility split (solo-operator and future multi-operator), communication rules with safe / avoid wording lists, evidence capture rules (with explicit never-capture list), eleven per-class containment playbooks, recovery checklist, post-incident review template, evidence log template, closure criteria, cadence and tabletop scenarios. Runbook is written; **no real incident has been simulated or executed**. **First tabletop drill completed on 2026-06-07** using the migration checksum mismatch scenario (`incident_response.md §16`); result: PASS. Remaining tabletop scenarios pending.
 
+- [`security_audits/`](./security_audits/) — Append-only directory of dated dependency / CVE / security audit artefacts. First artefact created 2026-06-07 — see [`2026-06-07_dependency_cve_audit.md`](./security_audits/2026-06-07_dependency_cve_audit.md). That audit recorded process findings and an **INCONCLUSIVE** CVE scan (the `pip-audit` tool was not available locally at the time and was not auto-installed). This directory does not claim ANCHOR is secure, compliant, certified, or vulnerability-free.
+
 ## Planned
 
 To be added as the 2A-D.2 operational resilience track lands. None of these exist yet — they are listed here so the folder's shape is predictable.
 
-- `security_audits/` — Append-only directory of dated audit / CVE-scan artefacts.
+*(All Patch 7–10B docs are now Current; the next planned operational artefact is the Patch 11B follow-up — see the dependency/CVE audit for the recommended split.)*
 
 ## Doctrine pointers
 
