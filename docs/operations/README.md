@@ -7,7 +7,7 @@ These documents do **not** grant compliance, certification, RCVS approval, regul
 ## Current
 
 - [`env.md`](./env.md) — Backend environment variable reference. Categories (required / functional / tuning / bootstrap / danger), startup fail-closed behaviour, smoke commands, stop conditions.
-- [`backup_restore.md`](./backup_restore.md) — Render Postgres restore-to-new drill runbook. Inventory checklist, restore procedure, drill env table, smoke set, migration-checksum evidence, teardown, failure-mode playbook, cadence, and a per-drill evidence template. Drills are operator-driven; the runbook is in place, the first drill is yet to be executed.
+- [`backup_restore.md`](./backup_restore.md) — Render Postgres restore-to-new drill runbook. Inventory checklist, restore procedure, drill env table, smoke set, migration-checksum evidence, teardown, failure-mode playbook, cadence, and a per-drill evidence template. Drills are operator-driven; the runbook is in place, the first restore-to-new drill was executed on 2026-06-07 and passed; future drills follow the cadence in the runbook.
 
 ## Planned
 

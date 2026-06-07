@@ -362,7 +362,7 @@ Record into §11 the `applied`, `skipped`, `verified`, and `backfilled` counts f
 ### 10.5 Inventory notes
 
 - **No secret values were recorded** in this baseline. All env rows record presence / category only.
-- **Restore drill has not been executed yet.** This section is the read-only starting state for the first drill; the §11 evidence template remains the canonical place to record a completed drill outcome.
+- **Inventory baseline captured on 2026-06-07.** The first restore-to-new drill was executed on **2026-06-07** and **passed** — see the per-drill evidence in §11 (Drill — 2026-06-07). The next drill is due according to the cadence in §14.
 - **No Render settings were changed during inventory.** All actions were read-only UI inspection.
 - `ANTHROPIC_API_KEY` is **present**. Per `env.md §9`, presence does not enable live generation; the live path is gated on `ANCHOR_WORKSPACE_LIVE_GENERATION_ENABLED`, which is observed off. No doctrine violation here; recorded for the trail.
 
@@ -444,6 +444,105 @@ Copy this template into a new sub-section the day of the drill. Fill placeholder
 
 <short free-form note — no secrets, no clinic identifiers>
 ```
+
+### Drill — 2026-06-07
+
+> **First restore-to-new drill — PASS.** No production database was overwritten and no production service was changed. No secret values are recorded below.
+
+| Field | Value |
+|---|---|
+| Drill date (UTC) | 2026-06-07 |
+| Operator | RGG |
+| Source production DB | `anchor-postgres-prod` |
+| Source DB recovery path | Render point-in-time recovery / restore-to-new |
+| Drill DB name | `anchor-restore-drill-20260607-1055` |
+| Drill DB internal name | `anchor_u0lp_0nvl` |
+| Drill DB service ID | `dpg-d8ikveeq1p3s73erhef0-a` |
+| Drill DB instance type | Free |
+| Drill DB region | Frankfurt |
+| Drill service name | `anchor-restore-drill-svc-20260607-1055` |
+| Drill service URL | `https://anchor-restore-drill-svc-20260607-1055.onrender.com` |
+| Drill service ID | `srv-d8iljcs8aovs738eib7g` |
+| Drill service runtime | Docker |
+| Drill deployed git SHA | `54c63db` |
+| Drill deployed commit message | *"Record Render backup restore inventory baseline"* |
+| Drill service first-pass `APP_ENV` | `staging` |
+| Drill service second-pass `APP_ENV` | `prod` |
+| Production DB overwritten? | **No** |
+| Production service changed? | **No** |
+
+#### Smoke results — first pass (`APP_ENV=staging`)
+
+| Step | Endpoint / action | Status code | Pass? |
+|---|---|---|---|
+| 8.1 | `GET /health` | 200 `{"status":"ok"}` | ✅ |
+| 8.2 | `GET /v1/version` | 200, `env=staging` | ✅ |
+| 8.3 | `GET /v1/portal/dashboard` no bearer | 401 | ✅ |
+| 8.4 | `GET /db-check` | 200 `{"db":"ok"}` | ✅ |
+
+First-pass result: **PASS**
+
+#### RLS / FORCE-RLS verification — `scripts/anchor-verify-force-rls.ps1`
+
+| Policy / table | RLS enabled | FORCE RLS | Pass? |
+|---|---|---|---|
+| `rls_clinics` | True | True | ✅ |
+| `rls_clinic_users` | True | True | ✅ |
+| `governance_events` | True | True | ✅ |
+| `rls_ops_metrics_events` | True | True | ✅ |
+| `rls_clinic_policies` | True | True | ✅ |
+| `rls_clinic_policy_state` | True | True | ✅ |
+| `rls_clinic_privacy_profile` | True | True | ✅ |
+| `rls_admin_audit_events` | True | True | ✅ |
+
+RLS / FORCE-RLS verification result: **PASS** — the legacy seven-table set (Patch 4A `10014`) plus the admin-audit-events overlay (Patch 5B `10015`) are intact end-to-end across snapshot → restore-to-new → boot.
+
+#### Smoke results — second pass (`APP_ENV=prod`)
+
+| Step | Endpoint / action | Status code | Pass? |
+|---|---|---|---|
+| 8.1 | `GET /health` | 200 `{"status":"ok"}` | ✅ |
+| 8.2 | `GET /v1/version` | 200, `env=prod` | ✅ |
+| 8.3 | `GET /v1/portal/dashboard` no bearer | 401 | ✅ |
+| 8.4 | `GET /db-check` | 200 `{"db":"ok"}` | ✅ |
+
+Second-pass result: **PASS** — Patch 1 / 4B / 6 prod-mode startup fail-closed asserts all passed against the restored database with drill-only non-default secrets.
+
+#### Migration checksum result
+
+| Field | Value |
+|---|---|
+| `migration.scan` event present | yes |
+| `db_name` observed | `anchor_u0lp_0nvl` |
+| `db_user` observed | `anchor_app` |
+| `checksum_column` | true |
+| `verify_checksums` | true |
+| `startup_migrations_ok` event present | yes |
+| `migration.checksum.mismatch` observed | **no** (not present in the inspected boot logs) |
+
+Migration checksum result: **PASS** — Patch 6 verification ran on the restored `schema_migrations` table and reported no mismatch. Patch 6B's restoration of `10010_force_rls_all_tenant_tables.sql` is therefore corroborated end-to-end against a fresh restore.
+
+#### Teardown confirmation
+
+| Step | Action | Done? |
+|---|---|---|
+| 12.1 | Drill web service deleted | ✅ |
+| 12.2 | Drill DB deleted | ✅ |
+| 12.3 | Local notes containing drill secrets shredded | ✅ |
+| 12.4 | Production service / database untouched | ✅ |
+
+#### Decision
+
+- ✅ **PASS** — every gating check in §3 was observed. Evidence retained in this sub-section. Next drill scheduled per §14 cadence (quarterly pre-pilot — target ~2026-09-07).
+
+#### Notes
+
+- Initial drill service deploy failed because the drill `DATABASE_URL` was malformed. Corrected by pasting the full **Internal Database URL** from the restored drill database into the drill service env. The malformed value was never the production value; both the malformed and corrected values are drill-only and were shredded at teardown per §12.3.
+- `CORS_ALLOW_ORIGINS` was left blank/absent on the drill service because no browser / frontend access was exercised during the drill. The smoke set uses server-side `Invoke-WebRequest` calls only.
+- `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` were intentionally **unset** on the drill service. No provider credentials in the drill scope.
+- `ANCHOR_WORKSPACE_LIVE_GENERATION_ENABLED` remained `false`. The drill never exercised any Workspace generation path. Doctrine preserved.
+- `scripts/anchor-smoke-isolation.ps1` was **not** run. It remains optional per §8.6 because it may mutate the drill DB by provisioning test clinics — and the basic gating set in §8.1–§8.5 was sufficient for this drill. Future drills may run it once §8.5 has cleared.
+- All drill credentials (drill `DATABASE_URL`, drill `ANCHOR_JWT_SECRET`, drill `ANCHOR_HASH_SALT`, drill `ANCHOR_ADMIN_PEPPER`, drill `RATE_LIMIT_SECRET`, drill `INVITE_TOKEN_SALT`, drill `ANCHOR_ADMIN_TOKEN`) were freshly generated for the drill, never reused from production, and shredded at teardown. None appear in this evidence sub-section.
 
 ---
 
