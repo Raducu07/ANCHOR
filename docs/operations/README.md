@@ -9,12 +9,12 @@ These documents do **not** grant compliance, certification, RCVS approval, regul
 - [`env.md`](./env.md) — Backend environment variable reference. Categories (required / functional / tuning / bootstrap / danger), startup fail-closed behaviour, smoke commands, stop conditions.
 - [`backup_restore.md`](./backup_restore.md) — Render Postgres restore-to-new drill runbook. Inventory checklist, restore procedure, drill env table, smoke set, migration-checksum evidence, teardown, failure-mode playbook, cadence, and a per-drill evidence template. Drills are operator-driven; the runbook is in place, the first restore-to-new drill was executed on 2026-06-07 and passed; future drills follow the cadence in the runbook.
 - [`intake_retention.md`](./intake_retention.md) — Operator runbook for `POST /v1/admin/intake/prune`. Data boundary, endpoint contract, recommended retention defaults (90 / 365 / 365), pre-run checklist, dry-run procedure, dry-run evidence template, destructive procedure (founder-approval-gated, confirm literal `I-UNDERSTAND`), destructive evidence template, failure-mode playbook, cadence, first-run plan. First production dry-run executed on 2026-06-07 and passed; no destructive prune has been executed.
+- [`incident_response.md`](./incident_response.md) — Operator runbook for operational, security, privacy, governance, availability, migration, and AI-governance incidents on the ANCHOR backend. Severity ladder (SEV-0 through SEV-3), first-15-minutes checklist, role/responsibility split (solo-operator and future multi-operator), communication rules with safe / avoid wording lists, evidence capture rules (with explicit never-capture list), eleven per-class containment playbooks, recovery checklist, post-incident review template, evidence log template, closure criteria, cadence and tabletop scenarios. Runbook is written; **no real incident has been simulated or executed**, and **no tabletop drill has been completed yet**.
 
 ## Planned
 
 To be added as the 2A-D.2 operational resilience track lands. None of these exist yet — they are listed here so the folder's shape is predictable.
 
-- `incident_response.md` — Severity ladder, contact/escalation flow, first-15-minutes evidence checklist, containment actions by failure class, post-incident review template.
 - `security_audits/` — Append-only directory of dated audit / CVE-scan artefacts.
 
 ## Doctrine pointers
