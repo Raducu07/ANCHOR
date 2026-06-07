@@ -7,12 +7,12 @@ These documents do **not** grant compliance, certification, RCVS approval, regul
 ## Current
 
 - [`env.md`](./env.md) — Backend environment variable reference. Categories (required / functional / tuning / bootstrap / danger), startup fail-closed behaviour, smoke commands, stop conditions.
+- [`backup_restore.md`](./backup_restore.md) — Render Postgres restore-to-new drill runbook. Inventory checklist, restore procedure, drill env table, smoke set, migration-checksum evidence, teardown, failure-mode playbook, cadence, and a per-drill evidence template. Drills are operator-driven; the runbook is in place, the first drill is yet to be executed.
 
 ## Planned
 
 To be added as the 2A-D.2 operational resilience track lands. None of these exist yet — they are listed here so the folder's shape is predictable.
 
-- `backup_restore.md` — Render Postgres backup posture, restore-to-new drill procedure, evidence-capture checklist.
 - `intake_retention.md` — Operator runbook for `POST /v1/admin/intake/prune` (dry-run, confirm-on-destructive, cap, recommended `older_than_days` per kind, evidence capture).
 - `incident_response.md` — Severity ladder, contact/escalation flow, first-15-minutes evidence checklist, containment actions by failure class, post-incident review template.
 - `security_audits/` — Append-only directory of dated audit / CVE-scan artefacts.
