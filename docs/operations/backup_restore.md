@@ -1,6 +1,6 @@
 # ANCHOR Backup / Restore Drill Runbook
 
-> **Operator-facing runbook.** This document is the procedure for proving that the ANCHOR Render Postgres database is recoverable and that the backend boots cleanly against a restored copy. Drills are operator-driven, time-bounded, and produce evidence captured in §10.
+> **Operator-facing runbook.** This document is the procedure for proving that the ANCHOR Render Postgres database is recoverable and that the backend boots cleanly against a restored copy. Drills are operator-driven, time-bounded, and produce evidence captured in §11.
 >
 > Real secrets — drill or production — must never appear in this document, in logs, in screenshots, in tickets, in PR descriptions, or in commits. Every example is a placeholder.
 
@@ -23,7 +23,7 @@ Out of scope here: the intake retention prune runbook (`docs/operations/intake_r
 - **Restore-to-new only.** No restore into the production database, ever. The "Restore" button against production is off-limits.
 - **No production DB mutation.** Reads from the Render Dashboard during the §4 inventory only; no writes, no test inserts, no admin endpoint that mutates state on prod.
 - **No live Workspace generation in the drill.** `ANCHOR_WORKSPACE_LIVE_GENERATION_ENABLED` is **unset** on the drill service and `ANTHROPIC_API_KEY` is **unset**. Live generation also remains off in production until 2A-C.5E and the hard-refusal boundary are documented as passed.
-- **No real clinic data / paid pilot** until: (a) this drill has been executed at least once and evidence captured in §10; (b) the intake retention prune runbook is in place and a controlled destructive run has been executed under founder approval; (c) the incident-response runbook is in place; (d) `docs/operations/env.md` has been adopted as the deploy reference; (e) the legal/commercial pack referenced in Addendum v1.3 is complete.
+- **No real clinic data / paid pilot** until: (a) this drill has been executed at least once and evidence captured in §11; (b) the intake retention prune runbook is in place and a controlled destructive run has been executed under founder approval; (c) the incident-response runbook is in place; (d) `docs/operations/env.md` has been adopted as the deploy reference; (e) the legal/commercial pack referenced in Addendum v1.3 is complete.
 - **No compliance / certification / RCVS approval / regulator endorsement / guaranteed protection claims** in this runbook, in drill evidence, in PRs that touch this file, or anywhere else.
 - **No reuse of production secrets** in the drill. Every credential the drill service uses is freshly generated, drill-only, single-use, and rotated at teardown.
 - **No buyer-discovery framing** in any artefact produced by this drill. The "5–10 practice-owner conversations" / "parallel listening cadence" wording was withdrawn in Addendum v1.3 and must not reappear.
@@ -44,13 +44,13 @@ The drill is a **PASS** if and only if every item below is observed:
 - [ ] Migration checksum verification passes against the restored `schema_migrations` table — boot logs show `migration.scan` with `checksum_column=true` and `verify_checksums=true`, followed by `startup_migrations_ok`, and **no** `migration.checksum.mismatch`.
 - [ ] RLS / FORCE RLS posture survives the restore — `scripts/anchor-verify-force-rls.ps1` reports OK on the restored DB using a drill-only admin token.
 
-Any **FAIL** on any item is logged, the drill is marked FAIL or INCONCLUSIVE in §10, and the failure-mode playbook in §12 applies.
+Any **FAIL** on any item is logged, the drill is marked FAIL or INCONCLUSIVE in §11, and the failure-mode playbook in §13 applies.
 
 ---
 
 ## 4. Pre-drill Render inventory checklist
 
-These items are **read** in the Render UI and **recorded** in §10 *before* any restore action. None of the actions in this section mutates anything. Do not paste env values into the evidence file; record presence only.
+These items are **read** in the Render UI and **recorded** in §11 *before* any restore action. None of the actions in this section mutates anything. Do not paste env values into the evidence file; record presence only.
 
 **Render Postgres `anchor-api-prod`** (or current prod DB name):
 
@@ -102,7 +102,7 @@ Use UTC in the suffix. **Never** name the drill anything that could be confused 
 4. Database name: `anchor-restore-drill-YYYYMMDD-HHMM`.
 5. Region: **same as prod** (avoids cross-region latency in the smoke).
 6. Plan: smallest plan that fits the prod DB size. The drill is short-lived.
-7. Wait for the drill DB to reach "Available". Record start/end timestamps in §10.
+7. Wait for the drill DB to reach "Available". Record start/end timestamps in §11.
 8. Capture the drill `DATABASE_URL` to a local note for §5.3. **Do not** paste it into any shared channel, the evidence file, or a PR description. The evidence file records its *presence*, not its value.
 
 ### 5.2 Provision the drill Web Service (5 min wall-time)
@@ -132,7 +132,7 @@ The drill is deliberately **detached** from production credentials. None of the 
 | `RATE_LIMIT_ENABLED` | `1` | Keep limits live to mirror prod posture. |
 | `RATE_LIMIT_SECRET` | freshly-generated random string | Different from prod. |
 | `INVITE_TOKEN_SALT` | freshly-generated random string | Different from prod. |
-| `ANCHOR_ADMIN_MODE` | `hybrid` | One-time drill exception. Paired with the next env. Documented as drill-only operator override in §10. |
+| `ANCHOR_ADMIN_MODE` | `hybrid` | One-time drill exception. Paired with the next env. Documented as drill-only operator override in §11. |
 | `ANCHOR_ADMIN_TOKEN` | freshly-generated string, **drill-only**, never reused | Lets the RLS verify script authenticate without provisioning DB-tier tokens in the drill. |
 | `ANCHOR_MIGRATION_VERIFY_CHECKSUMS` | `1` (or unset; the first-pass default with `APP_ENV=staging` is off, so set `1` explicitly to exercise the Patch 6 path) | Verification on. This is the test point for §9. |
 | `CORS_ALLOW_ORIGINS` | empty (CORS disabled) or a drill-specific origin | **Must not include the prod portal origin.** |
@@ -175,7 +175,7 @@ Five independent gates ensure no production traffic reaches the drill service:
 
 ## 8. Smoke tests
 
-All commands below are **read-only** from the drill service's perspective. Capture status code, the `X-Request-ID` header, and (where relevant) the `env` / `git_sha` JSON fields into §10. **Do not** capture bearer tokens, the drill DB URL, or env-var values.
+All commands below are **read-only** from the drill service's perspective. Capture status code, the `X-Request-ID` header, and (where relevant) the `env` / `git_sha` JSON fields into §11. **Do not** capture bearer tokens, the drill DB URL, or env-var values.
 
 ### 8.1 Liveness (no auth)
 
@@ -263,7 +263,7 @@ Open the drill service log in Render Dashboard → drill service → Logs. Filte
 - A `startup_migrations_ok` event after the runner completes.
 - **No** `migration.checksum.mismatch` event.
 
-Record into §10 the `applied`, `skipped`, `verified`, and `backfilled` counts from the run summary.
+Record into §11 the `applied`, `skipped`, `verified`, and `backfilled` counts from the run summary.
 
 **If a `migration.checksum.mismatch` fires:**
 
@@ -271,11 +271,115 @@ Record into §10 the `applied`, `skipped`, `verified`, and `backfilled` counts f
 2. **Do not** edit `schema_migrations` on the drill DB. The drill DB is a clone of prod; whatever the drill catches is also present in prod.
 3. **Investigate against git history.** Use `git log --follow -- migrations/<file>` to find every historical version of the affected file, and compare each version's stripped SHA-256 to the stored value (which is the value from prod's `schema_migrations.checksum`).
 4. **Follow the Patch 6B precedent.** Restore the migration file on the active branch to the historical version whose checksum matches prod, then add a *new* forward migration carrying any desired-but-not-applied changes. Do not edit the existing migration in place.
-5. **The drill catching this is itself a valuable outcome** — it surfaces a real doctrine violation before clinic data is involved. Mark the drill INCONCLUSIVE in §10 and link to the remediation PR.
+5. **The drill catching this is itself a valuable outcome** — it surfaces a real doctrine violation before clinic data is involved. Mark the drill INCONCLUSIVE in §11 and link to the remediation PR.
 
 ---
 
-## 10. Evidence template
+## 10. Read-only Render inventory baseline — 2026-06-07
+
+> **Inventory baseline, not a completed restore drill.** The data below was captured by manually inspecting the Render Dashboard. **No Render settings were changed.** No DB query was issued. No Render API was called. No secret value was recorded. The restore drill itself has **not** yet been executed; this section establishes the starting state for the first drill.
+
+### 10.1 Postgres
+
+| Field | Value |
+|---|---|
+| Database service name | `anchor-postgres-prod` |
+| Service ID | `dpg-d60ccuh4tr6s738g7vo0-a` |
+| Plan / instance type | Basic-1gb |
+| RAM / CPU / storage | 1 GB RAM / 0.5 CPU / 15 GB |
+| Status | Available |
+| PostgreSQL version | 16 |
+| Region | Frankfurt (EU Central) |
+| Storage used | 0.71% |
+| Storage autoscaling | Enabled |
+| High availability | Disabled |
+| Database name | `anchor_u0lp` |
+| Runtime username | `anchor_app` |
+| Backup / PITR available | Yes |
+| Recovery window | past 3 days |
+| Manual export option visible | Yes |
+| Manual export retention | at least 7 days |
+| Restore option visible in UI | Yes |
+| Inbound IP restrictions | `0.0.0.0/0` (open) |
+| PostgreSQL 18 upgrade | available — **not part of the current drill** |
+
+### 10.2 Web service
+
+| Field | Value |
+|---|---|
+| Service name | `anchor-api-prod` |
+| Service ID | `srv-d60dn2f8bdcs73f0r2ig` |
+| Runtime | Docker |
+| Plan | Starter |
+| Region | Frankfurt (EU Central) |
+| Repo / branch | `Raducu07/ANCHOR` `main` |
+| Dockerfile path | `./Dockerfile` |
+| Docker build context | repo root |
+| Auto-deploy | Off |
+| Render subdomain | Enabled |
+| Health check path | `/health` |
+| Maintenance mode | Disabled |
+| Current live deployed SHA | `f96d1bc` |
+| Current live deploy message | *"Restore applied migration and add forward RLS reassertion"* |
+| Latest live deploy timestamp | 2026-06-07 10:31 (UTC) |
+
+### 10.3 Workspace / account
+
+| Field | Value |
+|---|---|
+| Workspace plan | Hobby (legacy) |
+| Team members | 1 |
+| Founder role | Admin |
+| 2FA enforcement | Not enforced |
+| Google SSO enforcement | Not enforced |
+| HIPAA compliance | Disabled |
+| Workspace audit logs | require Pro plan or higher |
+| Build pipeline | Starter |
+| Notifications | workspace default; failure notifications only |
+
+### 10.4 Env posture — presence / category only
+
+> No secret values were recorded. Items below indicate presence/category as observed in the Render UI.
+
+| Variable | Status |
+|---|---|
+| `APP_ENV` | `prod` |
+| `DATABASE_URL` | present |
+| `ANCHOR_HASH_SALT` | present |
+| `ANCHOR_JWT_SECRET` | present |
+| `ANCHOR_ADMIN_PEPPER` | present |
+| `ANCHOR_ADMIN_MODE` | `hybrid` |
+| `RATE_LIMIT_SECRET` | present |
+| `ANCHOR_MIGRATION_VERIFY_CHECKSUMS` | enabled (`1`) |
+| `ANCHOR_WORKSPACE_LIVE_GENERATION_ENABLED` | off (`false` / `0`) |
+| `ANTHROPIC_API_KEY` | present |
+| `TRUSTED_HOSTS` | present |
+| `CORS_ALLOW_ORIGINS` | present |
+| Receipt signing vars | present |
+| Rate-limit vars | present |
+| Ops threshold vars | present |
+
+### 10.5 Inventory notes
+
+- **No secret values were recorded** in this baseline. All env rows record presence / category only.
+- **Restore drill has not been executed yet.** This section is the read-only starting state for the first drill; the §11 evidence template remains the canonical place to record a completed drill outcome.
+- **No Render settings were changed during inventory.** All actions were read-only UI inspection.
+- `ANTHROPIC_API_KEY` is **present**. Per `env.md §9`, presence does not enable live generation; the live path is gated on `ANCHOR_WORKSPACE_LIVE_GENERATION_ENABLED`, which is observed off. No doctrine violation here; recorded for the trail.
+
+### 10.6 Follow-up hardening items (not changed in this patch)
+
+These are observations from the inventory that are deliberately **not** acted on as part of Patch 8B. Each is captured so the trail explains why it was seen and left alone.
+
+- **Inbound IP restrictions `0.0.0.0/0`.** Render Postgres connections are still authenticated via `DATABASE_URL`, but tightening the inbound allow-list to Render-internal / known-egress only is a defence-in-depth improvement. **Review later** — do not change in this patch. Treat as a Patch X candidate when the Render team's recommended pattern for internal-only Postgres is confirmed.
+- **`ANCHOR_ADMIN_MODE=hybrid`.** Per Patch 4B doctrine, `hybrid` is allowed in prod only as an explicit, documented operator override; the steady state is `db` (DB-backed platform admin tokens with per-token revocation and audit linkage). Hybrid is in place today as a bootstrap posture. **Migrate later** to DB-tier admin tokens, then either remove the env value (so the prod default of `db` applies) or set it explicitly to `db`. Do not change in this patch.
+- **`ANCHOR_WORKSPACE_LIVE_GENERATION_ENABLED=false`/`0`.** Per `env.md §9` and the live-generation doctrine, the canonical "off" posture is **unset** (no env var present). Observed as explicitly `false`/`0`, which is also off (since `is_live_generation_enabled()` only returns `True` for `{1,true,yes,on}` after strip+lower). **Normalise later** to either a single accepted false value (`0`) or unset entirely, for predictability. Do not change in this patch.
+- **PostgreSQL 16 → 18 upgrade available.** Render offers the upgrade; it is **not part of the current drill**. Schedule when an upgrade window can be paired with a restore-to-new drill so the upgraded version is exercised before any prod cutover. Do not upgrade in this patch.
+- **2FA / Google SSO not enforced at workspace level.** Workspace plan limits this; recorded for awareness, not changed here.
+- **High availability disabled on Postgres.** Acceptable for current pre-pilot posture; revisit when paid pilot / real clinic data is on the horizon. Recorded for awareness.
+
+---
+
+## 11. Evidence template
 
 Copy this template into a new sub-section the day of the drill. Fill placeholders only — never real values.
 
@@ -325,10 +429,10 @@ Copy this template into a new sub-section the day of the drill. Fill placeholder
 
 | Step | Action | Done? |
 |---|---|---|
-| 11.1 | Drill web service deleted | ☐ |
-| 11.2 | Drill DB deleted | ☐ |
-| 11.3 | Local notes containing drill secrets shredded | ☐ |
-| 11.4 | Render Dashboard screenshot showing absence of drill DB and service | ☐ |
+| 12.1 | Drill web service deleted | ☐ |
+| 12.2 | Drill DB deleted | ☐ |
+| 12.3 | Local notes containing drill secrets shredded | ☐ |
+| 12.4 | Render Dashboard screenshot showing absence of drill DB and service | ☐ |
 
 #### Decision
 
@@ -343,25 +447,25 @@ Copy this template into a new sub-section the day of the drill. Fill placeholder
 
 ---
 
-## 11. Teardown procedure
+## 12. Teardown procedure
 
 Order matters: web service first (so it doesn't briefly point at a deleted DB and emit noisy errors), then Postgres.
 
-### 11.1 Delete the drill web service
+### 12.1 Delete the drill web service
 
 1. Render Dashboard → drill service → Settings → Delete Service.
 2. Confirm the name matches `anchor-restore-drill-svc-YYYYMMDD-HHMM`.
 3. Click Delete.
-4. Capture a dashboard screenshot showing the absent service for §10.
+4. Capture a dashboard screenshot showing the absent service for §11.
 
-### 11.2 Delete the drill Postgres database
+### 12.2 Delete the drill Postgres database
 
 1. Render Dashboard → drill DB → Settings → Delete Database.
 2. Confirm the name matches `anchor-restore-drill-YYYYMMDD-HHMM`.
 3. Click Delete.
-4. Capture a dashboard screenshot showing the absent database for §10.
+4. Capture a dashboard screenshot showing the absent database for §11.
 
-### 11.3 Shred local notes containing drill secrets
+### 12.3 Shred local notes containing drill secrets
 
 Delete the local files / clipboard entries containing:
 
@@ -375,9 +479,9 @@ Delete the local files / clipboard entries containing:
 
 None of these may be retained, archived, or pasted into any persistent store after teardown.
 
-### 11.4 What evidence to retain
+### 12.4 What evidence to retain
 
-In §10 sub-section:
+In the per-drill §11 evidence sub-section:
 
 - This runbook reference and the timestamps captured.
 - The smoke results table (status codes and request ids only).
@@ -385,7 +489,7 @@ In §10 sub-section:
 - Teardown confirmation screenshots (Render dashboard chrome only — no env values visible).
 - The decision (PASS / FAIL / INCONCLUSIVE) and the next-drill date.
 
-### 11.5 What must NOT be retained
+### 12.5 What must NOT be retained
 
 - The drill `DATABASE_URL`.
 - The drill `ANCHOR_ADMIN_TOKEN`.
@@ -397,20 +501,20 @@ In §10 sub-section:
 - Any other env value used by the drill service.
 - The pairing of snapshot id and timestamps that could let a reviewer infer prod data volume.
 
-If any of these were captured into a note during the drill, the note is shredded in §11.3 and replaced with `<recorded-locally-then-rotated>` in the evidence file.
+If any of these were captured into a note during the drill, the note is shredded in §12.3 and replaced with `<recorded-locally-then-rotated>` in the evidence file.
 
 ---
 
-## 12. Failure-mode playbook
+## 13. Failure-mode playbook
 
-### 12.1 Snapshot restore fails
+### 13.1 Snapshot restore fails
 
 - **Do not retry** the restore against the prod database under any circumstance.
-- Capture the Render error message into §10 (verbatim, no secrets).
+- Capture the Render error message into §11 (verbatim, no secrets).
 - Escalate to Render support.
-- Mark the drill INCONCLUSIVE in §10 and reschedule.
+- Mark the drill INCONCLUSIVE in §11 and reschedule.
 
-### 12.2 Drill service boot fails
+### 13.2 Drill service boot fails
 
 - Read the drill service `Logs` in Render Dashboard.
 - Look for `startup_failed` events. Likely causes, in order of probability:
@@ -419,57 +523,57 @@ If any of these were captured into a note during the drill, the note is shredded
   - Migration runner fault. Check for `migration.failed` events with the offending filename. Do not edit `schema_migrations`; investigate the file in git.
 - If the boot failure is on `APP_ENV=staging`, the drill DB itself is suspect. If the failure is only on `APP_ENV=prod`, it is an env-value problem on the drill service.
 
-### 12.3 Migration checksum mismatch
+### 13.3 Migration checksum mismatch
 
 See §9 "If a `migration.checksum.mismatch` fires". The drill is paused, the issue is investigated against git history per the Patch 6B precedent, and a remediation PR is opened before any re-drill.
 
-### 12.4 RLS self-test fails
+### 13.4 RLS self-test fails
 
 - A `FAIL` from `scripts/anchor-verify-force-rls.ps1` against the drill means either (a) the restore was incomplete and the RLS metadata did not survive, or (b) the migration runner partially applied during the drill boot and left tables in an intermediate state.
 - **Do not** attempt to "fix" the drill DB by issuing `ALTER TABLE … FORCE ROW LEVEL SECURITY` manually. The drill DB is being deleted; the fix needed is in the runner / migrations, not in the drill DB.
-- Escalate to founder. Mark drill FAIL in §10. Investigate against the migration runner and the legacy / 2026-series RLS migrations (`10014`, `10015`, `10017`).
+- Escalate to founder. Mark drill FAIL in §11. Investigate against the migration runner and the legacy / 2026-series RLS migrations (`10014`, `10015`, `10017`).
 
-### 12.5 Protected route returns 500 instead of 401
+### 13.5 Protected route returns 500 instead of 401
 
 - Indicates that `require_clinic_user` raised on missing context rather than returning the documented 401 — usually a downstream code-path bug.
 - Capture the response body's `request_id`, the `X-Request-ID` header, and the drill service log line at that request_id.
-- Mark drill FAIL in §10. Open a remediation issue against the auth path.
+- Mark drill FAIL in §11. Open a remediation issue against the auth path.
 
-### 12.6 Drill service accidentally receives production traffic
+### 13.6 Drill service accidentally receives production traffic
 
 - The five gates in §7 should make this impossible. If it happens anyway:
-  1. **Immediately delete the drill web service** (§11.1). The drill DB can wait.
+  1. **Immediately delete the drill web service** (§12.1). The drill DB can wait.
   2. Capture log lines showing the offending Host header / referer.
-  3. Mark drill INCONCLUSIVE in §10.
+  3. Mark drill INCONCLUSIVE in §11.
   4. Diagnose how the gate failed (mis-set `TRUSTED_HOSTS`, accidental custom-domain bind, etc.) before re-drilling.
 - The drill service does not have prod's `ANCHOR_JWT_SECRET` or prod's `ANCHOR_ADMIN_PEPPER`, so no prod-issued credential could have authenticated against it. The contamination is therefore traffic-only, not credential-leak.
 
-### 12.7 Drill credentials leaked
+### 13.7 Drill credentials leaked
 
 - Treat as an S1 incident. Open the (planned) `docs/operations/incident_response.md` runbook for the formal flow; until that ships, the immediate actions are:
   1. Disable the drill service so the leaked credentials cannot be used.
   2. Delete the drill DB.
   3. Confirm in the audit that no prod credential was ever in the drill scope (per §6 — drill credentials are always freshly generated and drill-only).
-  4. Document the leak vector in §10 and in a separate retrospective.
+  4. Document the leak vector in §11 and in a separate retrospective.
 - Because drill credentials are single-use and rotated at teardown, a leak windows out at the drill duration — typically under two hours. The risk is still real and must be tracked.
 
 ---
 
-## 13. Cadence
+## 14. Cadence
 
 - **Before the first paid pilot / first real clinic data:** at least one PASS drill within 30 days of pilot kickoff. Re-drill required if more than 90 days have elapsed.
 - **Quarterly** between pilots, while no real clinic data is in production.
 - **Monthly** during any period of active real clinic data, or after a material change to the migration runner (`app/migrate.py`), to migrations `10000`–`10017` or any future RLS / schema migration, or to the production Postgres plan (instance resize, version upgrade, region change).
 - **Always after** a major incident, an executed prune destructive run, or a doctrine-relevant patch (e.g. a future Patch X that changes RLS posture).
 
-Operator schedules the next drill in §10 as part of every drill's evidence sub-section.
+Operator schedules the next drill in the §11 evidence sub-section as part of every completed drill.
 
 ---
 
-## 14. Related docs
+## 15. Related docs
 
 - [`env.md`](./env.md) — Environment variable reference used by §4 and §6.
 - `intake_retention.md` — Operator runbook for `POST /v1/admin/intake/prune`. **Planned**, not yet written. Will reference this drill as one of its prerequisites.
-- `incident_response.md` — Severity ladder, contact flow, first-15-minutes checklist, containment actions, postmortem template. **Planned**, not yet written. Will reference §12 above for backup/restore-specific failure modes.
+- `incident_response.md` — Severity ladder, contact flow, first-15-minutes checklist, containment actions, postmortem template. **Planned**, not yet written. Will reference §13 above for backup/restore-specific failure modes.
 - `../canonical/ANCHOR_Roadmap_v2_6_June_2026_CORRECTED.md` §234 — strategic source of the "tested restore" requirement.
 - `../canonical/ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3.md` §63 — operational gate enumeration.
