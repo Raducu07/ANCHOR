@@ -10,19 +10,30 @@
 --  - Requires app_current_clinic_id() to exist (created in schema.sql)
 --  - Do NOT run from app boot migrations if Render keeps failing
 --
--- 2A-D.1 Patch 4A — HISTORICAL / MANUAL REFERENCE.
+-- 2A-D.1 Patch 4A / 5B — HISTORICAL / MANUAL REFERENCE.
 -- The replayable legacy RLS policy source for the clinic-scoped tables
 -- (clinics, clinic_users, clinic_user_invites, clinic_policies,
 -- clinic_policy_state, clinic_privacy_profile, clinic_governance_events,
 -- ops_metrics_events) now lives in:
 --     migrations/10014_legacy_rls_policies.sql
--- That migration is idempotent and is applied automatically at startup
+-- The admin_audit_events ENABLE + FORCE RLS + tenant policy now lives in:
+--     migrations/10015_admin_audit_events_rls.sql
+-- Both migrations are idempotent and applied automatically at startup
 -- by app/migrate.py. This file is retained for historical reference and
 -- for the `clinics_public` view + `resolve_clinic_id_by_slug` function
 -- + role grants below, which are still applied manually.
--- The `rls_admin_audit_tenant` policy in section 5 below is dead-weight
--- (FORCE RLS is not on admin_audit_events, writes happen outside a
--- clinic context). Cleanup is tracked separately as a follow-up patch.
+--
+-- CORRECTION (Patch 5B, supersedes the Patch 4A note in this header):
+-- The earlier note here described `rls_admin_audit_tenant` as dead-weight.
+-- That was a misreading. `public.admin_audit_events` is CLINIC-scoped
+-- (schema.sql:456 — `clinic_id uuid NOT NULL REFERENCES clinics(...)`).
+-- Every writer reaches the INSERT via Depends(get_db), which sets
+-- app.clinic_id RLS context before the handler body runs, so the policy
+-- in section 5 below is both appropriate and active. Patch 5B promotes
+-- it to a versioned migration and adds FORCE RLS for defence-in-depth.
+-- `public.platform_admin_audit_events` (a separate table with no
+-- clinic_id) remains platform-scoped and intentionally outside clinic
+-- RLS — not touched by either migration.
 -- =========================
 
 -- 1) Safe public view for login (slug + active only)
