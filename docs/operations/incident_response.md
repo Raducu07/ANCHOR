@@ -483,7 +483,7 @@ At least one tabletop drill must be performed **before paid pilot / real clinic 
 5. **Tenant isolation alarm.** Simulate `anchor-verify-force-rls.ps1` reporting one table as `FORCE=False`; walk §8.4 including the "freeze deploys, contain first, diagnose second" discipline.
 6. **Production API outage.** Simulate `/health` returning 503; walk §8.1 including rollback via Render deploy history.
 
-**No tabletop drill has been completed yet.** This runbook does not pre-credit any drill as done.
+**First tabletop drill completed on 2026-06-07** using the migration-checksum-mismatch scenario (§13.2 #1). Result: PASS. See §16 *Tabletop drill evidence*. No real incident was simulated or executed. The remaining suggested tabletop scenarios (§13.2 #2–#6) are still pending.
 
 ### 13.3 Drill evidence
 
@@ -495,7 +495,7 @@ Each tabletop drill produces a §10 post-incident review with `Severity: tableto
 
 - **Runbook created as Patch 10**, 2026-06-07.
 - **No real incident has been simulated or executed** during the creation of this runbook. No production endpoint was called. No database was queried or mutated. No Render setting was changed.
-- **First tabletop drill is pending.** Recommended first scenario: §13.2 #1 (migration checksum mismatch), because the Patch 6 / 6B incident already provides a real precedent the operator can walk without invention.
+- **First tabletop drill completed on 2026-06-07** using the migration-checksum-mismatch scenario (§13.2 #1). Result: PASS. See §16 *Tabletop drill evidence*. **No real incident was simulated or executed.** Recommended next tabletop scenarios: §13.2 #2 (admin token exposure) or §13.2 #3 (accidental live-generation enablement).
 - **This runbook closes the incident-response documentation gate** for the 2A-D.2 operational resilience track. Live operational confidence should be increased by completing at least one tabletop drill before paid pilot / real clinic data.
 - **Remaining operational gates for paid pilot / real clinic data:**
   - Env docs (✅ Patch 7).
@@ -503,7 +503,7 @@ Each tabletop drill produces a §10 post-incident review with `Severity: tableto
   - Intake retention dry-run (✅ Patch 9 / 9B — dry-run 2026-06-07 PASS, all counts 0).
   - Incident-response runbook (✅ this patch).
   - **Legal / commercial pack per Addendum v1.3** (still pending).
-- **First tabletop drill is also pending** and is the suggested next operational action; it is not gated on the legal pack.
+- **First tabletop drill done** (see above and §16). Next tabletop is suggested before paid pilot / real clinic data; it is not gated on the legal pack.
 
 ---
 
@@ -516,3 +516,105 @@ Each tabletop drill produces a §10 post-incident review with `Severity: tableto
 - `../canonical/ANCHOR_Roadmap_v2_6_June_2026_CORRECTED.md` §234 — strategic source of the "operational resilience" RC gate (breach runbook).
 - `../canonical/ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3.md` §63 — operational gate enumeration.
 - `../canonical/ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1_1_COMPLETE.md` §86 / §99 / §140 / §153 — readiness-map themes touching breach response, retention, and audit posture. None of these constitute compliance certification.
+
+---
+
+## 16. Tabletop drill evidence
+
+> **Tabletop drills only.** Records in this section are training / runbook-exercise evidence. They are **not** real incidents. No production endpoint is called, no Render setting is changed, no database is queried or mutated, no code or migration is changed, no secret value is recorded. Each entry walks the runbook against a scenario to confirm the response path is complete and coherent.
+
+### Tabletop drill — 2026-06-07 — Migration checksum mismatch
+
+#### Header
+
+| Field | Value |
+|---|---|
+| Drill type                                       | **Tabletop only.** Not a real incident. |
+| Real incident simulated against production?      | **No** |
+| Production endpoint called?                      | **No** |
+| Render setting changed?                          | **No** |
+| Database queried or mutated?                     | **No** |
+| Code / migration changed?                        | **No** |
+| Drill date (UTC)                                 | 2026-06-07 |
+| Operator                                         | RGG |
+| Scenario                                         | Migration checksum mismatch during production startup |
+| Severity classification (drill assumption)       | SEV-1 by default; **promote to SEV-0 only if tenant isolation or data exposure is suspected** |
+| Primary runbook path used                        | §8.3 Migration checksum mismatch |
+| Related recovery checks                          | §9 Recovery checklist |
+| Related closure criteria                         | §12 Incident closure criteria |
+| Historical precedent (real, already resolved)    | Patch 6 + Patch 6B (`10010_force_rls_all_tenant_tables.sql` restoration, `10017_force_rls_idempotent_reassertion.sql` forward migration). This drill does not re-open or re-execute that event; it uses its pattern. |
+| Final tabletop decision                          | ✅ **PASS** |
+
+#### Scenario narrative
+
+A production deploy or restart fails during startup after the `migration.scan` event because `ANCHOR_MIGRATION_VERIFY_CHECKSUMS=1` detects a mismatch between the SHA-256 stored in `schema_migrations.checksum` for a previously-applied migration file and the SHA-256 computed from that file's current on-disk content. The runner refuses to proceed to normal startup; the boot log carries one `migration.checksum.mismatch` event with the filename, the stored sha256, and the expected sha256 (all metadata). The service does not serve traffic.
+
+The operator's job is to **restore production availability while preserving migration-integrity doctrine** — i.e. without normalising the wrong migration content, without silently disabling the safety net, and without editing `schema_migrations` to make the alert disappear.
+
+#### Expected response path (walked end-to-end)
+
+1. **Classify as SEV-1** (per §3 and §8.3). Promote to SEV-0 only if the mismatched migration touches tenant safety AND there is evidence of cross-tenant exposure during the window where verification was off.
+2. **Do not edit `schema_migrations` as first response.** Editing the stored checksum to match the on-disk content removes the only signal Patch 6 was designed to surface.
+3. **Do not permanently disable checksum verification.** `ANCHOR_MIGRATION_VERIFY_CHECKSUMS=0` is an emergency operator escape hatch only, not a steady-state setting (`env.md §11`, `env.md §14`).
+4. **Capture the mismatch evidence into §11** — exact log line, filename, stored sha256, expected sha256, deploy SHA, UTC timestamp, operator. All metadata; no secret values.
+5. **Freeze further deploys** except a controlled rollback or the eventual restore-and-forward-migration fix. Render auto-deploy is already off (`backup_restore.md §10.2`); confirm.
+6. **If production availability is down and founder approval is recorded**, temporarily set `ANCHOR_MIGRATION_VERIFY_CHECKSUMS=0` as the documented emergency escape hatch only — with the override recorded in §11 and a removal commitment in §10.
+7. **Production smoke after emergency recovery** (from `env.md §13`):
+   - `GET /health` → 200 `{"status":"ok"}`.
+   - `GET /v1/version` → 200, `env=prod`.
+   - `GET /v1/portal/dashboard` no bearer → 401.
+8. **Investigate git history** for the mismatched migration file: `git log --follow -- migrations/<file>` + `git show <commit>:migrations/<file>` for each historical version, hashing each version's stripped content to find the one matching the stored checksum.
+9. **Identify whether an already-applied migration was retroactively edited** (the Patch 6 / 6B precedent shape). If yes → doctrine violation surfaced by the runner working as designed; proceed to (10).
+10. **Doctrine-aligned remediation, part A:** restore the on-disk migration file to the exact historical content whose stripped SHA-256 matches the stored value. Byte-for-byte. Do not "tidy" formatting.
+11. **Doctrine-aligned remediation, part B:** add a *new* forward migration carrying any desired newer / idempotent behaviour. Do not edit historical migrations in place.
+12. **Add / verify tests** pinning the restored migration's checksum (precedent: `tests/test_migration_10010_restoration.py` pins `10010` to its `782cad92…ab4658` applied SHA-256) and scoping the new forward migration (precedent: same test file's checks against `10017`).
+13. **Re-enable checksum verification** — set `ANCHOR_MIGRATION_VERIFY_CHECKSUMS=1` (or remove the temporary override so the prod default of on applies).
+14. **Restart / redeploy** and verify boot logs show `migration.scan` with `checksum_column=true`, `verify_checksums=true`, followed by `startup_migrations_ok`.
+15. **Confirm no `migration.checksum.mismatch` remains** in the post-restore boot logs.
+16. **Record §10 post-incident review and §11 evidence log** for the *real* incident (if this had been one); record **follow-up actions** in §10 *Preventive actions*. For this tabletop, the equivalent record is §16 below.
+
+#### Tabletop results
+
+| Check | Result |
+|---|---|
+| Classification correct (SEV-1 with promotion rule)?         | ✅ PASS |
+| Evidence to capture identified (filename, sha256s, deploy SHA, timestamp, operator)? | ✅ PASS |
+| Emergency containment path identified (temporary `=0` only with founder approval + §11 record + §10 removal commitment)? | ✅ PASS |
+| Doctrine-preserving remediation identified (restore historical content + add forward migration)? | ✅ PASS |
+| Recovery smoke set identified (`/health`, `/v1/version`, `/v1/portal/dashboard` no bearer)? | ✅ PASS |
+| Checksum-verification re-enable requirement identified (do not leave `=0`)? | ✅ PASS |
+| Tenant / RLS impact considered (mismatch on an RLS migration → SEV-0 promotion path)? | ✅ PASS |
+| Secrets / raw content avoided in the response path (only metadata captured)? | ✅ PASS |
+| External communication needed?                              | **No** for tabletop. Conditional for a real incident — would require legal review before any external comm (§6). |
+| Final tabletop result                                       | ✅ **PASS** |
+
+#### What not to do — explicit list (carried from §8.3 and amplified for this scenario)
+
+- ❌ **Do not** update `schema_migrations.checksum` to match the edited on-disk file as a default fix. That hides the doctrine violation rather than resolving it.
+- ❌ **Do not** leave `ANCHOR_MIGRATION_VERIFY_CHECKSUMS=0` permanently. Temporary only. Track a removal commitment in §10 from the moment the override is set.
+- ❌ **Do not** edit historical migrations in place. Restore-then-add-forward is the only doctrine-aligned path.
+- ❌ **Do not** delete `schema_migrations` rows to "reset" the applied state.
+- ❌ **Do not** run broad migrations blindly (e.g. `alembic downgrade base` style — and ANCHOR does not use Alembic at runtime regardless).
+- ❌ **Do not** paste `DATABASE_URL`, admin tokens, JWT secrets, hash salt, admin pepper, rate-limit secret, invite-token salt, or Render env values into the incident or tabletop evidence.
+- ❌ **Do not** claim compliance, certification, RCVS approval, regulator endorsement, or guaranteed protection in any tabletop artefact, comm, or post-mortem.
+- ❌ **Do not** promote a tabletop record into a real-incident record. Tabletops never appear in §10 / §11 unless a *real* incident emerged from running the drill (which is itself worth documenting).
+
+#### Tabletop evidence log
+
+> Append-only. Tabletop entries only; no real-incident rows.
+
+| UTC time     | Actor | Action / observation                                                                                                            | Evidence reference                              | Secret-safe? | Follow-up |
+|---|---|---|---|---|---|
+| 2026-06-07   | RGG   | Operator reviewed §8.3 Migration checksum mismatch playbook end-to-end.                                                          | `incident_response.md §8.3`                     | yes          | n/a |
+| 2026-06-07   | RGG   | Operator classified the tabletop scenario as **SEV-1** with the SEV-0 promotion path noted (tenant safety / data exposure).      | `incident_response.md §3` + §8.3                | yes          | n/a |
+| 2026-06-07   | RGG   | Operator identified the temporary `ANCHOR_MIGRATION_VERIFY_CHECKSUMS=0` availability escape hatch as **founder-approved and time-limited only**, with a §11 record and §10 removal commitment. | `env.md §11`, `env.md §14`, `incident_response.md §8.3` | yes          | n/a |
+| 2026-06-07   | RGG   | Operator identified doctrine-aligned remediation: **restore applied migration content + add forward migration**. Patch 6 / 6B confirmed as canonical precedent (file at `migrations/10010_force_rls_all_tenant_tables.sql`; forward migration at `migrations/10017_force_rls_idempotent_reassertion.sql`). | Patch 6 / 6B; `tests/test_migration_10010_restoration.py`; `tests/test_migration_checksum_verification.py` | yes          | n/a |
+| 2026-06-07   | RGG   | Operator identified recovery smoke set (`/health`, `/v1/version` env=prod, `/v1/portal/dashboard` no bearer → 401) and the checksum-verification re-enable requirement before incident closure. | `incident_response.md §9` + `env.md §13`        | yes          | n/a |
+| 2026-06-07   | RGG   | **Tabletop marked PASS.** No production action taken. No real incident simulated. No secret recorded. No code, migration, test, script, or env value changed.                                          | this §16 sub-section                            | yes          | none |
+
+#### Follow-up items
+
+- Optional: schedule the **second tabletop scenario** for §13.2 #2 (admin token exposure) or §13.2 #3 (accidental live-generation enablement).
+- Optional: create `docs/operations/security_audits/` once repeated incident / tabletop evidence grows past comfort in this file.
+- Optional: add an `env.md` cross-reference to the canonical admin-header names (`X-ANCHOR-ADMIN-TOKEN`, `Authorization: Bearer`) and to §8.3 of this runbook, if useful for future operators. Worth pairing with the §10.6 follow-up hardening items already tracked in `backup_restore.md`.
+- **No immediate code change** is required from this tabletop. The runbook response path is coherent against the existing Patch 6 / 6B implementation; the test coverage in `tests/test_migration_checksum_verification.py` and `tests/test_migration_10010_restoration.py` already pins the doctrine-aligned behaviour.
