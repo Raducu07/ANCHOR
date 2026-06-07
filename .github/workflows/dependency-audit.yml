@@ -1,32 +1,10 @@
 ﻿name: Anchor Dependency Audit (pip-audit)
 
-# 2A-D.2 Patch 11B-a2 - reproducible CVE scan path.
-#
-# Background:
-# - Patch 11A snapshotted the backend dependency surface and found the CVE
-#   half of the question unanswered (pip-audit not installed locally).
-# - Patch 11B-a installed pip-audit on the operator workstation, but both
-#   the PyPI advisory and OSV scans failed with a workstation-side TLS
-#   certificate verification error
-#   (SSLCertVerificationError "unable to get local issuer certificate").
-# - Patch 11B-a2 introduces this workflow so the scan can be run from a
-#   clean GitHub-hosted runner with a current TLS trust store, producing
-#   a reproducible PASS / FINDINGS / INCONCLUSIVE result.
-#
-# Posture for this first pass:
-# - workflow_dispatch only. NOT scheduled. NOT triggered by push or PR.
-#   The operator runs it manually from the Actions tab and captures the
-#   result in a new dated artefact under docs/operations/security_audits/.
-# - Not a required gate. A failure here does not block deploys yet.
-# - Does not modify project dependencies. Does not edit requirements.txt.
-# - Does not call any ANCHOR endpoint or touch the database.
-#
-# A future patch (11B-a3 or similar) may flip this to scheduled (weekly)
-# and/or required-on-PR once the first manual run has produced a clean
-# baseline artefact.
-
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/dependency-audit.yml"
 
 permissions:
   contents: read
@@ -45,11 +23,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python (match Render runtime)
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          # Matches the Render Dockerfile base image (python:3.11-slim)
-          # so the resolved tree is closer to what production installs.
           python-version: "3.11"
 
       - name: Show environment
@@ -58,18 +34,12 @@ jobs:
           python -m pip --version
           git rev-parse --short=12 HEAD
 
-      - name: Install pip-audit (no project dependencies installed)
+      - name: Install pip-audit
         run: |
           python -m pip install --upgrade pip
           python -m pip install pip-audit
           python -m pip_audit --version
 
       - name: Run pip-audit against requirements.txt
-        # `-r requirements.txt` audits the declared dependency surface
-        # without installing project deps into the runner's environment.
-        # Default vulnerability source is PyPI; --vulnerability-service osv
-        # is left commented for a future fallback pass if needed.
         run: |
           python -m pip_audit -r requirements.txt
-
-
