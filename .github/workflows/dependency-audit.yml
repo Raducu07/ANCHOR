@@ -1,6 +1,6 @@
-name: Anchor Dependency Audit (pip-audit)
+﻿name: Anchor Dependency Audit (pip-audit)
 
-# 2A-D.2 Patch 11B-a2 — reproducible CVE scan path.
+# 2A-D.2 Patch 11B-a2 - reproducible CVE scan path.
 #
 # Background:
 # - Patch 11A snapshotted the backend dependency surface and found the CVE
@@ -26,7 +26,7 @@ name: Anchor Dependency Audit (pip-audit)
 # baseline artefact.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -71,3 +71,4 @@ jobs:
         # is left commented for a future fallback pass if needed.
         run: |
           python -m pip_audit -r requirements.txt
+
