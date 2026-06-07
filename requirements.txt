@@ -3,7 +3,7 @@ uvicorn
 psycopg[binary]
 sqlalchemy[psycopg]
 alembic
-PyJWT==2.8.0
+PyJWT==2.13.0
 
 pydantic[email]==2.6.4
 argon2-cffi
