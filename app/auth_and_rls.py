@@ -306,10 +306,16 @@ def _resolve_clinic_id_by_slug(db: Session, slug: str) -> str:
 
     Preferred path (new): public.clinic_slug_lookup (unscoped mapping)
     Fallback path (legacy): SECURITY DEFINER function resolve_clinic_id_by_slug
+
+    2A-D.1 Patch 5A (F-3): on resolution failure, raise the same
+    `invalid_credentials` 401 detail used by the bad-email / bad-password
+    paths in `clinic_login`. A differential string (e.g. "unknown_clinic"
+    vs "invalid_credentials") would let a probe enumerate which clinic
+    slugs exist on the platform.
     """
     slug = (slug or "").strip().lower()
     if not slug:
-        raise HTTPException(status_code=401, detail="invalid credentials")
+        raise HTTPException(status_code=401, detail="invalid_credentials")
 
     # 1) Prefer clinic_slug_lookup table if present
     try:
@@ -342,7 +348,7 @@ def _resolve_clinic_id_by_slug(db: Session, slug: str) -> str:
 
     cid2 = str(row2["clinic_id"] or "") if row2 else ""
     if not cid2:
-        raise HTTPException(status_code=401, detail="invalid credentials")
+        raise HTTPException(status_code=401, detail="invalid_credentials")
 
     return _coerce_uuid(cid2, field="clinic_id")
 
