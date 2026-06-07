@@ -8,7 +8,7 @@ These documents do **not** grant compliance, certification, RCVS approval, regul
 
 - [`env.md`](./env.md) — Backend environment variable reference. Categories (required / functional / tuning / bootstrap / danger), startup fail-closed behaviour, smoke commands, stop conditions.
 - [`backup_restore.md`](./backup_restore.md) — Render Postgres restore-to-new drill runbook. Inventory checklist, restore procedure, drill env table, smoke set, migration-checksum evidence, teardown, failure-mode playbook, cadence, and a per-drill evidence template. Drills are operator-driven; the runbook is in place, the first restore-to-new drill was executed on 2026-06-07 and passed; future drills follow the cadence in the runbook.
-- [`intake_retention.md`](./intake_retention.md) — Operator runbook for `POST /v1/admin/intake/prune`. Data boundary, endpoint contract, recommended retention defaults (90 / 365 / 365), pre-run checklist, dry-run procedure, dry-run evidence template, destructive procedure (founder-approval-gated, confirm literal `I-UNDERSTAND`), destructive evidence template, failure-mode playbook, cadence, first-run plan. Dry-run pending; no destructive prune has been executed.
+- [`intake_retention.md`](./intake_retention.md) — Operator runbook for `POST /v1/admin/intake/prune`. Data boundary, endpoint contract, recommended retention defaults (90 / 365 / 365), pre-run checklist, dry-run procedure, dry-run evidence template, destructive procedure (founder-approval-gated, confirm literal `I-UNDERSTAND`), destructive evidence template, failure-mode playbook, cadence, first-run plan. First production dry-run executed on 2026-06-07 and passed; no destructive prune has been executed.
 
 ## Planned
 

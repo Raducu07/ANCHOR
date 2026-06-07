@@ -34,7 +34,7 @@ It exists so an operator can **age public-contact PII and visitor free text** ou
   - **retention-aware** (this runbook);
   - **evidence-captured** (every prune call writes an `admin.intake.prune*` row to `platform_admin_audit_events`; this runbook additionally captures operator-side decisions).
 - **No claims** of GDPR compliance, RCVS approval, certification, regulator endorsement, or guaranteed protection are made in this runbook or in any artefact it produces. ANCHOR is aligned to RCVS principles and EU AI Act articles where it can be; it is not compliant with them.
-- **No real clinic data / paid pilot** until: backup/restore drill complete (✅ first drill executed 2026-06-07 — see `backup_restore.md §11`), retention prune procedure documented and a first **dry-run** executed (this runbook; first dry-run still pending), incident-response runbook in place (planned), `env.md` adopted as the deploy reference (✅), and the legal/commercial pack referenced in Addendum v1.3 complete.
+- **No real clinic data / paid pilot** until: backup/restore drill complete (✅ first drill executed 2026-06-07 — see `backup_restore.md §11`), retention prune procedure documented and a first **dry-run** executed (✅ first production dry-run executed 2026-06-07 and passed — see §7 *Dry-run — 2026-06-07*; no destructive prune executed; destructive prune not required at this time because all eligible counts were zero), incident-response runbook in place (planned), `env.md` adopted as the deploy reference (✅), and the legal/commercial pack referenced in Addendum v1.3 complete.
 
 ---
 
@@ -225,6 +225,54 @@ Copy this block into a new sub-section the day of the dry-run. Fill placeholders
 <short free-form note — no secrets, no raw row content>
 ```
 
+### Dry-run — 2026-06-07
+
+> **First production dry-run — PASS.** No destructive prune was executed. **Confirm literal was not used.** All three eligible counts returned **0**, so no destructive call is required at this time. No secret values are recorded below.
+
+| Field | Value |
+|---|---|
+| Dry-run date (UTC)            | 2026-06-07 |
+| Operator                      | RGG |
+| Endpoint base                 | `https://anchor-api-prod.onrender.com` |
+| Endpoint                      | `POST /v1/admin/intake/prune` |
+| Mode                          | `dry_run` only |
+| Authentication                | Admin token used privately; **no token recorded** anywhere in this evidence |
+| Header used                   | `Authorization: Bearer <admin-token>` (canonical alternative to `X-ANCHOR-ADMIN-TOKEN`) |
+| Backup/restore drill ref      | `backup_restore.md §11 Drill — 2026-06-07` (PASS) |
+| Destructive prune executed?   | **No** |
+| Confirm literal used?         | **No** |
+| Rows deleted                  | 0 |
+
+#### Calls executed
+
+| Call | kind  | older_than_days | dry_run | response status | `outcome` | `cutoff_utc`                       | counts             | `cap` | result |
+|------|-------|-----------------|---------|-----------------|-----------|-------------------------------------|--------------------|-------|--------|
+| 1    | chat  | 90              | true    | 200             | `dry_run` | `2026-03-09T14:39:55.081685+00:00`  | `{"chat": 0}`      | 50000 | ✅ PASS |
+| 2    | demo  | 365             | true    | 200             | `dry_run` | `2025-06-07T14:41:33.026176+00:00`  | `{"demo": 0}`      | 50000 | ✅ PASS |
+| 3    | start | 365             | true    | 200             | `dry_run` | `2025-06-07T14:41:39.747518+00:00`  | `{"start": 0}`     | 50000 | ✅ PASS |
+
+The optional combined `kind = "all"` sanity check (§6) was **not** executed because the three per-kind counts were already zero. The §11 secret-hygiene teardown was performed at the end of the session.
+
+#### Combined view
+
+- Per-kind eligible counts vs the 50 000-row cap: every count = 0 / 50 000. Cap not in play.
+- Any per-kind count > 50 000 alone? **No.** Cap discipline confirmed not triggered.
+- Combined eligible total: **0 rows**.
+
+#### Decision
+
+- ☑ **Proceed: no destructive call required at this time.** Per §8, a destructive call is appropriate only when there are eligible rows to delete; with zero counts there is nothing to do. Continue with the §12 monthly dry-run cadence.
+- ☐ Hold.
+- ☐ Adjust retention values before next dry-run.
+
+#### Notes
+
+- **Header-name correction for the record.** The first three attempts returned `401` because they used the non-canonical header name `X-Admin-Token`. Per `app/admin_auth.py`, the accepted forms are `X-ANCHOR-ADMIN-TOKEN` and `Authorization: Bearer <token>`. The successful calls used the `Authorization: Bearer` form. **No prune logic ran during the 401 attempts** — `require_admin` rejected the requests before reaching the prune handler, and the per-call `admin.intake.prune*` audit events were therefore not written for those failed attempts. Future operators: paste the canonical header name from `env.md §6` and the §6 PowerShell example, not a guessed variant.
+- Successful calls used a production admin token held only in the local PowerShell environment for the duration of the session. No token plaintext, no `DATABASE_URL`, no other secret value appears in this evidence sub-section. Per §11, the token was removed from `$Env:ANCHOR_ADMIN_TOKEN` after the session.
+- No raw intake row content was inspected or recorded. Only counts, statuses, and `cutoff_utc` strings are captured above.
+- Next dry-run due per §12 cadence (monthly pre-pilot — target ~2026-07-07).
+- Doctrine preserved end-to-end: public intake remains outside the clinic-governance metadata-only perimeter; admin-token gating held; rate-limit posture unchanged; no destructive action taken; no compliance / certification / regulator-approval claim made.
+
 ---
 
 ## 8. Destructive prune procedure
@@ -407,19 +455,19 @@ If at any point the token was committed, pasted into a shared channel, or otherw
 
 ## 13. First-run plan
 
-The next action after this runbook is committed is a **dry-run only**. No destructive call until the dry-run results are reviewed and founder approval is recorded.
+**Status as of 2026-06-07: complete.** The first production dry-run was executed on **2026-06-07** and **passed** — see §7 *Dry-run — 2026-06-07*. **No destructive prune was executed**, and **destructive prune is not required at this time** because all three eligible counts (`chat`, `demo`, `start`) returned **0**.
 
-Suggested first dry-run sequence (per §6):
+The historical first-run plan is retained below for the next operator's reference. The next planned action is now a follow-up dry-run on the §12 cadence (monthly pre-pilot), not a destructive call.
 
-1. `kind = "chat"`,  `older_than_days = 90`,  `dry_run = true`.
-2. `kind = "demo"`,  `older_than_days = 365`, `dry_run = true`.
-3. `kind = "start"`, `older_than_days = 365`, `dry_run = true`.
+Original first-run sequence (executed on 2026-06-07):
 
-Optional follow-up (sanity check only):
+1. `kind = "chat"`,  `older_than_days = 90`,  `dry_run = true`.  → executed, count `0`, PASS.
+2. `kind = "demo"`,  `older_than_days = 365`, `dry_run = true`.  → executed, count `0`, PASS.
+3. `kind = "start"`, `older_than_days = 365`, `dry_run = true`.  → executed, count `0`, PASS.
 
-4. `kind = "all"`, `older_than_days = 365`, `dry_run = true`.
+Optional follow-up (sanity check only) — `kind = "all"`, `older_than_days = 365`, `dry_run = true` — was not executed for this first run because the three per-kind counts were already zero. Future operators may include or skip the `all` call by the same logic.
 
-Record results in a new §7 evidence sub-section dated the day of the dry-run. **Do not** proceed to a destructive call from the same operator session — review the dry-run, get founder approval, and treat the destructive call as a separate, deliberate action.
+**No destructive call** has been issued. Per §8, a destructive call must not be initiated from the same operator session as a dry-run, must be preceded by a fresh dry-run with the same `kind` + `older_than_days`, and requires recorded founder approval. None of those conditions is in play because there are no rows eligible to delete.
 
 ---
 
