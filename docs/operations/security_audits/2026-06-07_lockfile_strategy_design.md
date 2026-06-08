@@ -402,4 +402,3 @@ This artefact preserves the ANCHOR doctrine: governance-first, metadata-only by 
 
 The implementation patch (11B-b2) lands separately, with its own evidence artefact in this directory.
 
-
