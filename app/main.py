@@ -412,7 +412,7 @@ def version():
     return {
         "name": "ANCHOR API",
         "env": get_app_env(),
-        "git_sha": os.getenv("GIT_SHA", None),
+        "git_sha": os.getenv("GIT_SHA") or os.getenv("RENDER_GIT_COMMIT"),
         "build": os.getenv("BUILD_ID", None),
         "now_utc": utc_iso(),
     }
