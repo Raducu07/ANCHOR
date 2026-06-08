@@ -1,11 +1,11 @@
-fastapi
+fastapi==0.133.1
 uvicorn
 psycopg[binary]
 sqlalchemy[psycopg]
 alembic
 PyJWT==2.13.0
 
-pydantic[email]==2.6.4
+pydantic[email]==2.7.4
 argon2-cffi
 
 # Test dependency: required by fastapi.testclient (Starlette TestClient).

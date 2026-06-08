@@ -452,4 +452,6 @@ def test_app_route_count_unchanged_by_output_enrichment() -> None:
     os.environ.setdefault("RATE_LIMIT_ENABLED", "0")
     os.environ.setdefault("ANCHOR_JWT_SECRET", "test")
     from app.main import app
-    assert len(app.routes) == 125
+    # 2A-D.2 Patch 11D-b: bumped 125 → 126 for the FastAPI 0.125 → 0.133
+    # framework upgrade (one additional framework-internal route).
+    assert len(app.routes) == 126

@@ -489,10 +489,12 @@ class _PermissiveFakeDB:
 
 def test_app_route_count_unchanged_by_trust_delta() -> None:
     """Trust integration must add no HTTP endpoints. Route count
-    stays at 125 after 2A-5.3."""
+    stays at 126 after 2A-5.3 + the Patch 11D-b FastAPI 0.133.1 upgrade."""
     import os
     os.environ.setdefault("DATABASE_URL", "postgresql://x:y@localhost:5432/z")
     os.environ.setdefault("RATE_LIMIT_ENABLED", "0")
     os.environ.setdefault("ANCHOR_JWT_SECRET", "test")
     from app.main import app
-    assert len(app.routes) == 125
+    # 2A-D.2 Patch 11D-b: bumped 125 → 126 for the FastAPI 0.125 → 0.133
+    # framework upgrade (one additional framework-internal route).
+    assert len(app.routes) == 126

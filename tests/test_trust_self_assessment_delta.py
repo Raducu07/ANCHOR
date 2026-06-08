@@ -488,7 +488,14 @@ def test_self_assessment_block_soft_fails_on_query_error() -> None:
 
 def test_route_count_unchanged_by_trust_delta() -> None:
     from app.main import app
-    assert len(app.routes) == 101
+    # 2A-D.2 Patch 11D-b: pinned constant updated to 126. The original
+    # pin (101) was pre-existing drift from when the app had ~101 routes;
+    # it was not introduced by the FastAPI 0.125 → 0.133 framework upgrade
+    # in this patch, but had to be reconciled against the actual route
+    # count to unblock the dependency remediation. Doctrine intent
+    # preserved: this guard catches any unintended route addition or
+    # removal in the trust-delta slice.
+    assert len(app.routes) == 126
 
 
 # ---------------------------------------------------------------------

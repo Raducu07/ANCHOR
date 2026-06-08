@@ -505,8 +505,17 @@ def test_portal_assist_response_model_has_additive_fields() -> None:
 def test_app_route_count_unchanged_after_orchestrator_wiring() -> None:
     from app.main import app
 
-    assert len(app.routes) == 125, (
-        "2A-C.5C must not add or remove any route"
+    # 2A-D.2 Patch 11D-b: bumped the pinned count from 125 → 126 to absorb
+    # the FastAPI 0.125 → 0.133 framework upgrade that introduced one
+    # additional framework-internal route (visible in app.routes alongside
+    # `/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc`). The
+    # original intent of this guard — "2A-C.5C must not add or remove any
+    # application route" — is preserved; the count is shifted by exactly
+    # the number of framework-internal routes added by the upgrade.
+    assert len(app.routes) == 126, (
+        "2A-C.5C must not add or remove any application route "
+        "(count includes FastAPI framework-internal routes; "
+        "bumped to 126 by Patch 11D-b for the FastAPI 0.133.1 upgrade)"
     )
 
 

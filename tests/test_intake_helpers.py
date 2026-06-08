@@ -23,9 +23,23 @@ def test_redact_contact_details_marks_email_and_phone() -> None:
 
 
 def test_public_site_chat_event_caps_question_length() -> None:
-    model = PublicSiteChatEventCreate(question_text="x" * (MAX_CHAT_QUESTION_LENGTH + 20))
+    # 2A-D.2 Patch 11D-b: under the post-Patch-3 schema, `question_text` is
+    # capped at `MAX_CHAT_QUESTION_LENGTH=500` at the Pydantic field level
+    # (Field(..., min_length=1, max_length=MAX_CHAT_QUESTION_LENGTH) in
+    # `PublicSiteChatEventCreate`). Over-cap input is rejected at the wire
+    # (HTTP 422 in the route; ValidationError when constructed directly),
+    # NOT silently clamped — this is the deliberate Patch 3 tightening so
+    # the schema and the DB CHECK on `public_site_chat_events.question_text`
+    # agree. Exactly-cap input continues to validate cleanly.
+    with pytest.raises(ValidationError):
+        PublicSiteChatEventCreate(
+            question_text="x" * (MAX_CHAT_QUESTION_LENGTH + 20)
+        )
 
-    assert len(model.question_text) == MAX_CHAT_QUESTION_LENGTH
+    at_cap = PublicSiteChatEventCreate(
+        question_text="x" * MAX_CHAT_QUESTION_LENGTH
+    )
+    assert len(at_cap.question_text) == MAX_CHAT_QUESTION_LENGTH
 
 
 def test_demo_request_requires_consent_and_accepts_honeypot_alias() -> None:
