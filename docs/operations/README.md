@@ -19,6 +19,10 @@ To be added as the 2A-D.2 operational resilience track lands. None of these exis
 
 *(All Patch 7–10B docs are now Current; the next planned operational artefact is the Patch 11B follow-up — see the dependency/CVE audit for the recommended split.)*
 
+## Founder-facing summary
+
+- [`2026-06-08_founder_status_summary.md`](./2026-06-08_founder_status_summary.md) — **Plain-English founder status summary.** Explains the operational-resilience checkpoint in plain English: where ANCHOR stands now, what was materially improved, what this does not mean, current hard stop conditions (no live Workspace generation in production, no real clinic data, no paid pilots, no compliance / certification / RCVS-approval / regulator-endorsement claims, no destructive retention outside the approved runbook, no bypassing backup / incident-response / retention procedures, no clinical decision-making AI positioning), and what is still open (optional engineering hygiene, useful operational evidence drills, and the required commercial / legal readiness pack per Addendum v1.3). Recommended next move: pause engineering briefly, complete the legal/commercial pack outline, then choose one optional engineering hygiene patch / one operational drill / founder-pilot readiness planning. **Documentation only** — no code, dependency, deploy, DB, Render, or secret change. Does not authorise paid pilot / real clinic data; does not claim ANCHOR is secure, compliant, certified, vulnerability-free, RCVS-approved, or regulator-endorsed.
+
 ## Doctrine pointers
 
 For non-operational questions, the operative canon lives elsewhere:
