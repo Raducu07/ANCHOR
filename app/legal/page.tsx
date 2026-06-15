@@ -22,6 +22,16 @@ export default function LegalCentrePage() {
       title: "Legal Version History",
       subtitle: "Version, status, and contractual state of each draft legal page.",
     },
+    {
+      href: "/trust-center",
+      title: "Trust Centre",
+      subtitle: "Procurement-facing overview that brings the legal, security, privacy, and AI-governance materials together.",
+    },
+    {
+      href: "/security/vulnerability-disclosure",
+      title: "Vulnerability Disclosure",
+      subtitle: "A responsible route for good-faith security reports.",
+    },
   ];
 
   return (
@@ -42,22 +52,24 @@ export default function LegalCentrePage() {
             <LegalCardGrid items={cardItems} />
           </div>
 
-          <div className="mt-12 rounded-xl border border-slate-200 bg-white p-6">
-            <h2 className="text-base font-semibold text-slate-900">Planned pages</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">
-              These pages are planned and not yet published. They will be added as drafting and review progress.
-            </p>
-            <ul className="mt-4 flex flex-wrap gap-2">
-              {PLANNED_LEGAL_PAGES.map((label) => (
-                <li
-                  key={label}
-                  className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-500"
-                >
-                  {label}
-                </li>
-              ))}
-            </ul>
-          </div>
+          {PLANNED_LEGAL_PAGES.length > 0 ? (
+            <div className="mt-12 rounded-xl border border-slate-200 bg-white p-6">
+              <h2 className="text-base font-semibold text-slate-900">Planned pages</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                These pages are planned and not yet published. They will be added as drafting and review progress.
+              </p>
+              <ul className="mt-4 flex flex-wrap gap-2">
+                {PLANNED_LEGAL_PAGES.map((label) => (
+                  <li
+                    key={label}
+                    className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-500"
+                  >
+                    {label}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Important notice</p>

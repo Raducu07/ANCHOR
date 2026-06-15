@@ -36,10 +36,9 @@ export const LEGAL_NON_CLAIM_NOTICE =
   "ANCHOR helps clinics evidence responsible AI governance practices. It does not make a clinic compliant with any law or professional standard, and it does not replace veterinary judgement. These pages are prepared for transparency and solicitor review and are not legal advice.";
 
 // Slice 1 pages planned but not yet published (shown as non-links on the index).
-export const PLANNED_LEGAL_PAGES: string[] = [
-  "Vulnerability Disclosure",
-  "Trust Centre",
-];
+// All Slice 1 pages are now published; this list is empty and the index hides
+// the "Planned pages" block when it is empty.
+export const PLANNED_LEGAL_PAGES: string[] = [];
 
 const COMMON_VERSION = "v0.1 (draft)";
 const COMMON_STATUS = "Draft";

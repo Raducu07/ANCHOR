@@ -95,6 +95,12 @@ export function MarketingShell({
                 <Link className="transition-colors hover:text-slate-950" href="/legal/versions">
                   Version History
                 </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/trust-center">
+                  Trust Centre
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/security/vulnerability-disclosure">
+                  Vulnerability Disclosure
+                </Link>
               </div>
             </nav>
           </div>
