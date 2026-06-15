@@ -299,6 +299,12 @@ const LEGAL_PAGES: Record<string, LegalPage> = {
           "Liability, limitation, and other operative contract terms are not set out here as a final legal position. They will be addressed in the legal and commercial pack and confirmed through solicitor review before any agreement is offered.",
         ],
       },
+      {
+        heading: "Legal and commercial document enquiries",
+        body: [
+          "Legal and commercial document enquiries may be sent to legal@anchorvet.co.uk. This mailbox forwards to and is monitored by the founder; it is a contact route only and does not provide legal advice. Signed agreements and solicitor-reviewed documents control.",
+        ],
+      },
     ],
     related: [
       { href: "/legal/customer-responsibilities", label: "Customer Responsibilities" },
@@ -353,6 +359,12 @@ const LEGAL_PAGES: Record<string, LegalPage> = {
         heading: "Roles and documentation",
         body: [
           "Final controller and processor positions are subject to the legal documents and solicitor review. International-transfer and subprocessor positions are not confirmed here and must be set out in the data-processing and subprocessor documentation before any paid pilot or real clinic data.",
+        ],
+      },
+      {
+        heading: "Privacy and data-protection contact",
+        body: [
+          "Privacy and data-protection questions may be sent to privacy@anchorvet.co.uk. This mailbox forwards to and is monitored by the founder; it is a contact route, not a Data Protection Officer appointment. Please do not send raw clinic, client, or patient data unless an authorised agreement and product flow permit it.",
         ],
       },
     ],
