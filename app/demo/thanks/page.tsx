@@ -16,7 +16,7 @@ export const metadata: Metadata = {
 const nextSteps = [
   "We review your request",
   "We contact you to arrange a walkthrough",
-  "We show the governed workflow, trust surfaces, and onboarding path",
+  "We show the governed workflow, trust surfaces, and appropriate next step",
 ] as const;
 
 export default function DemoThanksPage() {
@@ -27,7 +27,7 @@ export default function DemoThanksPage() {
           <SectionHeading
             title="Thanks — your request has been received"
             body={`We’ve received your walkthrough request and will review it shortly.
-We’ll usually reply within one working day to arrange a walkthrough and understand your clinic’s use case.`}
+We aim to review walkthrough requests within one working day and will then arrange an appropriate next step.`}
             align="center"
           />
 
