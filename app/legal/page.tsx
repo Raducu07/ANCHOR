@@ -18,7 +18,7 @@ export default function LegalCentrePage() {
   }));
 
   return (
-    <MarketingShell>
+    <MarketingShell showAssistant={false}>
       <div className="px-4 py-16 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-5xl">
           <p className="mb-3 text-sm font-bold uppercase tracking-[0.2em] text-slate-500">Legal &amp; Trust</p>

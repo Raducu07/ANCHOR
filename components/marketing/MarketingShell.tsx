@@ -6,14 +6,16 @@ export function MarketingShell({
   children,
   primaryCtaHref = "/#workflow",
   primaryCtaLabel = "See the workflow",
+  showAssistant = true,
 }: {
   children: ReactNode;
   primaryCtaHref?: string;
   primaryCtaLabel?: string;
+  showAssistant?: boolean;
 }) {
   return (
     <main className="min-h-screen bg-slate-50 text-slate-800">
-      <header className="fixed inset-x-0 top-0 z-50 border-b border-slate-200 bg-white/90 backdrop-blur-md">
+      <header className="fixed inset-x-0 top-0 z-50 border-b border-slate-200 bg-white/90 backdrop-blur-md print:static">
         <div className="mx-auto flex h-20 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
           <Link href="/" className="text-2xl font-extrabold tracking-tight text-slate-950">
             ANCHOR
@@ -45,7 +47,7 @@ export function MarketingShell({
         </div>
       </header>
 
-      <div className="pt-20">{children}</div>
+      <div className="pt-20 print:pt-0">{children}</div>
 
       <footer className="border-t border-slate-200 bg-slate-50 px-4 py-12 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-7xl">
@@ -78,7 +80,7 @@ export function MarketingShell({
         </div>
       </footer>
 
-      <AnchorAssistant />
+      {showAssistant ? <AnchorAssistant /> : null}
     </main>
   );
 }

@@ -22,7 +22,7 @@ const backLinkClass = "text-sm font-medium text-slate-500 transition-colors hove
 
 export function LegalPageShell({ title, subtitle, meta, children }: LegalPageShellProps) {
   return (
-    <MarketingShell>
+    <MarketingShell showAssistant={false}>
       <div className="px-4 py-16 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-3xl">
           <Link href="/legal" className={backLinkClass}>
