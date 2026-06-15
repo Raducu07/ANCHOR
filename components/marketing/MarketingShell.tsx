@@ -48,9 +48,34 @@ export function MarketingShell({
       <div className="pt-20">{children}</div>
 
       <footer className="border-t border-slate-200 bg-slate-50 px-4 py-12 sm:px-6 lg:px-8">
-        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-6 md:flex-row">
-          <div className="text-xl font-bold tracking-tight text-slate-950">ANCHOR</div>
-          <div className="text-sm text-slate-500">Copyright 2026 ANCHOR Veterinary Governance. All rights reserved.</div></div>
+        <div className="mx-auto max-w-7xl">
+          <div className="flex flex-col gap-8 md:flex-row md:items-start md:justify-between">
+            <div className="text-xl font-bold tracking-tight text-slate-950">ANCHOR</div>
+            <nav aria-label="Legal and trust" className="flex flex-col gap-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Legal &amp; Trust</p>
+              <div className="flex flex-col gap-2 text-sm text-slate-600 sm:flex-row sm:flex-wrap sm:gap-x-6 sm:gap-y-2">
+                <Link className="transition-colors hover:text-slate-950" href="/legal">
+                  Legal Centre
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/ai-governance-boundary">
+                  AI Governance Boundary
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/ai-data-use">
+                  AI Data Use
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/data-roles">
+                  Data Roles
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/customer-responsibilities">
+                  Customer Responsibilities
+                </Link>
+              </div>
+            </nav>
+          </div>
+          <div className="mt-8 border-t border-slate-200 pt-6 text-sm text-slate-500">
+            Copyright 2026 ANCHOR Veterinary Governance. All rights reserved.
+          </div>
+        </div>
       </footer>
 
       <AnchorAssistant />
