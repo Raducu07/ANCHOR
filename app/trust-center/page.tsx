@@ -116,6 +116,19 @@ export default function TrustCenterPage() {
             <LegalCardGrid items={trustCenterCards} />
           </div>
 
+          <div className="mt-12 rounded-xl border border-slate-200 bg-white p-6">
+            <h2 className="text-base font-semibold text-slate-900">Contact routes</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              These mailboxes forward to and are monitored by the founder. There is no form or data-submission route on
+              these pages. Please do not include clinic, client, patient, or other unnecessary personal data.
+            </p>
+            <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
+              <ContactRoute label="General" address="hello@anchorvet.co.uk" />
+              <ContactRoute label="Support" address="support@anchorvet.co.uk" />
+              <ContactRoute label="Security reports" address="security@anchorvet.co.uk" />
+            </dl>
+          </div>
+
           <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Important notice</p>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">{LEGAL_NON_CLAIM_NOTICE}</p>
@@ -123,5 +136,14 @@ export default function TrustCenterPage() {
         </div>
       </div>
     </MarketingShell>
+  );
+}
+
+function ContactRoute({ label, address }: { label: string; address: string }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <dt className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{label}</dt>
+      <dd className="font-medium text-slate-900">{address}</dd>
+    </div>
   );
 }

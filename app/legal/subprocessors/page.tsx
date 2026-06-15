@@ -54,12 +54,12 @@ const subprocessors: Subprocessor[] = [
     notes: "Relevant only if and when live Workspace generation is enabled. Live generation is production-off by default; Anthropic becomes a subprocessor only when it is enabled and the legal and subprocessor documentation supports it.",
   },
   {
-    service: "Email or contact provider",
-    purpose: "Operational or support communications",
-    dataCategories: "Contact details and communication content, if used",
-    status: "to be confirmed",
-    region: "Not asserted here",
-    notes: "No email or contact provider is established in this frontend review.",
+    service: "ImprovMX",
+    purpose: "Inbound email forwarding and contact routing",
+    dataCategories: "Sender email address, recipient alias, and message headers and content as part of a forwarded email",
+    status: "active",
+    region: "Region and transfer position not asserted here; subject to provider terms and data processing agreement review",
+    notes: "Used for inbound domain email forwarding only. It is not app transactional email, has no SMTP or send-as integration, and has no ANCHOR backend email integration.",
   },
   {
     service: "Analytics or cookie provider",
