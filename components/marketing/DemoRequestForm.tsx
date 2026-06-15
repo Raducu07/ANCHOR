@@ -1,8 +1,7 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { FieldError, SelectField, TextAreaField } from "@/components/marketing/MarketingFormFields";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -15,21 +14,17 @@ import {
   demoRoleOptions,
 } from "@/lib/marketingContent";
 import {
-  demoRequestFieldMap,
   normalizeDemoRequestInput,
-  toDemoRequestApiPayload,
   validateDemoRequestInput,
   type DemoRequestErrors,
   type DemoRequestPayload,
 } from "@/lib/demoRequest";
-import { submitPublicIntake } from "@/lib/publicIntakeClient";
+
+const WALKTHROUGH_EMAIL = "hello@anchorvet.co.uk";
 
 type DemoRequestFormState = DemoRequestPayload;
 
 export function DemoRequestForm() {
-  const router = useRouter();
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
   const [errors, setErrors] = useState<DemoRequestErrors>({});
   const [form, setForm] = useState<DemoRequestFormState>({
     fullName: "",
@@ -44,35 +39,16 @@ export function DemoRequestForm() {
     message: "",
     consent: false,
     sourcePage: "/demo",
-    utmSource: "",
-    utmMedium: "",
-    utmCampaign: "",
-    utmTerm: "",
-    utmContent: "",
     honeypot: "",
   });
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    setForm((current) => ({
-      ...current,
-      utmSource: params.get("utm_source") ?? "",
-      utmMedium: params.get("utm_medium") ?? "",
-      utmCampaign: params.get("utm_campaign") ?? "",
-      utmTerm: params.get("utm_term") ?? "",
-      utmContent: params.get("utm_content") ?? "",
-    }));
-  }, []);
 
   function update<K extends keyof DemoRequestFormState>(key: K, value: DemoRequestFormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
     setErrors((current) => ({ ...current, [key]: undefined }));
-    setFormError(null);
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setFormError(null);
 
     const normalized = normalizeDemoRequestInput(form);
     const nextErrors = validateDemoRequestInput(normalized);
@@ -82,29 +58,10 @@ export function DemoRequestForm() {
       return;
     }
 
-    try {
-      setSubmitting(true);
-
-      const payload = await submitPublicIntake(
-        "/v1/public/demo-request",
-        toDemoRequestApiPayload(normalized),
-        demoRequestFieldMap
-      );
-
-      if (!payload.ok) {
-        if (payload.errors) {
-          setErrors(payload.errors);
-        }
-        setFormError(payload.error || "We couldn’t submit your request. Please check the highlighted details and try again.");
-        return;
-      }
-
-      router.push(payload.requestId ? `/demo/thanks?request=${encodeURIComponent(payload.requestId)}` : "/demo/thanks");
-    } catch (error) {
-      setFormError(error instanceof Error ? error.message : "We couldn’t submit your request. Please try again.");
-    } finally {
-      setSubmitting(false);
-    }
+    // Founder-stage primary route: open the visitor's own email client with the
+    // walkthrough details pre-filled. Opening an email client does not prove the
+    // email was sent, so we intentionally do not redirect to /demo/thanks.
+    window.location.href = buildWalkthroughMailto(normalized);
   }
 
   return (
@@ -205,11 +162,6 @@ export function DemoRequestForm() {
         </div>
 
         <input type="hidden" name="sourcePage" value={form.sourcePage} readOnly />
-        <input type="hidden" name="utmSource" value={form.utmSource ?? ""} readOnly />
-        <input type="hidden" name="utmMedium" value={form.utmMedium ?? ""} readOnly />
-        <input type="hidden" name="utmCampaign" value={form.utmCampaign ?? ""} readOnly />
-        <input type="hidden" name="utmTerm" value={form.utmTerm ?? ""} readOnly />
-        <input type="hidden" name="utmContent" value={form.utmContent ?? ""} readOnly />
 
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
           <label className="flex items-start gap-3">
@@ -226,19 +178,57 @@ export function DemoRequestForm() {
           {errors.consent ? <p className="mt-2 text-sm text-rose-700">{errors.consent}</p> : null}
         </div>
 
-        {formError ? (
-          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{formError}</div>
-        ) : null}
+        <p className="max-w-2xl text-sm leading-6 text-slate-500">
+          We’ll use these details only to review and respond to your request. Do not include confidential clinical,
+          client-identifiable, patient, password, secret, or unnecessary personal data in this form.
+        </p>
 
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="max-w-2xl text-sm leading-6 text-slate-500">
-            We’ll use these details only to review and respond to your request. Do not include confidential clinical or client-identifiable information in this form.
-          </p>
-          <Button type="submit" loading={submitting} className="min-w-[180px]">
-            {submitting ? "Submitting request" : "Request walkthrough"}
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="max-w-2xl space-y-2 text-sm leading-6 text-slate-500">
+            <p>This opens your email app with the form details pre-filled. Please review the email before sending.</p>
+            <p>
+              If your email app does not open, email hello@anchorvet.co.uk with “ANCHOR walkthrough request” in the
+              subject.
+            </p>
+          </div>
+          <Button type="submit" className="min-w-[180px]">
+            Request walkthrough
           </Button>
         </div>
       </form>
     </Card>
   );
+}
+
+function buildWalkthroughMailto(input: DemoRequestPayload): string {
+  const subject = input.clinicName
+    ? `ANCHOR walkthrough request — ${input.clinicName}`
+    : "ANCHOR walkthrough request";
+
+  const body = [
+    "Hello ANCHOR,",
+    "",
+    "I would like to request a short walkthrough of how veterinary clinics can use AI with stronger accountability, safer review, and visible trust surfaces.",
+    "",
+    "Please use this context to shape the walkthrough around our clinic’s current AI use, governance needs, and operational concerns.",
+    "",
+    `Full name: ${input.fullName}`,
+    `Work email: ${input.workEmail}`,
+    `Clinic / organisation name: ${input.clinicName}`,
+    `Role: ${input.role}`,
+    `Current AI use today: ${input.currentAiUse}`,
+    `Primary interest: ${input.primaryInterest}`,
+    `Biggest current concern: ${input.biggestConcern}`,
+    `Clinic size: ${input.clinicSize ?? ""}`,
+    `Phone number: ${input.phoneNumber ?? ""}`,
+    `Message: ${input.message ?? ""}`,
+    "",
+    "Consent:",
+    "I confirm that ANCHOR may use these details to review and respond to this walkthrough request.",
+    "",
+    "Important:",
+    "I have not included confidential clinical, client-identifiable, patient, password, secret, or unnecessary personal data.",
+  ].join("\n");
+
+  return `mailto:${WALKTHROUGH_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
