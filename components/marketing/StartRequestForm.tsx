@@ -250,7 +250,8 @@ export function StartRequestForm() {
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="max-w-2xl text-sm leading-6 text-slate-500">
-            We’ll use these details only to review and respond to your request. Do not include confidential clinical or client-identifiable information in this form.
+            We’ll use these details only to review and respond to your onboarding request. Do not include confidential
+            clinical, client-identifiable, patient, password, secret, or unnecessary personal data in this form.
           </p>
           <Button type="submit" loading={submitting} className="min-w-[180px]">
             {submitting ? "Submitting request" : "Continue"}

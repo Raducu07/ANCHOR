@@ -27,7 +27,7 @@ export default function StartThanksPage() {
           <SectionHeading
             title="Thanks — your request has been received"
             body={`We’ve received your request and will review it shortly.
-We’ll usually reply within one working day to discuss the right onboarding path for your clinic.`}
+We aim to reply within one working day, but response times may vary while ANCHOR is founder-operated.`}
             align="center"
           />
 
