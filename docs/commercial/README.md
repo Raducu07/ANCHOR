@@ -32,15 +32,13 @@ This directory collects the commercial / legal readiness outlines that the found
 
 ## Planned follow-up outlines
 
-To be drafted in subsequent dated artefacts (outline first, solicitor review next, "draft" promotion only after solicitor input):
+Outline first, solicitor review next, "draft" promotion only after solicitor input.
 
-1. `pilot_agreement_outline.md`
-2. `dpa_outline.md`
-3. `privacy_data_boundary.md`
-4. `acceptable_use_policy_outline.md`
-5. `commercial_order_form_outline.md`
-6. `clinic_onboarding_checklist.md`
-7. `founder_pilot_approval_checklist.md`
+Most of the originally-planned follow-up outlines have since been drafted and are now indexed under **Current artefacts** above (pilot agreement, DPA, privacy / data boundary, acceptable use policy, clinic onboarding checklist, founder pilot approval checklist — plus the commercial / legal readiness checkpoint, solicitor review bundle index, solicitor pack dispatch checklist, and personal data / data-flow inventory). They remain internal founder / solicitor-preparation outlines, pre-legal review — not final legal documents.
+
+Still genuinely planned / not yet created:
+
+1. `commercial_order_form_outline.md` — per-pilot / commercial order form outline. **Not yet created.**
 
 ## Cross-references
 
