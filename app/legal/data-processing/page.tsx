@@ -84,6 +84,12 @@ const sections: LegalSection[] = [
     ],
   },
   {
+    heading: "Contact",
+    body: [
+      "Privacy and data-protection questions may be sent to privacy@anchorvet.co.uk. DPA and commercial document questions may be sent to legal@anchorvet.co.uk. These mailboxes forward to and are monitored by the founder; they are contact routes only, not a Data Protection Officer appointment or a legal-advice service. Please do not send raw clinic, client, or patient data unless an authorised agreement and product flow permit it.",
+    ],
+  },
+  {
     heading: "Not legal advice",
     body: ["This is a public summary and is not legal advice. The signed documents control."],
   },

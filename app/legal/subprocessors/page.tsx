@@ -59,7 +59,7 @@ const subprocessors: Subprocessor[] = [
     dataCategories: "Sender email address, recipient alias, and message headers and content as part of a forwarded email",
     status: "active",
     region: "Region and transfer position not asserted here; subject to provider terms and data processing agreement review",
-    notes: "Used for inbound domain email forwarding only. It is not app transactional email, has no SMTP or send-as integration, and has no ANCHOR backend email integration.",
+    notes: "Used for inbound domain email forwarding and contact routing only, supporting public aliases including hello, support, security, privacy, legal, and procurement. It is not app transactional email, has no SMTP or send-as integration, and has no ANCHOR backend email integration.",
   },
   {
     service: "Analytics or cookie provider",
