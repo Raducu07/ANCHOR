@@ -569,6 +569,14 @@ const LEGAL_PAGES: Record<string, LegalPage> = {
         ],
       },
       {
+        heading: "Billing and payment data",
+        body: [
+          "There is no active payment processor and no live customer billing workflow. ANCHOR does not currently operate subscription, invoice, payment, refund, or customer billing processes, so no customer payment data is processed today.",
+          "Stripe is the intended future candidate payment processor for the M5.8 billing and payment foundations, subject to security, legal and commercial, pricing, VAT and accounting, cancellation and refund, and founder-approval gates. Until activated, Stripe is not treated as processing ANCHOR customer payment data.",
+          "billing@anchorvet.co.uk is a reserved, founder-monitored route for future billing and payment enquiries. It is not currently advertised as a public support route.",
+        ],
+      },
+      {
         heading: "Draft note",
         body: [
           "Retention periods and any subprocessors for these classes are not confirmed here and are subject to the legal and commercial pack and solicitor review.",
