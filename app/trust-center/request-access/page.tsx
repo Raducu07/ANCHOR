@@ -33,7 +33,7 @@ const sections: LegalSection[] = [
   {
     heading: "Request route and contact",
     body: [
-      "A request route and contact details can be added here once they are confirmed. Until then, requests are handled through the founder-approved commercial route.",
+      "Procurement, security, and legal review material requests may be sent to hello@anchorvet.co.uk. This mailbox forwards to and is monitored by the founder. Please do not include clinic, client, patient, or other unnecessary personal data in a request.",
     ],
   },
   {
