@@ -69,6 +69,14 @@ const subprocessors: Subprocessor[] = [
     region: "Not applicable unless implemented",
     notes: "No analytics or cookie provider was identified in this frontend review.",
   },
+  {
+    service: "Stripe",
+    purpose: "Future candidate payment processor for billing and payment foundations (M5.8)",
+    dataCategories: "Payment and billing data, only if and when billing is activated",
+    status: "future candidate",
+    region: "Not applicable unless activated",
+    notes: "Future candidate payment processor for billing and payment foundations. Not active. ANCHOR does not currently process customer payment data through Stripe, and Stripe is not currently used for ANCHOR customer billing. Activation is subject to security, legal and commercial, pricing, VAT and accounting, cancellation and refund, and founder-approval gates.",
+  },
 ];
 
 export default function SubprocessorsPage() {
@@ -79,8 +87,8 @@ export default function SubprocessorsPage() {
       meta={{ version: meta.version, statusLabel: meta.statusLabel, stage: meta.stage, lastUpdated: meta.lastUpdated }}
     >
       <p className="text-base leading-7 text-slate-700">
-        This is a public summary of the subprocessors ANCHOR may use. Entries marked conditional or to be confirmed are
-        not active by default. The signed data processing agreement and customer agreement control.
+        This is a public summary of the subprocessors ANCHOR may use. Entries marked conditional, future candidate, or
+        to be confirmed are not active by default. The signed data processing agreement and customer agreement control.
       </p>
 
       <div className="space-y-4">
