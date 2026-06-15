@@ -711,7 +711,7 @@ export const SLICE2_PAGES: Record<string, Slice2PageMeta> = {
     version: SLICE2_VERSION,
     lastUpdated: SLICE2_LAST_UPDATED,
     statusLabel: SLICE2_STATUS_BADGE,
-    stage: "Public informational - solicitor reviewed",
+    stage: "Public informational - prepared for solicitor review",
   },
   "trust-ai-governance": {
     href: "/trust-center/ai-governance",
@@ -720,7 +720,7 @@ export const SLICE2_PAGES: Record<string, Slice2PageMeta> = {
     version: SLICE2_VERSION,
     lastUpdated: SLICE2_LAST_UPDATED,
     statusLabel: SLICE2_STATUS_BADGE,
-    stage: "Public informational - solicitor reviewed",
+    stage: "Public informational - prepared for solicitor review",
   },
   "trust-procurement": {
     href: "/trust-center/procurement",
@@ -738,7 +738,7 @@ export const SLICE2_PAGES: Record<string, Slice2PageMeta> = {
     version: SLICE2_VERSION,
     lastUpdated: SLICE2_LAST_UPDATED,
     statusLabel: SLICE2_STATUS_BADGE,
-    stage: "Public informational - solicitor reviewed",
+    stage: "Public informational - prepared for solicitor review",
   },
   toms: {
     href: "/legal/security/toms",
@@ -765,7 +765,7 @@ export const SLICE2_PAGES: Record<string, Slice2PageMeta> = {
     version: SLICE2_VERSION,
     lastUpdated: SLICE2_LAST_UPDATED,
     statusLabel: SLICE2_STATUS_BADGE,
-    stage: "Founder-approved public summary",
+    stage: "Founder-prepared public summary - solicitor review pending",
   },
   "data-processing": {
     href: "/legal/data-processing",
@@ -792,7 +792,7 @@ export const SLICE2_PAGES: Record<string, Slice2PageMeta> = {
     version: SLICE2_VERSION,
     lastUpdated: SLICE2_LAST_UPDATED,
     statusLabel: SLICE2_STATUS_BADGE,
-    stage: "Public informational - solicitor reviewed",
+    stage: "Public informational - prepared for solicitor review",
   },
 };
 
