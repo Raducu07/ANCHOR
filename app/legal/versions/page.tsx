@@ -55,7 +55,7 @@ export default function LegalVersionsPage() {
       href: "/legal/versions",
       version: VERSIONS_PAGE_VERSION,
       lastUpdated: VERSIONS_PAGE_LAST_UPDATED,
-      status: "Public summary - solicitor reviewed",
+      status: "Public summary - prepared for solicitor review",
       changeSummary: "Register published.",
     },
   ];
