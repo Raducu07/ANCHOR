@@ -55,21 +55,45 @@ export function MarketingShell({
             <div className="text-xl font-bold tracking-tight text-slate-950">ANCHOR</div>
             <nav aria-label="Legal and trust" className="flex flex-col gap-3">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Legal &amp; Trust</p>
-              <div className="flex flex-col gap-2 text-sm text-slate-600 sm:flex-row sm:flex-wrap sm:gap-x-6 sm:gap-y-2">
+              <div className="grid gap-2 text-sm text-slate-600 sm:grid-cols-2 lg:grid-cols-3">
                 <Link className="transition-colors hover:text-slate-950" href="/legal">
                   Legal Centre
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/terms">
+                  Terms of Service
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/privacy">
+                  Privacy Notice
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/acceptable-use">
+                  Acceptable Use
                 </Link>
                 <Link className="transition-colors hover:text-slate-950" href="/legal/ai-governance-boundary">
                   AI Governance Boundary
                 </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/ai-data-use">
-                  AI Data Use
+                <Link className="transition-colors hover:text-slate-950" href="/legal/security">
+                  Security
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/data-retention">
+                  Data Retention
                 </Link>
                 <Link className="transition-colors hover:text-slate-950" href="/legal/data-roles">
                   Data Roles
                 </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/data-classification">
+                  Data Classification
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/ai-data-use">
+                  AI Data Use
+                </Link>
                 <Link className="transition-colors hover:text-slate-950" href="/legal/customer-responsibilities">
                   Customer Responsibilities
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/offboarding">
+                  Offboarding
+                </Link>
+                <Link className="transition-colors hover:text-slate-950" href="/legal/versions">
+                  Version History
                 </Link>
               </div>
             </nav>

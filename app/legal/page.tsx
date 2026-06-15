@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { MarketingShell } from "@/components/marketing/MarketingShell";
 import { LegalCardGrid } from "@/components/legal/LegalCardGrid";
-import { LEGAL_NON_CLAIM_NOTICE, PLANNED_LEGAL_PAGES, listLegalPages } from "@/lib/legal/legalContent";
+import { LEGAL_NON_CLAIM_NOTICE, PLANNED_LEGAL_PAGES, listLegalPagesInOrder } from "@/lib/legal/legalContent";
 
 export const metadata: Metadata = {
   title: "Legal & Trust Centre | ANCHOR",
@@ -10,12 +10,19 @@ export const metadata: Metadata = {
 };
 
 export default function LegalCentrePage() {
-  const pages = listLegalPages();
-  const cardItems = pages.map((page) => ({
-    href: `/legal/${page.slug}`,
-    title: page.title,
-    subtitle: page.subtitle,
-  }));
+  const pages = listLegalPagesInOrder();
+  const cardItems = [
+    ...pages.map((page) => ({
+      href: `/legal/${page.slug}`,
+      title: page.title,
+      subtitle: page.subtitle,
+    })),
+    {
+      href: "/legal/versions",
+      title: "Legal Version History",
+      subtitle: "Version, status, and contractual state of each draft legal page.",
+    },
+  ];
 
   return (
     <MarketingShell showAssistant={false}>
