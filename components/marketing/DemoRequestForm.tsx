@@ -3,6 +3,7 @@
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { FieldError, SelectField, TextAreaField } from "@/components/marketing/MarketingFormFields";
+import { marketingSecondaryButtonClass } from "@/components/marketing/MarketingShell";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
@@ -24,8 +25,20 @@ const WALKTHROUGH_EMAIL = "hello@anchorvet.co.uk";
 
 type DemoRequestFormState = DemoRequestPayload;
 
+type EmailDraft = {
+  to: string;
+  subject: string;
+  body: string;
+  copyText: string;
+  mailtoUrl: string;
+};
+
+type CopyState = "idle" | "copied" | "error";
+
 export function DemoRequestForm() {
   const [errors, setErrors] = useState<DemoRequestErrors>({});
+  const [emailDraft, setEmailDraft] = useState<EmailDraft | null>(null);
+  const [copyState, setCopyState] = useState<CopyState>("idle");
   const [form, setForm] = useState<DemoRequestFormState>({
     fullName: "",
     workEmail: "",
@@ -58,10 +71,20 @@ export function DemoRequestForm() {
       return;
     }
 
-    // Founder-stage primary route: open the visitor's own email client with the
-    // walkthrough details pre-filled. Opening an email client does not prove the
-    // email was sent, so we intentionally do not redirect to /demo/thanks.
-    window.location.href = buildWalkthroughMailto(normalized);
+    // Provider-agnostic, founder-stage route: prepare the email content in-page so
+    // the visitor can copy it and send from any email app. Nothing is sent here, no
+    // backend is called, and we intentionally do not redirect to /demo/thanks.
+    setCopyState("idle");
+    setEmailDraft(buildEmailDraft(normalized));
+  }
+
+  async function handleCopy(copyText: string) {
+    try {
+      await navigator.clipboard.writeText(copyText);
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
   }
 
   return (
@@ -183,24 +206,79 @@ export function DemoRequestForm() {
           client-identifiable, patient, password, secret, or unnecessary personal data in this form.
         </p>
 
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="max-w-2xl space-y-2 text-sm leading-6 text-slate-500">
-            <p>This opens your email app with the form details pre-filled. Please review the email before sending.</p>
-            <p>
-              If your email app does not open, email hello@anchorvet.co.uk with “ANCHOR walkthrough request” in the
-              subject.
-            </p>
-          </div>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="max-w-2xl text-sm leading-6 text-slate-500">
+            When you submit, we’ll prepare the request as an email you can copy and send from your own email app. Nothing
+            is sent automatically.
+          </p>
           <Button type="submit" className="min-w-[180px]">
-            Request walkthrough
+            Prepare email request
           </Button>
         </div>
+
+        {emailDraft ? (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+            <h3 className="text-lg font-semibold text-slate-900">Walkthrough request ready</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+              Copy the request details below and send them to {WALKTHROUGH_EMAIL} from your preferred email app. You can
+              also try opening your default email app, but some browsers and email clients may not preserve pre-filled
+              content.
+            </p>
+
+            <dl className="mt-4 space-y-1 text-sm">
+              <div className="flex flex-wrap gap-2">
+                <dt className="font-medium text-slate-700">To:</dt>
+                <dd className="text-slate-900">{emailDraft.to}</dd>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <dt className="font-medium text-slate-700">Subject:</dt>
+                <dd className="text-slate-900">{emailDraft.subject}</dd>
+              </div>
+            </dl>
+
+            <label className="sr-only" htmlFor="walkthrough-email-body">
+              Walkthrough request email details
+            </label>
+            <textarea
+              id="walkthrough-email-body"
+              readOnly
+              value={emailDraft.copyText}
+              rows={18}
+              className="mt-4 w-full rounded-2xl border border-slate-200 bg-white p-4 font-mono text-xs leading-5 text-slate-700"
+            />
+
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <Button type="button" onClick={() => handleCopy(emailDraft.copyText)} className="min-w-[180px]">
+                {copyState === "copied" ? "Copied" : "Copy request details"}
+              </Button>
+              <a href={emailDraft.mailtoUrl} className={marketingSecondaryButtonClass("px-5 py-2.5 text-sm")}>
+                Open default email app
+              </a>
+            </div>
+
+            {copyState === "copied" ? (
+              <p className="mt-3 text-sm text-emerald-700">
+                Copied. Paste it into a new email to {WALKTHROUGH_EMAIL} and send.
+              </p>
+            ) : null}
+            {copyState === "error" ? (
+              <p className="mt-3 text-sm text-slate-600">
+                Copy did not work in this browser. Select the text in the box above and copy it manually.
+              </p>
+            ) : null}
+
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-500">
+              Opening your default email app is optional. If the email app opens without the details, copy the request
+              details from this page and paste them manually.
+            </p>
+          </div>
+        ) : null}
       </form>
     </Card>
   );
 }
 
-function buildWalkthroughMailto(input: DemoRequestPayload): string {
+function buildEmailDraft(input: DemoRequestPayload): EmailDraft {
   const subject = input.clinicName
     ? `ANCHOR walkthrough request — ${input.clinicName}`
     : "ANCHOR walkthrough request";
@@ -230,5 +308,8 @@ function buildWalkthroughMailto(input: DemoRequestPayload): string {
     "I have not included confidential clinical, client-identifiable, patient, password, secret, or unnecessary personal data.",
   ].join("\n");
 
-  return `mailto:${WALKTHROUGH_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  const copyText = `To: ${WALKTHROUGH_EMAIL}\nSubject: ${subject}\n\n${body}`;
+  const mailtoUrl = `mailto:${WALKTHROUGH_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+  return { to: WALKTHROUGH_EMAIL, subject, body, copyText, mailtoUrl };
 }
