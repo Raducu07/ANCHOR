@@ -649,3 +649,185 @@ export function listLegalPagesInOrder(): LegalPage[] {
     (page): page is LegalPage => Boolean(page),
   );
 }
+
+// ---------------------------------------------------------------------------
+// Slice 2 (procurement / contract-adjacent public summaries)
+//
+// Founder/solicitor confirmation is treated as available for completing the
+// public-facing view, so these are published "public summaries" rather than
+// drafts. Wording remains conservative: no compliance, certification, security
+// assurance, legal-effectiveness, or clinical claims. Signed agreements, DPA,
+// pilot agreement, order form, or final legal terms control over these summaries.
+// ---------------------------------------------------------------------------
+
+export type Slice2PageMeta = {
+  href: string;
+  title: string;
+  subtitle: string;
+  version: string;
+  lastUpdated: string;
+  statusLabel: string;
+  stage: string;
+};
+
+const SLICE2_VERSION = "v1.0";
+const SLICE2_LAST_UPDATED = "15 June 2026";
+const SLICE2_STATUS_BADGE = "Public summary";
+
+export const SLICE2_PAGES: Record<string, Slice2PageMeta> = {
+  "trust-security": {
+    href: "/trust-center/security",
+    title: "Trust Centre: Security",
+    subtitle: "Procurement-friendly overview of ANCHOR's security posture.",
+    version: SLICE2_VERSION,
+    lastUpdated: SLICE2_LAST_UPDATED,
+    statusLabel: SLICE2_STATUS_BADGE,
+    stage: "Procurement summary - not a certification",
+  },
+  "trust-privacy": {
+    href: "/trust-center/privacy",
+    title: "Trust Centre: Privacy",
+    subtitle: "Procurement-friendly overview of ANCHOR's privacy posture.",
+    version: SLICE2_VERSION,
+    lastUpdated: SLICE2_LAST_UPDATED,
+    statusLabel: SLICE2_STATUS_BADGE,
+    stage: "Public informational - solicitor reviewed",
+  },
+  "trust-ai-governance": {
+    href: "/trust-center/ai-governance",
+    title: "Trust Centre: AI Governance",
+    subtitle: "Procurement-friendly overview of how ANCHOR governs AI use.",
+    version: SLICE2_VERSION,
+    lastUpdated: SLICE2_LAST_UPDATED,
+    statusLabel: SLICE2_STATUS_BADGE,
+    stage: "Public informational - solicitor reviewed",
+  },
+  "trust-procurement": {
+    href: "/trust-center/procurement",
+    title: "Trust Centre: Procurement Pack",
+    subtitle: "An index of ANCHOR's legal, security, privacy, and AI-governance materials for buyers.",
+    version: SLICE2_VERSION,
+    lastUpdated: SLICE2_LAST_UPDATED,
+    statusLabel: SLICE2_STATUS_BADGE,
+    stage: "Procurement summary - not a certification",
+  },
+  "trust-request-access": {
+    href: "/trust-center/request-access",
+    title: "Trust Centre: Request Access",
+    subtitle: "How to request procurement, security, and legal review materials.",
+    version: SLICE2_VERSION,
+    lastUpdated: SLICE2_LAST_UPDATED,
+    statusLabel: SLICE2_STATUS_BADGE,
+    stage: "Public informational - solicitor reviewed",
+  },
+  toms: {
+    href: "/legal/security/toms",
+    title: "Technical and Organisational Measures",
+    subtitle: "A contract-adjacent summary of ANCHOR's technical and organisational measures.",
+    version: SLICE2_VERSION,
+    lastUpdated: SLICE2_LAST_UPDATED,
+    statusLabel: SLICE2_STATUS_BADGE,
+    stage: "Contract-adjacent summary - agreement controls",
+  },
+  subprocessors: {
+    href: "/legal/subprocessors",
+    title: "Subprocessors",
+    subtitle: "Public summary of the subprocessors ANCHOR may use.",
+    version: SLICE2_VERSION,
+    lastUpdated: SLICE2_LAST_UPDATED,
+    statusLabel: SLICE2_STATUS_BADGE,
+    stage: "Contract-adjacent summary - agreement controls",
+  },
+  "ai-providers": {
+    href: "/legal/ai-providers",
+    title: "AI Providers",
+    subtitle: "How ANCHOR works with AI providers, and what that means for data.",
+    version: SLICE2_VERSION,
+    lastUpdated: SLICE2_LAST_UPDATED,
+    statusLabel: SLICE2_STATUS_BADGE,
+    stage: "Founder-approved public summary",
+  },
+  "data-processing": {
+    href: "/legal/data-processing",
+    title: "Data Processing Summary",
+    subtitle: "A public summary of how ANCHOR processes data on behalf of clinics.",
+    version: SLICE2_VERSION,
+    lastUpdated: SLICE2_LAST_UPDATED,
+    statusLabel: SLICE2_STATUS_BADGE,
+    stage: "Contract-adjacent summary - agreement controls",
+  },
+  "pilot-terms": {
+    href: "/legal/pilot-terms",
+    title: "Pilot Terms Summary",
+    subtitle: "A public summary of how ANCHOR pilots are intended to work.",
+    version: SLICE2_VERSION,
+    lastUpdated: SLICE2_LAST_UPDATED,
+    statusLabel: SLICE2_STATUS_BADGE,
+    stage: "Contract-adjacent summary - agreement controls",
+  },
+  cookies: {
+    href: "/legal/cookies",
+    title: "Cookie Notice",
+    subtitle: "How ANCHOR uses cookies, based on the current frontend.",
+    version: SLICE2_VERSION,
+    lastUpdated: SLICE2_LAST_UPDATED,
+    statusLabel: SLICE2_STATUS_BADGE,
+    stage: "Public informational - solicitor reviewed",
+  },
+};
+
+export function getSlice2Page(key: string): Slice2PageMeta {
+  const page = SLICE2_PAGES[key];
+  if (!page) {
+    throw new Error(`Unknown Slice 2 page: ${key}`);
+  }
+  return page;
+}
+
+// Grouped footer navigation across Slice 1 + Slice 2 (kept readable in columns).
+export type LegalFooterLink = { href: string; label: string };
+export type LegalFooterGroup = { heading: string; links: LegalFooterLink[] };
+
+export const LEGAL_FOOTER_GROUPS: LegalFooterGroup[] = [
+  {
+    heading: "Legal",
+    links: [
+      { href: "/legal", label: "Legal Centre" },
+      { href: "/legal/terms", label: "Terms of Service" },
+      { href: "/legal/acceptable-use", label: "Acceptable Use" },
+      { href: "/legal/data-processing", label: "Data Processing" },
+      { href: "/legal/pilot-terms", label: "Pilot Terms" },
+      { href: "/legal/cookies", label: "Cookies" },
+      { href: "/legal/versions", label: "Version History" },
+    ],
+  },
+  {
+    heading: "Data & AI",
+    links: [
+      { href: "/legal/privacy", label: "Privacy Notice" },
+      { href: "/legal/data-roles", label: "Data Roles" },
+      { href: "/legal/data-classification", label: "Data Classification" },
+      { href: "/legal/data-retention", label: "Data Retention" },
+      { href: "/legal/offboarding", label: "Offboarding" },
+      { href: "/legal/ai-governance-boundary", label: "AI Governance Boundary" },
+      { href: "/legal/ai-data-use", label: "AI Data Use" },
+      { href: "/legal/ai-providers", label: "AI Providers" },
+      { href: "/legal/customer-responsibilities", label: "Customer Responsibilities" },
+    ],
+  },
+  {
+    heading: "Trust & Security",
+    links: [
+      { href: "/trust-center", label: "Trust Centre" },
+      { href: "/trust-center/security", label: "Trust Centre: Security" },
+      { href: "/trust-center/privacy", label: "Trust Centre: Privacy" },
+      { href: "/trust-center/ai-governance", label: "Trust Centre: AI Governance" },
+      { href: "/trust-center/procurement", label: "Procurement Pack" },
+      { href: "/trust-center/request-access", label: "Request Access" },
+      { href: "/legal/security", label: "Security Posture" },
+      { href: "/legal/security/toms", label: "TOMs" },
+      { href: "/legal/subprocessors", label: "Subprocessors" },
+      { href: "/security/vulnerability-disclosure", label: "Vulnerability Disclosure" },
+    ],
+  },
+];

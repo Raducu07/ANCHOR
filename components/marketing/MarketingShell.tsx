@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { AnchorAssistant } from "@/components/marketing/AnchorAssistant";
+import { LEGAL_FOOTER_GROUPS } from "@/lib/legal/legalContent";
 
 export function MarketingShell({
   children,
@@ -51,58 +52,20 @@ export function MarketingShell({
 
       <footer className="border-t border-slate-200 bg-slate-50 px-4 py-12 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-7xl">
-          <div className="flex flex-col gap-8 md:flex-row md:items-start md:justify-between">
-            <div className="text-xl font-bold tracking-tight text-slate-950">ANCHOR</div>
-            <nav aria-label="Legal and trust" className="flex flex-col gap-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Legal &amp; Trust</p>
-              <div className="grid gap-2 text-sm text-slate-600 sm:grid-cols-2 lg:grid-cols-3">
-                <Link className="transition-colors hover:text-slate-950" href="/legal">
-                  Legal Centre
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/terms">
-                  Terms of Service
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/privacy">
-                  Privacy Notice
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/acceptable-use">
-                  Acceptable Use
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/ai-governance-boundary">
-                  AI Governance Boundary
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/security">
-                  Security
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/data-retention">
-                  Data Retention
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/data-roles">
-                  Data Roles
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/data-classification">
-                  Data Classification
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/ai-data-use">
-                  AI Data Use
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/customer-responsibilities">
-                  Customer Responsibilities
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/offboarding">
-                  Offboarding
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/legal/versions">
-                  Version History
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/trust-center">
-                  Trust Centre
-                </Link>
-                <Link className="transition-colors hover:text-slate-950" href="/security/vulnerability-disclosure">
-                  Vulnerability Disclosure
-                </Link>
-              </div>
-            </nav>
+          <div className="text-xl font-bold tracking-tight text-slate-950">ANCHOR</div>
+          <div className="mt-8 grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
+            {LEGAL_FOOTER_GROUPS.map((group) => (
+              <nav key={group.heading} aria-label={group.heading} className="flex flex-col gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{group.heading}</p>
+                <div className="flex flex-col gap-2 text-sm text-slate-600">
+                  {group.links.map((link) => (
+                    <Link key={link.href} className="transition-colors hover:text-slate-950" href={link.href}>
+                      {link.label}
+                    </Link>
+                  ))}
+                </div>
+              </nav>
+            ))}
           </div>
           <div className="mt-8 border-t border-slate-200 pt-6 text-sm text-slate-500">
             Copyright 2026 ANCHOR Veterinary Governance. All rights reserved.

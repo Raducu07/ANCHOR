@@ -62,12 +62,32 @@ const trustCenterCards = [
   },
 ];
 
-const deferredPages = [
-  "/trust-center/security",
-  "/trust-center/privacy",
-  "/trust-center/ai-governance",
-  "/trust-center/procurement",
-  "/trust-center/request-access",
+const trustCenterSections = [
+  {
+    href: "/trust-center/security",
+    title: "Security",
+    subtitle: "Procurement-friendly overview of ANCHOR's security posture.",
+  },
+  {
+    href: "/trust-center/privacy",
+    title: "Privacy",
+    subtitle: "Procurement-friendly overview of ANCHOR's privacy posture.",
+  },
+  {
+    href: "/trust-center/ai-governance",
+    title: "AI Governance",
+    subtitle: "Procurement-friendly overview of how ANCHOR governs AI use.",
+  },
+  {
+    href: "/trust-center/procurement",
+    title: "Procurement Pack",
+    subtitle: "An index of legal, security, privacy, and AI-governance materials for buyers.",
+  },
+  {
+    href: "/trust-center/request-access",
+    title: "Request Access",
+    subtitle: "How to request procurement, security, and legal review materials.",
+  },
 ];
 
 export default function TrustCenterPage() {
@@ -82,29 +102,18 @@ export default function TrustCenterPage() {
             customer-responsibility materials in one place for review.
           </p>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
-            These materials are drafts prepared for solicitor review. They are not in force and are not externally
-            relied upon until solicitor review and a final wording check are complete.
+            These materials are public summaries. They are not a substitute for signed agreements: the final commercial
+            and legal pack and solicitor-reviewed documents control.
           </p>
 
-          <div className="mt-10">
-            <LegalCardGrid items={trustCenterCards} />
+          <h2 className="mt-12 text-2xl font-bold tracking-tight text-slate-950">Trust Centre sections</h2>
+          <div className="mt-6">
+            <LegalCardGrid items={trustCenterSections} />
           </div>
 
-          <div className="mt-12 rounded-xl border border-slate-200 bg-white p-6">
-            <h2 className="text-base font-semibold text-slate-900">Deeper procurement pages</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">
-              The following deeper procurement pages are planned and not yet published.
-            </p>
-            <ul className="mt-4 flex flex-wrap gap-2">
-              {deferredPages.map((path) => (
-                <li
-                  key={path}
-                  className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-500"
-                >
-                  {path}
-                </li>
-              ))}
-            </ul>
+          <h2 className="mt-12 text-2xl font-bold tracking-tight text-slate-950">Legal and governance materials</h2>
+          <div className="mt-6">
+            <LegalCardGrid items={trustCenterCards} />
           </div>
 
           <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6">

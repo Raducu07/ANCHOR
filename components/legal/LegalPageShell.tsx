@@ -15,18 +15,27 @@ type LegalPageShellProps = {
   title: string;
   subtitle?: string;
   meta?: LegalPageShellMeta;
+  backHref?: string;
+  backLabel?: string;
   children: ReactNode;
 };
 
 const backLinkClass = "text-sm font-medium text-slate-500 transition-colors hover:text-slate-950";
 
-export function LegalPageShell({ title, subtitle, meta, children }: LegalPageShellProps) {
+export function LegalPageShell({
+  title,
+  subtitle,
+  meta,
+  backHref = "/legal",
+  backLabel = "Back to Legal & Trust Centre",
+  children,
+}: LegalPageShellProps) {
   return (
     <MarketingShell showAssistant={false}>
       <div className="px-4 py-16 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-3xl">
-          <Link href="/legal" className={backLinkClass}>
-            Back to Legal &amp; Trust Centre
+          <Link href={backHref} className={backLinkClass}>
+            {backLabel}
           </Link>
 
           <h1 className="mt-4 text-3xl font-bold tracking-tight text-slate-950 md:text-4xl">{title}</h1>
@@ -51,8 +60,8 @@ export function LegalPageShell({ title, subtitle, meta, children }: LegalPageShe
           </div>
 
           <div className="mt-8">
-            <Link href="/legal" className={backLinkClass}>
-              Back to Legal &amp; Trust Centre
+            <Link href={backHref} className={backLinkClass}>
+              {backLabel}
             </Link>
           </div>
         </div>

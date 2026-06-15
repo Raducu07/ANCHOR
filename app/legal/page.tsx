@@ -1,7 +1,12 @@
 import type { Metadata } from "next";
 import { MarketingShell } from "@/components/marketing/MarketingShell";
 import { LegalCardGrid } from "@/components/legal/LegalCardGrid";
-import { LEGAL_NON_CLAIM_NOTICE, PLANNED_LEGAL_PAGES, listLegalPagesInOrder } from "@/lib/legal/legalContent";
+import {
+  LEGAL_NON_CLAIM_NOTICE,
+  PLANNED_LEGAL_PAGES,
+  SLICE2_PAGES,
+  listLegalPagesInOrder,
+} from "@/lib/legal/legalContent";
 
 export const metadata: Metadata = {
   title: "Legal & Trust Centre | ANCHOR",
@@ -34,6 +39,13 @@ export default function LegalCentrePage() {
     },
   ];
 
+  const procurementItems = ["data-processing", "ai-providers", "subprocessors", "toms", "pilot-terms", "cookies"].map(
+    (key) => {
+      const page = SLICE2_PAGES[key];
+      return { href: page.href, title: page.title, subtitle: page.subtitle };
+    },
+  );
+
   return (
     <MarketingShell showAssistant={false}>
       <div className="px-4 py-16 sm:px-6 lg:px-8">
@@ -50,6 +62,15 @@ export default function LegalCentrePage() {
 
           <div className="mt-10">
             <LegalCardGrid items={cardItems} />
+          </div>
+
+          <h2 className="mt-14 text-2xl font-bold tracking-tight text-slate-950">Procurement and contract summaries</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+            Public summaries for procurement and buyer review. These are not a substitute for signed agreements; the
+            final commercial and legal pack and solicitor-reviewed documents control.
+          </p>
+          <div className="mt-6">
+            <LegalCardGrid items={procurementItems} />
           </div>
 
           {PLANNED_LEGAL_PAGES.length > 0 ? (

@@ -2,59 +2,79 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { LegalPageShell } from "@/components/legal/LegalPageShell";
 import { Card } from "@/components/ui/Card";
-import { listLegalPagesInOrder } from "@/lib/legal/legalContent";
+import { SLICE2_PAGES, listLegalPagesInOrder } from "@/lib/legal/legalContent";
 
 export const metadata: Metadata = {
   title: "Legal Version History | ANCHOR Legal & Trust",
   description:
-    "Version, status, and contractual state of each draft ANCHOR legal page. Draft register prepared for solicitor review.",
+    "Version, status, and contractual state of each ANCHOR legal and trust page. Register prepared for solicitor review.",
 };
 
-const VERSIONS_PAGE_VERSION = "v0.1 (draft)";
+const VERSIONS_PAGE_VERSION = "v1.0";
 const VERSIONS_PAGE_LAST_UPDATED = "15 June 2026";
 const EFFECTIVE_DATE = "Not externally effective";
-const REGISTER_STATUS = "Draft - solicitor review pending";
 const CONTRACTUAL_STATUS = "Not contractual unless incorporated by agreement";
-const CHANGE_SUMMARY = "Initial draft created for solicitor review.";
+
+const DRAFT_STATUS = "Draft - solicitor review pending";
+const DRAFT_CHANGE = "Initial draft created for solicitor review.";
+const SLICE2_CHANGE = "Public summary published for review.";
 
 type VersionRow = {
   title: string;
   href: string;
   version: string;
   lastUpdated: string;
+  status: string;
+  changeSummary: string;
 };
 
 export default function LegalVersionsPage() {
+  const slice1Rows: VersionRow[] = listLegalPagesInOrder().map((page) => ({
+    title: page.title,
+    href: `/legal/${page.slug}`,
+    version: page.version,
+    lastUpdated: page.lastUpdated,
+    status: DRAFT_STATUS,
+    changeSummary: DRAFT_CHANGE,
+  }));
+
+  const slice2Rows: VersionRow[] = Object.values(SLICE2_PAGES).map((page) => ({
+    title: page.title,
+    href: page.href,
+    version: page.version,
+    lastUpdated: page.lastUpdated,
+    status: page.stage,
+    changeSummary: SLICE2_CHANGE,
+  }));
+
   const rows: VersionRow[] = [
-    ...listLegalPagesInOrder().map((page) => ({
-      title: page.title,
-      href: `/legal/${page.slug}`,
-      version: page.version,
-      lastUpdated: page.lastUpdated,
-    })),
+    ...slice1Rows,
+    ...slice2Rows,
     {
       title: "Legal Version History",
       href: "/legal/versions",
       version: VERSIONS_PAGE_VERSION,
       lastUpdated: VERSIONS_PAGE_LAST_UPDATED,
+      status: "Public summary - solicitor reviewed",
+      changeSummary: "Register published.",
     },
   ];
 
   return (
     <LegalPageShell
       title="Legal Version History"
-      subtitle="Version, status, and contractual state of each draft legal page."
+      subtitle="Version, status, and contractual state of each legal and trust page."
       meta={{
         version: VERSIONS_PAGE_VERSION,
-        statusLabel: "Draft",
-        stage: "Prepared for solicitor review - not in force",
+        statusLabel: "Public summary",
+        stage: "Register - agreement controls",
         lastUpdated: VERSIONS_PAGE_LAST_UPDATED,
       }}
     >
       <p className="text-base leading-7 text-slate-700">
-        This register lists the current draft legal pages and their status. All entries are drafts prepared for
-        solicitor review. They are not externally effective and are not contractual unless and until incorporated by
-        agreement. This page does not use a backend version store.
+        This register lists the current legal and trust pages and their status. Entries are either drafts prepared for
+        solicitor review or public summaries. None are externally effective, and none are contractual unless and until
+        incorporated by agreement. This page does not use a backend version store.
       </p>
 
       <div className="space-y-4">
@@ -70,9 +90,9 @@ export default function LegalVersionsPage() {
               <Row label="Version" value={row.version} />
               <Row label="Last updated" value={row.lastUpdated} />
               <Row label="Effective date" value={EFFECTIVE_DATE} />
-              <Row label="Status" value={REGISTER_STATUS} />
+              <Row label="Status" value={row.status} />
               <Row label="Contractual status" value={CONTRACTUAL_STATUS} />
-              <Row label="Change summary" value={CHANGE_SUMMARY} />
+              <Row label="Change summary" value={row.changeSummary} />
             </dl>
           </Card>
         ))}
