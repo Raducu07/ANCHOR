@@ -1,19 +1,22 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { AnchorAssistant } from "@/components/marketing/AnchorAssistant";
+import { LEGAL_FOOTER_GROUPS } from "@/lib/legal/legalContent";
 
 export function MarketingShell({
   children,
   primaryCtaHref = "/#workflow",
   primaryCtaLabel = "See the workflow",
+  showAssistant = true,
 }: {
   children: ReactNode;
   primaryCtaHref?: string;
   primaryCtaLabel?: string;
+  showAssistant?: boolean;
 }) {
   return (
     <main className="min-h-screen bg-slate-50 text-slate-800">
-      <header className="fixed inset-x-0 top-0 z-50 border-b border-slate-200 bg-white/90 backdrop-blur-md">
+      <header className="fixed inset-x-0 top-0 z-50 border-b border-slate-200 bg-white/90 backdrop-blur-md print:static">
         <div className="mx-auto flex h-20 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
           <Link href="/" className="text-2xl font-extrabold tracking-tight text-slate-950">
             ANCHOR
@@ -45,15 +48,32 @@ export function MarketingShell({
         </div>
       </header>
 
-      <div className="pt-20">{children}</div>
+      <div className="pt-20 print:pt-0">{children}</div>
 
       <footer className="border-t border-slate-200 bg-slate-50 px-4 py-12 sm:px-6 lg:px-8">
-        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-6 md:flex-row">
+        <div className="mx-auto max-w-7xl">
           <div className="text-xl font-bold tracking-tight text-slate-950">ANCHOR</div>
-          <div className="text-sm text-slate-500">Copyright 2026 ANCHOR Veterinary Governance. All rights reserved.</div></div>
+          <div className="mt-8 grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
+            {LEGAL_FOOTER_GROUPS.map((group) => (
+              <nav key={group.heading} aria-label={group.heading} className="flex flex-col gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{group.heading}</p>
+                <div className="flex flex-col gap-2 text-sm text-slate-600">
+                  {group.links.map((link) => (
+                    <Link key={link.href} className="transition-colors hover:text-slate-950" href={link.href}>
+                      {link.label}
+                    </Link>
+                  ))}
+                </div>
+              </nav>
+            ))}
+          </div>
+          <div className="mt-8 border-t border-slate-200 pt-6 text-sm text-slate-500">
+            Copyright 2026 ANCHOR Veterinary Governance. All rights reserved.
+          </div>
+        </div>
       </footer>
 
-      <AnchorAssistant />
+      {showAssistant ? <AnchorAssistant /> : null}
     </main>
   );
 }

@@ -100,38 +100,29 @@ Always report:
 
 ## Public copy discipline
 
-Any copy that appears to a clinic user, a clinic admin, or a pet owner must be checked against the wording controls in `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1.docx` §2.
+Any copy that appears to a clinic user, a clinic admin, or a pet owner must be checked against the wording controls in `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1_1_COMPLETE.md` §2 (operative; v1 retained for historical reference only).
 
-**Use**: "governance and readiness infrastructure", "metadata-only evidence", "supports CPD-recordable AI literacy activity", "aligned with", "human review required", "not chat history".
+**Use**: "governance and readiness infrastructure", "metadata-only evidence", "supports CPD-recordable AI literacy activity", "aligned with", "human review required", "not chat history", "architected for vendor-neutrality", "vendor-neutral over time".
 
-**Avoid**: "compliant", "certified", "RCVS-approved", "guarantees", "compliance system", "clinical record", "chat history".
+**Avoid**: "compliant", "certified", "RCVS-approved", "guarantees", "compliance system", "clinical record", "chat history", "vendor-neutral" / "multi-provider" / "provider-agnostic" as present-tense claims (the live path is Anthropic-only).
 
 When in doubt, stop and ask.
 
 ---
 
-## Current implementation target: Phase 2A-1 — CPD-Recordable AI Literacy
+## Current implementation target: 2A-D.0 — Canonical reconciliation / Release-candidate hardening
 
-Scope authorised by `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` and `Phase_2A_1_Engineering_Brief_v1_1.md`. Substantive build may proceed from the approved engineering brief. M5.6 buyer conversations run in parallel and may trigger in-flight scope revision, but they are not a build blocker.
+Authorised by `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3` (6 June 2026), operative over Memo v1.1 and Addendum v1.2 where they differ.
 
-**Frontend scope (provisional, full detail in engineering brief)**:
+**Built and shipped — do NOT rebuild or redesign:** Learn CPD catalogue/detail/completion/export and Trust Learning-Evidence tile (2A-1); Policy Library + Staff Attestation UI (2A-2); RCVS Self-Assessment admin page + Trust evidence (2A-3); Client-Facing Transparency Layer (2A-4); Incident / Near-Miss UI (2A-5); 2A-C presentation hardening. Why-flagged → Learn linkage shipped.
 
-- `/learn` catalogue page enhancement — list modules with version, role applicability, CPD minutes, completion state for the logged-in user
-- Module detail / completion flow — view module, mark complete with optional acknowledgement; correction/void behaviour is backend-governed and must not imply silent deletion
-- CPD record export UI — generate and download metadata-only JSON per-staff CPD record in v1; PDF is deferred
-- Trust Pack delta tiles — new tiles for total staff completed, total CPD minutes, completion rate by role, module catalogue summary
-- At least one bias-detection module surfaced as a distinct trackable signal (RCVS Theme 8)
-- All copy framed per wording controls above
+**Current target is reconciliation, not feature build.** No new feature pages without explicit founder instruction.
 
-**Out of scope for Phase 2A-1** (deferred to 2A-2 or M4.6):
+**Live generation is production-off** and the underlying Workspace path is Anthropic-coupled, not vendor-neutral. If asked to surface live generation in the UI, stop and report.
 
-- Staff Attestation UI
-- Governance Policy Library UI
-- Quiz/assessment grading UI
-- Role-based learning path navigation
-- Scenario onboarding flows
-- Leadership dashboards on training uptake
-- External LMS integration UI
+**M6.12 / M6.13 are gated future, not current work.**
+
+**Next frontend tasks (RC hardening — only when explicitly instructed, with scope):** Workspace↔Receipt review-state coherence display; policy content-hash display fix/fallback; incident demo-state cleanup; tech-debt classification (AppShell font, portal visual consistency).
 
 ---
 
@@ -145,18 +136,27 @@ Scope authorised by `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` and `P
 
 ---
 
-## Honest M6 gap to be aware of (parallel work, not blocking)
+## M6 gap — CLOSED (informational)
 
-- **Why-flagged → Learn linkage** — Assistant refusal codes and safety flags should deep-link into Learn cards. Phase 2A-1 creates the module catalogue this will deep-link into; if scope permits, fold in the linkage UI work as part of 2A-1.
+- Why-flagged → Learn linkage — shipped. Assistant refusal/safety reasons deep-link into Learn cards.
 
 ---
 
 ## Canonical documents (cross-reference, do not duplicate doctrine here)
 
-Located in `/docs/canonical/` in this repo:
+Located in `/docs/canonical/` in this repo.
 
-- `ANCHOR_Roadmap_v2_5_May_2026.docx` — canonical roadmap; §1 doctrine; §4 M6 Assistant track as-built
-- `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1.docx` — §2 wording controls (operative for all clinic-facing copy); §3 RCVS principles; §4 EU AI Act articles
-- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` — Phase 2A ordering; buyer conversations parallel-not-blocking; §5 Phase 2A-1 scope; §10 wording controls for 2A-1
-- `Phase_2A_1_Engineering_Brief_v1_1.md` — Phase 2A-1 implementation contract; confirmed implementation decisions; backend/frontend scope
-- `Official_EU_AI_Act_Source_Note_v1.md` — source-discipline document for any EU AI Act reference; EUR-Lex is the only acceptable primary source; cite Article 113 for all applicability dates.
+**Operative set (current canonical state — defer to these):**
+
+- `ANCHOR_Roadmap_v2_6_June_2026_CORRECTED.md` — operative roadmap; as-built reconciliation; §1 doctrine; current phase 2A-D.0 release-candidate hardening; M6.12 / M6.13 recorded as gated future; M4.6 deferred by decision; live Workspace generation Anthropic-coupled and production-off.
+- `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1_1_COMPLETE.md` — operative readiness artefact; §2 wording controls (operative for all clinic-facing copy); §3 RCVS principles; §4 EU AI Act articles; vendor-neutrality framed as future-tense only.
+- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3.md` — OPERATIVE decision; supersedes Memo v1.1 and Addendum v1.2 where they differ; authorises reconciliation (2A-D.0); records the conviction-based position (no buyer-discovery requirement, no parallel listening cadence).
+- `Official_EU_AI_Act_Source_Note_v1_1.md` — operative EU AI Act source-discipline note; EUR-Lex is the only acceptable primary source; cite Article 113 for applicability dates; use "from August 2026" softening and Article 4 amendment-watch caveat.
+
+**Historical / supporting records (NOT current targets; consult only for provenance):**
+
+- `ANCHOR_Roadmap_v2_5_May_2026.docx` — superseded by v2.6.
+- `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1.docx` — superseded by v1.1.
+- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` — superseded by Addendum v1.3 where they differ; buyer-conversation framing in Memo v1.1 is corrected by Addendum v1.3.
+- `Phase_2A_1_Engineering_Brief_v1_1.md` — Phase 2A-1 is shipped; brief retained as historical implementation record only; not the current Claude Code target.
+- `Official_EU_AI_Act_Source_Note_v1.md` — superseded by v1.1.
