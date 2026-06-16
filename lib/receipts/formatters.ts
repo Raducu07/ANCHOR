@@ -169,6 +169,24 @@ export function getPolicyHash(receipt: ReceiptPayload | null | undefined): strin
   return value ? String(value) : "";
 }
 
+// Shorten a hash/ID for display while keeping the full value copyable elsewhere.
+// Mirrors the local shorteners used in the Assistant and Receipts surfaces.
+export function shortenHash(value: string | null | undefined): string {
+  if (!value) return "—";
+  if (value.length <= 18) return value;
+  return `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
+
+// Output hash is legitimately null for runs with no model output (e.g. created,
+// generation_refused, generation_failed, output_blocked). Render an honest
+// placeholder rather than a literal "None"; never fabricate a hash.
+export function formatOutputHash(value: string | null | undefined): string {
+  if (value === null || value === undefined || value === "") {
+    return "No output generated";
+  }
+  return shortenHash(value);
+}
+
 export function getNoContentStored(receipt: ReceiptPayload | null | undefined): "Yes" | "No" {
   if (!receipt) return "Yes";
   return receipt.no_content_stored === false ? "No" : "Yes";
