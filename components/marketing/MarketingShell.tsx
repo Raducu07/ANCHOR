@@ -23,10 +23,10 @@ export function MarketingShell({
             <Image
               src="/brand/anchor-emblem.png"
               alt="ANCHOR emblem"
-              width={44}
-              height={44}
+              width={48}
+              height={48}
               priority
-              className="h-9 w-9 object-contain sm:h-10 sm:w-10"
+              className="h-11 w-11 object-contain sm:h-12 sm:w-12"
             />
             <span className="text-2xl font-extrabold tracking-tight text-slate-950">ANCHOR</span>
           </Link>
@@ -65,9 +65,9 @@ export function MarketingShell({
             <Image
               src="/brand/anchor-emblem.png"
               alt="ANCHOR emblem"
-              width={36}
-              height={36}
-              className="h-8 w-8 object-contain sm:h-9 sm:w-9"
+              width={44}
+              height={44}
+              className="h-10 w-10 object-contain sm:h-11 sm:w-11"
             />
             <span className="text-xl font-bold tracking-tight text-slate-950">ANCHOR</span>
           </div>
