@@ -27,6 +27,7 @@ import {
   extractInputKind,
   extractPiiSignal,
   extractWorkflowOrigin,
+  formatOutputHash,
   formatPiiDetected,
   formatScore,
   formatTimestamp,
@@ -1520,7 +1521,7 @@ function AssistantReceiptDetail({
           mono
         />
         <AssistantReceiptCell
-          label="Created at"
+          label="Receipt sealed at"
           value={formatTimestamp(receipt.receipt_created_at)}
         />
       </ReceiptGroup>
@@ -1538,6 +1539,10 @@ function AssistantReceiptDetail({
           label="Review decision"
           value={humanizeAssistantDecision(receipt.review_decision)}
         />
+        <p className="col-span-full mt-1 text-[11px] leading-5 text-slate-500">
+          Review status and decision are recorded as at the time this receipt was sealed. The underlying run may be
+          reviewed again later; the live run review state is shown on the Assistant page.
+        </p>
       </ReceiptGroup>
 
       <ReceiptGroup title="Policy context">
@@ -1570,9 +1575,7 @@ function AssistantReceiptDetail({
         />
         <AssistantReceiptCell
           label="Output hash"
-          value={
-            receipt.output_sha256 ? shortenAssistantId(receipt.output_sha256) : "None"
-          }
+          value={formatOutputHash(receipt.output_sha256)}
           copyValue={receipt.output_sha256 ?? null}
           mono={!!receipt.output_sha256}
         />

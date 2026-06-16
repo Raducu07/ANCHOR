@@ -22,6 +22,7 @@ import {
   updateAssistantRunReview,
 } from "@/lib/assistant";
 import { ApiError } from "@/lib/api";
+import { formatOutputHash } from "@/lib/receipts/formatters";
 import {
   SESSION_SERVER_SNAPSHOT,
   getSessionUserSnapshot,
@@ -891,8 +892,7 @@ function RunRecordCard({
         ) : null}
         <DetailRow
           label="Output hash"
-          value={record.output_sha256 ?? "None"}
-          displayValue={record.output_sha256 ? formatShortId(record.output_sha256) : "None"}
+          value={formatOutputHash(record.output_sha256)}
           mono={!!record.output_sha256}
           copyValue={record.output_sha256 ?? null}
         />
@@ -1134,7 +1134,7 @@ function OutputBlockedPanel({
         <div className="rounded-lg border border-rose-100 bg-white px-3 py-2">
           <p className="text-[11px] uppercase tracking-wide text-rose-700">Output hash</p>
           <p className="mt-1 font-mono text-xs text-slate-900 break-all">
-            {outputSha256 ?? "None"}
+            {formatOutputHash(outputSha256)}
           </p>
         </div>
         <div className="rounded-lg border border-rose-100 bg-white px-3 py-2">
@@ -1567,8 +1567,7 @@ function RunDetailBody({
         />
         <DetailRow
           label="Output hash"
-          value={r.output_sha256 ?? "None"}
-          displayValue={r.output_sha256 ? formatShortId(r.output_sha256) : "None"}
+          value={formatOutputHash(r.output_sha256)}
           mono={!!r.output_sha256}
           copyValue={r.output_sha256 ?? null}
         />
@@ -1819,7 +1818,7 @@ function ReceiptEvidenceCard({
         />
         <ReceiptCell label="Receipt kind" value={receipt.receipt_kind} />
         <ReceiptCell label="Receipt version" value={receipt.receipt_version} />
-        <ReceiptCell label="Created at" value={formatDateTime(receipt.receipt_created_at)} />
+        <ReceiptCell label="Receipt sealed at" value={formatDateTime(receipt.receipt_created_at)} />
       </ReceiptGroup>
 
       <ReceiptGroup title="Review outcome">
@@ -1830,6 +1829,10 @@ function ReceiptEvidenceCard({
           value={reviewDecisionLabel(receipt.review_decision)}
         />
       </ReceiptGroup>
+      <p className="mt-2 text-[11px] leading-5 text-slate-500">
+        Receipt snapshot — sealed at receipt creation time. This records the review state at seal time; the run review
+        state can change later.
+      </p>
 
       <ReceiptGroup title="Policy context">
         <ReceiptCell
@@ -1860,7 +1863,7 @@ function ReceiptEvidenceCard({
         />
         <ReceiptCell
           label="Output hash"
-          value={receipt.output_sha256 ? formatShortId(receipt.output_sha256) : "None"}
+          value={formatOutputHash(receipt.output_sha256)}
           copyValue={receipt.output_sha256 ?? null}
           mono={!!receipt.output_sha256}
         />
