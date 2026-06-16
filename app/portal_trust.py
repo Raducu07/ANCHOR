@@ -364,28 +364,43 @@ def _build_self_assessment_evidence_section(
 def _build_assistant_receipt_evidence_section(
     snapshot: Dict[str, Any],
 ) -> Dict[str, Any]:
-    governance = snapshot.get("governance", {}) or {}
-    events_24h = int(governance.get("events_24h") or 0)
-    interventions_24h = int(governance.get("interventions_24h") or 0)
+    # 2A-D.3 source-of-truth polish: this section now consumes the
+    # metadata-only Assistant receipt aggregate (counts of sealed
+    # `assistant_run_receipts` rows) instead of governance-event counts,
+    # so it represents actual receipt evidence consistently with the
+    # other Phase 2A evidence blocks. Counts only; no hash values, no raw
+    # prompt / draft / output.
+    block = snapshot.get("assistant_receipts") or {}
+    receipts_total = int(block.get("receipts_total") or 0)
+    receipts_last_30d = int(block.get("receipts_last_30d") or 0)
+    reviewed_approved = int(block.get("reviewed_approved_count") or 0)
+    reviewed_rejected = int(block.get("reviewed_rejected_count") or 0)
+    reviewed_needs_edit = int(block.get("reviewed_needs_edit_count") or 0)
+    last_receipt_created_at = block.get("last_receipt_created_at")
+    window_days = int(block.get("window_days") or 30)
+    governance_note = block.get("governance_note") or (
+        "Assistant receipt evidence is metadata-only. Receipts record the "
+        "governance metadata around sealed, human-reviewed Assistant runs "
+        "and never the raw prompt, draft, or output."
+    )
     return {
         "id": "assistant_receipt_evidence",
         "title": "Assistant receipt evidence",
-        "body": (
-            "Assistant receipt evidence is metadata-only. Receipts record "
-            "the governance metadata around Assistant runs (hashes, policy "
-            "version, validation profile, review state) and never the raw "
-            "prompt, draft, or output."
-        ),
+        "body": governance_note,
         "bullets": [
-            "Assistant receipt evidence surface is active.",
-            f"Recent governance events (24h): {events_24h}.",
-            f"Recent interventions (24h): {interventions_24h}.",
+            f"Sealed Assistant receipts on file: {receipts_total}.",
+            f"Receipts created in last {window_days} days: {receipts_last_30d}.",
+            f"Receipts sealed after review approval: {reviewed_approved}.",
+            f"Receipts sealed after review rejection: {reviewed_rejected}.",
+            f"Receipts sealed needing edits before use: {reviewed_needs_edit}.",
+            f"Most recent receipt created: {last_receipt_created_at or '-'}.",
             "Per-run receipt metadata is exposed via the Assistant traceability endpoints, not duplicated in this artefact.",
-            "Raw prompts, drafts, and outputs are not stored or surfaced.",
+            "Counts only; no hash values, raw prompts, drafts, or outputs are stored or surfaced.",
         ],
         "raw_content_included": False,
         "raw_prompt_included": False,
         "raw_output_included": False,
+        "hash_values_included": False,
     }
 
 

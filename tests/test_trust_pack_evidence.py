@@ -290,6 +290,25 @@ def _minimal_snapshot(**overrides: Any) -> Dict[str, Any]:
                 "supports governance review and learning."
             ),
         },
+        "assistant_receipts": {
+            "window_days": 30,
+            "receipts_total": 9,
+            "receipts_last_30d": 4,
+            "reviewed_approved_count": 6,
+            "reviewed_rejected_count": 2,
+            "reviewed_needs_edit_count": 1,
+            "last_receipt_created_at": "2026-06-03T11:15:00+00:00",
+            "raw_content_included": False,
+            "raw_prompt_included": False,
+            "raw_output_included": False,
+            "hash_values_included": False,
+            "governance_note": (
+                "Assistant receipt evidence is metadata-only. Receipts "
+                "record the governance metadata around sealed, "
+                "human-reviewed Assistant runs and never the raw prompt, "
+                "draft, or output."
+            ),
+        },
         "limitations": [
             "Evidence is metadata-only.",
             "Human review remains required.",
@@ -440,10 +459,68 @@ def test_pack_has_self_assessment_section() -> None:
 def test_pack_has_assistant_receipt_evidence_section() -> None:
     s = _section_by_id(_pack(), "assistant_receipt_evidence")
     bullets_text = " ".join(s["bullets"]).lower()
-    assert "assistant receipt evidence surface is active" in bullets_text
+    # 2A-D.3: section now reports real sealed-receipt counts from the
+    # assistant_receipts aggregate, not governance-event counts.
+    assert "sealed assistant receipts on file: 9" in bullets_text
+    assert "receipts created in last 30 days: 4" in bullets_text
+    assert "receipts sealed after review approval: 6" in bullets_text
+    assert "receipts sealed after review rejection: 2" in bullets_text
+    assert "receipts sealed needing edits before use: 1" in bullets_text
+    assert "most recent receipt created: 2026-06-03t11:15:00+00:00" in bullets_text
     assert s["raw_content_included"] is False
     assert s["raw_prompt_included"] is False
     assert s["raw_output_included"] is False
+    assert s["hash_values_included"] is False
+    # Counts only: no hash value leaks into the section.
+    haystack = " ".join(_walk_strings(s)).lower()
+    assert "sha256" not in haystack
+    assert "input_sha256" not in haystack
+    assert "output_sha256" not in haystack
+
+
+def test_pack_assistant_receipt_section_no_hash_or_content_keys() -> None:
+    s = _section_by_id(_pack(), "assistant_receipt_evidence")
+    keys = set(_walk_keys(s))
+    for k in (
+        "input_sha256", "output_sha256", "input_hash", "output_hash",
+        "raw_prompt", "raw_output", "draft", "prompt", "transcript",
+    ):
+        assert k not in keys, f"forbidden key in assistant_receipt section: {k}"
+
+
+def test_pack_handles_empty_assistant_receipt_block() -> None:
+    """No receipts sealed yet: all counts zero, last receipt '-'."""
+    resp = _pack(assistant_receipts={
+        "window_days": 30,
+        "receipts_total": 0,
+        "receipts_last_30d": 0,
+        "reviewed_approved_count": 0,
+        "reviewed_rejected_count": 0,
+        "reviewed_needs_edit_count": 0,
+        "last_receipt_created_at": None,
+        "raw_content_included": False,
+        "raw_prompt_included": False,
+        "raw_output_included": False,
+        "hash_values_included": False,
+        "governance_note": "Assistant receipt evidence is metadata-only.",
+    })
+    s = _section_by_id(resp, "assistant_receipt_evidence")
+    text = " ".join(s["bullets"]).lower()
+    assert "sealed assistant receipts on file: 0" in text
+    assert "most recent receipt created: -" in text
+
+
+def test_pack_assistant_receipt_section_missing_block_is_safe() -> None:
+    """Back-compat: if the snapshot has no assistant_receipts block at
+    all, the section still renders with zeroed counts rather than
+    raising."""
+    base = _minimal_snapshot()
+    base.pop("assistant_receipts", None)
+    from app.portal_trust import _build_pack_response
+    resp = _build_pack_response(base)
+    s = _section_by_id(resp, "assistant_receipt_evidence")
+    text = " ".join(s["bullets"]).lower()
+    assert "sealed assistant receipts on file: 0" in text
 
 
 # ---------------------------------------------------------------------

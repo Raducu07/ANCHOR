@@ -903,6 +903,105 @@ def _build_incident_near_miss_block(
     }
 
 
+_ASSISTANT_RECEIPT_NOTE = (
+    "Assistant receipt evidence is metadata-only. Receipts record the "
+    "governance metadata around sealed, human-reviewed Assistant runs "
+    "(review state, policy version, validation profile) and never the "
+    "raw prompt, draft, or output. These are counts only; no hash "
+    "values or content are surfaced here. It is not a chat history, "
+    "not a clinical record, and not proof of clinical correctness."
+)
+
+
+def _build_assistant_receipt_block(
+    db: Session,
+    clinic_id: str,
+) -> Dict[str, Any]:
+    """Aggregate metadata-only Assistant receipt evidence for the Trust
+    posture surface.
+
+    Reads only COUNTs and a MAX(created_at) from
+    `assistant_run_receipts` and returns counts. NO per-receipt
+    identifiers, NO hash values (input_sha256 / output_sha256), and NO
+    raw prompt / draft / output content are selected or returned - the
+    aggregate is counts-only by construction.
+
+    Counts: all-time total, a by-review-state breakdown
+    (reviewed_approved / reviewed_rejected / reviewed_needs_edit), a
+    recent 30-day window count (mirroring the incident block's window
+    pattern), and the wall-clock of the most recent receipt.
+    Clinic-scoped; runs under the same tenant/RLS context that
+    constructs the rest of the snapshot.
+    """
+    window_days = 30
+    row = _safe_row_mapping(
+        db,
+        """
+        WITH params AS (
+            SELECT
+                CAST(:clinic_id AS uuid) AS clinic_id,
+                (now() - (:window_days || ' days')::interval)
+                    AS window_start
+        )
+        SELECT
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+            ) AS receipts_total,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.created_at >= (SELECT window_start FROM params)
+            ) AS receipts_last_30d,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.review_status = 'reviewed_approved'
+            ) AS reviewed_approved_count,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.review_status = 'reviewed_rejected'
+            ) AS reviewed_rejected_count,
+            COUNT(*) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+                  AND r.review_status = 'reviewed_needs_edit'
+            ) AS reviewed_needs_edit_count,
+            MAX(r.created_at) FILTER (
+                WHERE r.clinic_id = (SELECT clinic_id FROM params)
+            ) AS last_receipt_created_at
+        FROM public.assistant_run_receipts r
+        """,
+        {"clinic_id": clinic_id, "window_days": str(window_days)},
+        "assistant_receipt_aggregate",
+    )
+
+    last_receipt_created_at = row.get("last_receipt_created_at")
+    last_receipt_created_at_iso = (
+        last_receipt_created_at.isoformat()
+        if last_receipt_created_at
+        else None
+    )
+
+    return {
+        "window_days": window_days,
+        "receipts_total": _to_int(row.get("receipts_total")),
+        "receipts_last_30d": _to_int(row.get("receipts_last_30d")),
+        "reviewed_approved_count": _to_int(
+            row.get("reviewed_approved_count")
+        ),
+        "reviewed_rejected_count": _to_int(
+            row.get("reviewed_rejected_count")
+        ),
+        "reviewed_needs_edit_count": _to_int(
+            row.get("reviewed_needs_edit_count")
+        ),
+        "last_receipt_created_at": last_receipt_created_at_iso,
+        # Doctrine self-assertions. Always false / absent on this surface.
+        "raw_content_included": False,
+        "raw_prompt_included": False,
+        "raw_output_included": False,
+        "hash_values_included": False,
+        "governance_note": _ASSISTANT_RECEIPT_NOTE,
+    }
+
+
 def build_trust_snapshot(
     db: Session,
     clinic_id: str,
@@ -1042,6 +1141,10 @@ def build_trust_snapshot(
         db=db, clinic_id=clinic_id,
     )
 
+    assistant_receipt_block = _build_assistant_receipt_block(
+        db=db, clinic_id=clinic_id,
+    )
+
     recommended_learning = _derive_recommended_learning(
         top_mode_24h=top_mode_24h,
         intervention_rate_24h=intervention_rate_24h,
@@ -1115,6 +1218,7 @@ def build_trust_snapshot(
         "self_assessment": self_assessment_block,
         "client_transparency": client_transparency_block,
         "incident_near_miss": incident_near_miss_block,
+        "assistant_receipts": assistant_receipt_block,
         "limitations": _build_limitations(signal_quality=signal_quality),
     }
 

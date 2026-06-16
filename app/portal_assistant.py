@@ -776,6 +776,11 @@ _ALL_RUN_STATUSES = {
     RUN_STATUS_SUCCEEDED,
     RUN_STATUS_REFUSED,
     RUN_STATUS_FAILED,
+    # M6.6 status — a run can hold 'output_blocked' (model produced a
+    # draft that ANCHOR's post-output safety validator blocked), so it
+    # must be an accepted value for the GET /runs?run_status= filter,
+    # consistent with the other run statuses.
+    RUN_STATUS_OUTPUT_BLOCKED,
 }
 
 

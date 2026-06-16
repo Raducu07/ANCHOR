@@ -300,6 +300,23 @@ def test_list_runs_invalid_run_status_still_400() -> None:
     assert resp.status_code == 400
 
 
+def test_list_runs_output_blocked_status_filter_accepted() -> None:
+    """RC coherence: 'output_blocked' is a valid run status, so the
+    GET /runs?run_status=output_blocked filter must be accepted and
+    behave consistently with the other status filters (not 400)."""
+    app, db = build_app()
+    db.select_list_rows = []
+    resp = client_for(app).get(
+        "/v1/assistant/runs?run_status=output_blocked",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+    sql, params = _list_select_calls(db)[-1]
+    assert "ar.run_status = :run_status" in sql
+    assert params["run_status"] == "output_blocked"
+    assert resp.json()["applied_filters"]["run_status"] == "output_blocked"
+
+
 def test_list_runs_mode_filter_still_works() -> None:
     app, db = build_app()
     db.select_list_rows = []
