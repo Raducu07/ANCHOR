@@ -367,7 +367,8 @@ export type IntelligenceRecommendationsResponse = {
   items: IntelligenceRecommendation[];
 };
 // Assistant types — M6.1 Assistant Foundation
-export type AssistantContractResponse = {
+export type AssistantContractItem = {
+  mode?: string;
   contract_id?: string;
   contract_version?: string;
   version?: string;
@@ -383,6 +384,10 @@ export type AssistantContractResponse = {
   issued_at?: string;
   created_at?: string;
   [key: string]: unknown;
+};
+
+export type AssistantContractResponse = {
+  contracts: AssistantContractItem[];
 };
 
 export type AssistantRunRecord = {
