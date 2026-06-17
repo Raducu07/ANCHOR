@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -40,7 +41,14 @@ export function SideNav() {
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-64 shrink-0 flex-col border-r border-slate-200/50 bg-slate-50 py-6 font-headline text-sm font-medium">
         <div className="mb-8 px-6">
           <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-[#565e74]">anchor</span>
+            <Image
+              src="/brand/anchor-emblem.png"
+              alt="ANCHOR emblem"
+              width={28}
+              height={28}
+              priority
+              className="h-7 w-7 object-contain"
+            />
             <div>
               <h1 className="text-xl font-bold tracking-tight text-slate-900">ANCHOR</h1>
               <p className="text-[10px] font-bold uppercase leading-none tracking-widest text-slate-500">

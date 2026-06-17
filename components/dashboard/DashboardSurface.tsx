@@ -153,6 +153,15 @@ export function DashboardSurface() {
         </div>
       </section>
 
+      <NativeCard className="border-slate-200/80 bg-slate-50/60 p-6">
+        <SectionEyebrow>How ANCHOR works</SectionEyebrow>
+        <p className="mt-2 text-sm leading-6 text-slate-700">
+          Start in Workspace or Assistant, review outputs before use, then use Receipts and Trust
+          surfaces to evidence governance activity. ANCHOR stores governance metadata by default,
+          not raw clinical content.
+        </p>
+      </NativeCard>
+
       {error ? (
         <NativeCard className="border-rose-200 bg-rose-50 text-rose-700">
           <p className="text-sm font-medium">Dashboard unavailable</p>
