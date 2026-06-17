@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { LoginForm } from "@/components/auth/LoginForm";
 
 export default function LoginPage() {
@@ -7,8 +8,16 @@ export default function LoginPage() {
         <section className="flex items-center border-b border-slate-200 px-6 py-12 lg:border-b-0 lg:border-r lg:px-12 xl:px-16">
           <div className="max-w-xl space-y-8">
             <div className="space-y-4">
-              <div className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium uppercase tracking-[0.18em] text-slate-600">
-                ANCHOR
+              <div className="inline-flex items-center gap-2">
+                <Image
+                  src="/brand/anchor-emblem.png"
+                  alt="ANCHOR emblem"
+                  width={32}
+                  height={32}
+                  priority
+                  className="h-8 w-8 object-contain"
+                />
+                <span className="text-lg font-extrabold tracking-tight text-slate-950">ANCHOR</span>
               </div>
               <h1 className="text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl">
                 Clinic governance workspace

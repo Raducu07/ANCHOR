@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ChangeEventHandler, type ReactNode } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { apiFetch, ApiError } from "@/lib/api";
@@ -771,6 +772,20 @@ export function WorkspaceSurface() {
         </NativeCard>
       </section>
 
+      <section>
+        <NativeCard className="p-6">
+          <SectionEyebrow>Start here</SectionEyebrow>
+          <h2 className="mt-2 text-base font-semibold text-slate-900">
+            Workspace is step one of the governed evidence loop
+          </h2>
+          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
+            Use Workspace to run governed work through ANCHOR. Human review is required before any operational use.
+            Each run then produces metadata receipts and Trust evidence that show what happened. ANCHOR records
+            governance metadata by default, not raw clinical content.
+          </p>
+        </NativeCard>
+      </section>
+
       <div className="grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.82fr)] xl:items-start">
         <div>
           <NativeCard className="overflow-hidden p-0">
@@ -1512,6 +1527,37 @@ export function WorkspaceSurface() {
           </NativeCard>
         </div>
       </div>
+
+      <section>
+        <NativeCard className="p-6">
+          <SectionEyebrow>Where this goes next</SectionEyebrow>
+          <h2 className="mt-2 text-base font-semibold text-slate-900">Evidence and support surfaces</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+            After review, governed runs are evidenced across these surfaces. Use them to see what was recorded and to
+            follow up when review or safety signals need attention.
+          </p>
+          <div className="mt-5 grid gap-4 xl:grid-cols-3">
+            <WorkspaceNavCard
+              href="/receipts"
+              icon="receipt_long"
+              title="Receipts"
+              description="View metadata receipts for governed activity."
+            />
+            <WorkspaceNavCard
+              href="/trust/profile"
+              icon="shield_with_heart"
+              title="Trust"
+              description="See how evidence contributes to clinic trust posture."
+            />
+            <WorkspaceNavCard
+              href="/learn"
+              icon="school"
+              title="Learn"
+              description="Use learning guidance when review or safety signals need follow-up."
+            />
+          </div>
+        </NativeCard>
+      </section>
     </div>
   );
 }
@@ -1555,6 +1601,36 @@ function MetaChip({ label, dot = false }: { label: string; dot?: boolean }) {
       {dot ? <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-slate-500" /> : null}
       {label}
     </span>
+  );
+}
+
+function WorkspaceNavCard({
+  href,
+  icon,
+  title,
+  description,
+}: {
+  href: string;
+  icon: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className="group flex items-start gap-4 rounded-xl border border-slate-200/80 bg-white p-5 shadow-sm transition hover:border-slate-300 hover:bg-slate-50/60"
+    >
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600 transition group-hover:bg-slate-200">
+        <span className="material-symbols-outlined text-[20px]">{icon}</span>
+      </div>
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-slate-900">{title}</p>
+        <p className="mt-0.5 text-sm leading-5 text-slate-600">{description}</p>
+      </div>
+      <span className="material-symbols-outlined ml-auto mt-0.5 shrink-0 text-[18px] text-slate-400 transition group-hover:translate-x-0.5">
+        chevron_right
+      </span>
+    </Link>
   );
 }
 

@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { AnchorAssistant } from "@/components/marketing/AnchorAssistant";
@@ -18,8 +19,16 @@ export function MarketingShell({
     <main className="min-h-screen bg-slate-50 text-slate-800">
       <header className="fixed inset-x-0 top-0 z-50 border-b border-slate-200 bg-white/90 backdrop-blur-md print:static">
         <div className="mx-auto flex h-20 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
-          <Link href="/" className="text-2xl font-extrabold tracking-tight text-slate-950">
-            ANCHOR
+          <Link href="/" aria-label="ANCHOR home" className="inline-flex items-center gap-2 sm:gap-3">
+            <Image
+              src="/brand/anchor-emblem.png"
+              alt="ANCHOR emblem"
+              width={48}
+              height={48}
+              priority
+              className="h-11 w-11 object-contain sm:h-12 sm:w-12"
+            />
+            <span className="text-2xl font-extrabold tracking-tight text-slate-950">ANCHOR</span>
           </Link>
 
           <nav className="hidden items-center gap-8 md:flex">
@@ -52,7 +61,16 @@ export function MarketingShell({
 
       <footer className="border-t border-slate-200 bg-slate-50 px-4 py-12 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-7xl">
-          <div className="text-xl font-bold tracking-tight text-slate-950">ANCHOR</div>
+          <div className="flex items-center gap-2 sm:gap-3">
+            <Image
+              src="/brand/anchor-emblem.png"
+              alt="ANCHOR emblem"
+              width={44}
+              height={44}
+              className="h-10 w-10 object-contain sm:h-11 sm:w-11"
+            />
+            <span className="text-xl font-bold tracking-tight text-slate-950">ANCHOR</span>
+          </div>
           <div className="mt-8 grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
             {LEGAL_FOOTER_GROUPS.map((group) => (
               <nav key={group.heading} aria-label={group.heading} className="flex flex-col gap-3">

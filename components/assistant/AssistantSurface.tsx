@@ -33,7 +33,7 @@ import {
   getAssistantLearnLinks,
 } from "@/lib/assistantLearnGuidance";
 import type {
-  AssistantContractResponse,
+  AssistantContractItem,
   AssistantPolicyHistoryItem,
   AssistantPolicySettings,
   AssistantReviewStatusInput,
@@ -81,7 +81,7 @@ type RunState =
   | { kind: "error"; message: string };
 
 export function AssistantSurface() {
-  const [contract, setContract] = useState<AssistantContractResponse | null>(null);
+  const [contract, setContract] = useState<AssistantContractItem | null>(null);
   const [contractLoading, setContractLoading] = useState(true);
   const [contractError, setContractError] = useState<string | null>(null);
   const [contractUnavailable, setContractUnavailable] = useState(false);
@@ -238,7 +238,11 @@ export function AssistantSurface() {
       setContractError(null);
       setContractUnavailable(false);
       const result = await getAssistantContract();
-      setContract(result);
+      const activeContract =
+        result.contracts?.find((item) => item.mode === ASSISTANT_MODE_CLIENT_COMMUNICATION) ??
+        result.contracts?.[0] ??
+        null;
+      setContract(activeContract);
     } catch (err) {
       setContract(null);
       if (err instanceof ApiError && (err.status === 404 || err.status === 501)) {
