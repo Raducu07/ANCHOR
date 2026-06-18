@@ -24,6 +24,7 @@ This note is grounded in the operative canon, not in external assumptions.
 - Roadmap v2.6 §2 lists `Phase 2B | Commercial Leverage Extensions | Future`, with named members including **AI Tool Governance Notes** (alongside mobile near-miss, locum governance, solo-professional SKU, acquisition/insurer packs, peer benchmarking).
 - Readiness Map v1.1 §4 (EU AI Act Article 13 row) references "future AI Tool Governance Notes" and states: "AI Tool Governance Notes remain future/commercial extension."
 - The repo therefore treats AI Tool Governance Notes as a **named but future Phase 2B extension** — not current work and not authorised for build.
+- **Provenance update (18 June 2026):** the AI Provider Information Framework is now confirmed (RCVS news item, 17 June 2026) as an **RCVS and Digital Practice-led consultation draft** — regulator-adjacent and strategically material, but **not final RCVS guidance** and **not a compliance standard**. The improved provenance strengthens the Phase 2B rationale, but it does not change the current gating: no implementation without explicit founder prioritisation after RC/security/legal/design priorities. See the source note: [`../operations/source_notes/2026-06-18_veterinary_ai_vendor_transparency_source_note.md`](../operations/source_notes/2026-06-18_veterinary_ai_vendor_transparency_source_note.md).
 
 **M6.12 / future vendor-neutral connector layer.**
 - Roadmap v2.6 §2 lists `M6.12 | Vendor-Neutral Connector Layer | Future / gated`. §9 records detailed preconditions: local/staging live-generation safety gate passed; hard-refusal harness proven on the live path; security audit + legal/subprocessor coverage complete; production live generation off until the safety gate passes. It "may be brought forward only by an explicit founder decision (recorded as a memo addendum)".
@@ -112,7 +113,7 @@ Supported by Roadmap v2.6 §9 (M6.12) and §2:
 - Do **not** ingest vendor documents automatically in v1.
 - Do **not** store raw clinical records, raw vendor contracts, patient identifiers, or client communications.
 - Do **not** expose consent / GDPR determinations as ANCHOR conclusions.
-- Do **not** treat the VATA draft as a product-requirements authority.
+- Do **not** treat the RCVS and Digital Practice-led consultation draft (not final RCVS guidance; not a compliance standard) as a product-requirements authority, and do **not** claim ANCHOR "aligns with" or "is built around" the RCVS framework or is "framework-compliant".
 
 ---
 

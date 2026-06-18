@@ -12,6 +12,16 @@
 
 ---
 
+## 0. Provenance update (18 June 2026)
+
+When this note was first written, the AI Provider Information Framework was recorded conservatively as a "supplementary, unverified external draft working paper" by the Veterinary AI Transparency Alliance. That classification has been **corrected** following the RCVS news item published 17 June 2026, which confirms the Alliance is **led by the Royal College of Veterinary Surgeons (RCVS) and Digital Practice** and is consulting the veterinary professions on the framework.
+
+- **Corrected classification:** Veterinary AI Transparency Alliance / AI Provider Information Framework — **RCVS and Digital Practice-led consultation draft; regulator-adjacent; not final RCVS guidance; not a compliance standard.**
+- **Provenance source (RCVS news page):** https://www.rcvs.org.uk/about-us/news-and-views/news/transparency-alliance-consults-the-veterinary-professions-on-responsible-ai-framework (published 17 June 2026).
+- **What this does not change:** it remains a **consultation draft**, not final RCVS guidance, not a compliance standard, and **not regulator endorsement of ANCHOR**. The improved provenance makes the framework strategically material as an RCVS-led consultation source, but it does **not** authorise Phase 2B implementation. AI Tool Governance Notes remain **future Phase 2B planning / source discipline only**, gated behind explicit founder prioritisation after RC / security / legal / design priorities. ANCHOR remains a **structurer, not an arbiter**.
+
+---
+
 ## 1. Why this note exists
 
 ANCHOR currently governs **AI-use behaviour and evidence inside the clinic** (receipts, human review, Learn/CPD, policy/attestation, self-assessment, client transparency, incident/near-miss, Trust Pack). A separate *future* layer may help clinics **structure due diligence around third-party AI tools** they buy, evaluate, or already use.
@@ -24,9 +34,10 @@ This note records the source base for that possible future layer so that, if and
 
 ## 2. Source hierarchy
 
-1. **RCVS AI in practice advice** — UK professional anchor. Highest authority for ANCHOR's UK-first veterinary positioning. Outranks unofficial draft frameworks.
-2. **Frontiers in Veterinary Science commercial veterinary AI transparency audit** — peer-reviewed evidence anchor. North American market / public-documentation scope; single-study; must be cited with strict scope caveats.
-3. **Veterinary AI Transparency Alliance (VATA) draft** — supplementary, unverified external draft working paper. Not authoritative; useful only for thematic input.
+1. **RCVS AI in practice advice** — current UK professional advice / highest professional anchor for ANCHOR's UK-first veterinary positioning.
+2. **RCVS and Digital Practice-led AI Provider Information Framework consultation** — regulator-adjacent consultation draft / emerging framework source; not final RCVS guidance; not a compliance standard. (Classification corrected 18 June 2026 — see §6 and the provenance update below.)
+3. **Frontiers in Veterinary Science commercial veterinary AI transparency audit** — peer-reviewed evidence anchor for the vendor-transparency problem. North American market / public-documentation scope; single-study; must be cited with strict scope caveats.
+4. **Earlier uploaded VATA draft text** — now treated as the draft framework content behind the RCVS-led consultation, not as an unverified standalone authority.
 
 ---
 
@@ -64,7 +75,7 @@ ANCHOR remains a **structurer of questions and evidence gaps**, never an arbiter
 - Where AI tools generate clinical records, outputs should be manually verified.
 - The RCVS AI advice includes practical questions around: intended scope; limitations; data storage; training data; whether live client data is used for continued learning; and whether the tool is closed or accessible/editable by the developer.
 
-This is the UK professional anchor for ANCHOR. It **outranks** unofficial draft frameworks (including the VATA draft) in the ANCHOR source hierarchy.
+This is the high-authority UK professional anchor for ANCHOR. The RCVS and Digital Practice-led consultation draft (see §6) is a regulator-adjacent consultation source that sits alongside it in the hierarchy, but as a **consultation draft it is not final RCVS guidance** and does not displace current published RCVS AI-in-practice advice.
 
 ---
 
@@ -134,27 +145,40 @@ Do **not** phrase this as "signalment or subgroup performance."
 
 ---
 
-## 6. Veterinary AI Transparency Alliance (VATA) draft — supplementary, unverified
+## 6. RCVS and Digital Practice-led AI Provider Information Framework — consultation draft (regulator-adjacent)
+
+**Corrected classification (18 June 2026):** Veterinary AI Transparency Alliance / AI Provider Information Framework — **RCVS and Digital Practice-led consultation draft; regulator-adjacent; not final RCVS guidance; not a compliance standard.**
 
 **Source:**
 
 - Title: "AI Provider Information Framework for Veterinary Practice"
-- Developed by: Veterinary AI Transparency Alliance
-- Status: Draft working paper
-- Last updated: June 2026
+- Convened by: Veterinary AI Transparency Alliance — stakeholder organisations and individuals from across the veterinary, technology and regulatory worlds — **led by the Royal College of Veterinary Surgeons (RCVS) and Digital Practice**.
+- Status: **RCVS-led consultation source**; open for consultation; **not final RCVS guidance**.
+- Provenance source (RCVS news page): https://www.rcvs.org.uk/about-us/news-and-views/news/transparency-alliance-consults-the-veterinary-professions-on-responsible-ai-framework
+- Published: 17 June 2026.
 
-**Status discipline — treat cautiously:**
+**Facts recorded from the RCVS source (17 June 2026):**
 
-- Unverified provenance unless the founder later confirms its source/standing.
-- Not RCVS guidance.
-- Not regulator output.
-- Not legal advice.
+- The Veterinary AI Transparency Alliance is described as stakeholder organisations and individuals from across the veterinary, technology and regulatory worlds.
+- The Alliance is led by the Royal College of Veterinary Surgeons (RCVS) and Digital Practice.
+- The framework supports safe, proportionate and informed adoption of AI tools in veterinary settings through best-practice guidance for both AI providers and veterinary practices.
+- It was developed over 18 months with input from veterinary professionals, developers, practices, regulators, insurers, educators, members of the wider practice team and animal owners.
+- It contains 23 principles.
+- It covers issues including human oversight requirements, data storage and usage, risk, and the potential impact of AI use on client consent and choice.
+- It sets out information AI providers should disclose, why it matters, minimum guidance expectations, and notes for veterinary professionals on assessing provider information.
+- The survey closes Monday 6 July at 5pm.
+
+**Status discipline — still a consultation draft:**
+
+- A **regulator-adjacent consultation draft**, not final RCVS guidance.
 - Not a compliance standard.
-- Not a certification basis.
-- Not a roadmap authority.
-- Not a reason to reshape ANCHOR ahead of current RC / security / legal / design priorities.
+- **Not regulator endorsement of ANCHOR.**
+- Not regulator output / not adopted regulation.
+- Not legal advice.
+- Not a roadmap authority and **does not authorise Phase 2B implementation**.
+- **Future Phase 2B planning / source discipline only** — not a reason to reshape ANCHOR ahead of current RC / security / legal / design priorities.
 
-Useful only as a **supplementary draft input** describing buyer-side questions a practice *might* ask.
+Useful as an **emerging-framework source for future planning**, describing buyer-side questions a practice *might* ask and the information providers should disclose.
 
 **Useful themes:**
 
@@ -165,7 +189,7 @@ Useful only as a **supplementary draft input** describing buyer-side questions a
 - Buyer-side questions practices may ask providers.
 - Provider disclosure categories such as: intended use, excluded use, autonomy, integrations, versioning, human oversight, competency assumptions, support/escalation, client communication, consent/choice, veterinary involvement, validation/testing, evidence base, training data/provenance, third-party models, performance, failure modes, data inputs/storage/ownership/secondary use, and data-protection posture.
 
-ANCHOR may borrow these *themes* to structure questions. ANCHOR must **not** describe any output as "VATA framework compliant" or treat the draft as a product-requirements authority.
+ANCHOR may borrow these *themes* to structure questions. ANCHOR must **not** describe any output as "framework-compliant", must not claim ANCHOR "aligns with" or "is built around" the RCVS framework, and must not treat the consultation draft as a product-requirements authority.
 
 ---
 
@@ -182,7 +206,7 @@ ANCHOR may borrow these *themes* to structure questions. ANCHOR must **not** des
 
 - Public claims should rely on **RCVS and peer-reviewed/official sources first**.
 - Frontiers claims must preserve **North American / public-documentation / single-study** scope.
-- The VATA draft can only be described as an **external draft / working paper** unless provenance is confirmed.
+- The framework can only be described as an **RCVS and Digital Practice-led consultation draft** — regulator-adjacent, but **not final RCVS guidance**, not a compliance standard, and not regulator endorsement of ANCHOR.
 - Do **not** use "framework compliant."
 - Do **not** say ANCHOR assesses clinical safety or validates AI tools.
 
@@ -193,7 +217,7 @@ ANCHOR may borrow these *themes* to structure questions. ANCHOR must **not** des
 Re-open and re-check this note when any of the following occur:
 
 - RCVS updates its AI advice.
-- A final VATA or RCVS framework is published.
+- The RCVS / Digital Practice consultation closes (survey closes Monday 6 July at 5pm) or a final framework / final RCVS guidance is published.
 - Solicitor review.
 - Before any public copy references vendor-transparency claims.
 - Before implementing AI Tool Governance Notes.

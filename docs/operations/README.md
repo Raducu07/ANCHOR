@@ -29,7 +29,7 @@ The founder summary recommends progressing the legal / commercial pack as the hi
 
 ## Source notes (source-discipline)
 
-- [`source_notes/2026-06-18_veterinary_ai_vendor_transparency_source_note.md`](./source_notes/2026-06-18_veterinary_ai_vendor_transparency_source_note.md) — **Veterinary AI Vendor Transparency — Source Note.** Records the source hierarchy and citation discipline (RCVS AI advice → Frontiers peer-reviewed transparency audit → unverified VATA draft) for the **future** AI Tool Governance Notes layer (Phase 2B per Roadmap v2.6 §2). Captures the locked public-citation wording and the wording-not-to-use list. **Source-discipline planning only** — not legal advice, not RCVS guidance except where sourced directly to RCVS, and not an authorisation to build. Paired product-design notes live under [`../product/`](../product/).
+- [`source_notes/2026-06-18_veterinary_ai_vendor_transparency_source_note.md`](./source_notes/2026-06-18_veterinary_ai_vendor_transparency_source_note.md) — **Veterinary AI Vendor Transparency — Source Note.** Records the source hierarchy and citation discipline (RCVS AI advice → RCVS/Digital Practice-led consultation draft (not final guidance) → Frontiers peer-reviewed transparency audit) for the **future** AI Tool Governance Notes layer (Phase 2B per Roadmap v2.6 §2). Captures the locked public-citation wording and the wording-not-to-use list. **Source-discipline planning only** — not legal advice, not RCVS guidance except where sourced directly to RCVS, and not an authorisation to build. Paired product-design notes live under [`../product/`](../product/).
 
 ## Doctrine pointers
 
