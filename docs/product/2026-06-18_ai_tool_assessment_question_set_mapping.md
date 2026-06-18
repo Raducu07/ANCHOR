@@ -1,0 +1,81 @@
+# AI Tool Assessment Question Set — Mapping Draft
+
+| Field | Value |
+| --- | --- |
+| Status | **Product planning draft only.** |
+| Date | 18 June 2026. |
+| Owner | Founder / Product Owner. |
+| Source base | [`../operations/source_notes/2026-06-18_veterinary_ai_vendor_transparency_source_note.md`](../operations/source_notes/2026-06-18_veterinary_ai_vendor_transparency_source_note.md). |
+| Companion | [`2026-06-18_ai_tool_governance_notes_evidence_and_positioning.md`](2026-06-18_ai_tool_governance_notes_evidence_and_positioning.md). |
+
+## Purpose
+
+Design the **low-liability first artefact** for a future AI Tool Governance Notes layer: a structured **buyer-side question set** that helps veterinary practices ask better questions of AI providers, and record what was — and was not — disclosed.
+
+## Status and boundaries
+
+- Product planning draft only.
+- Not for public use yet.
+- Not legal advice.
+- Not implementation-ready.
+- Not a risk-rating system.
+- Not a compliance checklist.
+- Not an MVP specification.
+- Not a substitute for solicitor / DPO / provider review.
+
+> This is a **broad planning map**. The future MVP should be narrowed *deliberately* — likely **8–10 high-value categories** (see positioning note §6) — before any implementation. Categories are informed by RCVS AI advice, the Frontiers audit, and the VATA draft, but this question set must **not** be branded as "VATA framework compliant" or as any framework-compliant artefact.
+
+## ANCHOR's role in every row — structurer, not arbiter
+
+For each category, ANCHOR's only actions are to structure the question and record evidence. The allowed structuring actions are:
+
+- "Record provider answer"
+- "Record missing/unclear"
+- "Flag for legal/DPO review"
+- "Flag for clinical governance review"
+- "Link to internal policy"
+- "Link to Learn/CPD"
+- "Link to incident/near-miss"
+- "Set next review date"
+
+ANCHOR must **never**: "ANCHOR determines", "ANCHOR approves", "ANCHOR certifies", "ANCHOR validates", "ANCHOR accredits", "safe/unsafe", "GDPR compliant", "RCVS compliant", or "clinically validated".
+
+---
+
+## Planning table
+
+| Category | Practice question | Why it matters | Evidence to request from provider | ANCHOR current coverage | Future ANCHOR note/evidence field | Liability caution |
+| --- | --- | --- | --- | --- | --- | --- |
+| Intended use and excluded use | What is this tool designed to do, and what is it explicitly **not** for? | RCVS: the user must understand scope to assess outputs critically. Scope creep is a primary misuse risk. | Written intended-use and excluded-use statement; documented out-of-scope cases. | Partial — clinic AI-use policy and Assistant permitted/prohibited-use framing (2A-2, M6.1). | Record provider answer; record missing/unclear; link to internal policy; set next review date. | ANCHOR records the provider's stated scope; it does not determine whether a use is appropriate. |
+| Clinical influence | Does the tool influence clinical decisions, records, or advice — directly or indirectly? | Determines how much human scrutiny and governance the use needs. | Provider description of where outputs enter clinical workflow. | Partial — ANCHOR doctrine prohibits diagnosis/treatment/prescribing on its own surfaces. | Record provider answer; flag for clinical governance review; link to internal policy. | ANCHOR does not assess clinical correctness or clinical suitability. |
+| Degree of autonomy | How autonomous is the tool — suggestion-only, assistive, or acting without human confirmation? | RCVS: clinical decision-making must not be wholly delegated to AI. | Provider statement of autonomy level and any autonomous actions. | Partial — human-review-based doctrine; review gate (M6.4). | Record provider answer; record missing/unclear; flag for clinical governance review. | ANCHOR records the stated autonomy level; it does not rate whether that level is acceptable. |
+| Human oversight and qualified reviewer | What human oversight is assumed, and who is qualified to review outputs? | RCVS: vets/VNs remain responsible; reviewer must understand the subject matter. EU AI Act Article 14 readiness theme. | Provider's documented human-oversight model and reviewer-competency assumptions. | Yes — review-state workflow, reviewer attribution (M6.4; Readiness Map §3 Theme 2). | Record provider answer; link to Learn/CPD; flag for clinical governance review. | Human oversight remains the clinic's responsibility; ANCHOR does not supply or certify reviewers. |
+| User competency and training | What knowledge or training does safe use assume? | RCVS Theme 3: staff need sufficient understanding to assess outputs. | Provider's stated competency assumptions and any training materials. | Yes — Learn/CPD AI-literacy activity and staff attestation (2A-1, 2A-2). | Record provider answer; link to Learn/CPD; set next review date. | ANCHOR records learning activity metadata only; not proof of competence or certified training. |
+| Workflow impact | How does the tool change existing clinical or admin workflows? | New failure modes and handoffs appear where workflows change. | Provider workflow/integration description and change notes. | Partial — governance receipts and Intelligence surface governed-workflow signals. | Record provider answer; record missing/unclear; flag for clinical governance review. | ANCHOR records the described impact; it does not validate workflow safety. |
+| Integrations and data access | What systems does it connect to, and what data can it access? | Integration scope drives data-protection and confidentiality exposure. | Provider integration list, data-access scope, and permissions model. | Partial — metadata-only doctrine; no raw clinical content stored by ANCHOR. | Record provider answer; flag for legal/DPO review; record missing/unclear. | ANCHOR records the stated access; it does not determine data-protection lawfulness. |
+| Versioning and update notification | How are versions tracked, and how are practices told when the tool changes? | Behaviour can change between versions; review currency depends on it. | Provider versioning policy and change-notification process. | Partial — policy versioning and dated governance evidence exist for ANCHOR's own surfaces. | Record provider answer; record missing/unclear; set next review date. | ANCHOR records the stated process; it does not monitor the third-party tool for changes. |
+| Validation and testing evidence | What validation or testing has been done, and is evidence available? | Frontiers audit: most audited products publish no validation evidence. This is the core transparency gap. | Provider validation/testing reports or summaries; statement if none are public. | Partial — R3 Assistant Evaluation / Golden-Test Registry covers ANCHOR's own Assistant, not third-party tools. | Record provider answer; **record missing/unclear** (expected to be common); flag for clinical governance review; set next review date. | ANCHOR records whether evidence was provided; it does **not** validate the tool or judge validation quality. |
+| Evidence base / independent review | Is there an independent or peer-reviewed evidence base? | Distinguishes vendor self-claims from external scrutiny. | Citations, independent studies, or third-party reviews. | None — third-party evidence base is outside current scope. | Record provider answer; record missing/unclear; set next review date. | ANCHOR records what is cited; it does not appraise or endorse the evidence. |
+| Training data provenance and representativeness | What data was the tool trained on, and is it representative of the relevant population? | Frontiers audit: only one vendor (1.4%) disclosed training-data signalment distribution and subgroup performance analysis. | Provider training-data provenance and representativeness statement. | None — outside current scope. | Record provider answer; record missing/unclear; flag for clinical governance review. | ANCHOR records the disclosure; it does not assess representativeness or fitness. |
+| Third-party / foundation model use | Does the tool rely on third-party or foundation models, and which? | Affects data flow, dependency, and provider accountability. | Provider statement of upstream/third-party models and their role. | Partial — ANCHOR's own live-generation path is Anthropic-coupled and production-off (declared). | Record provider answer; flag for legal/DPO review; record missing/unclear. | ANCHOR records the stated dependencies; it does not assess upstream-provider obligations. |
+| Accuracy / performance reporting | What accuracy or performance figures does the provider report, and under what conditions? | Headline metrics can mislead without conditions and population context. | Provider performance metrics with methodology and population context. | None — third-party performance reporting is outside current scope. | Record provider answer; record missing/unclear; flag for clinical governance review. | ANCHOR records reported figures; it does not verify accuracy or performance. |
+| Known limitations and failure modes | What limitations, contraindications, exclusions, and failure modes are documented? | VATA theme: visible limitations and failure modes support safe use. | Provider's documented limitations, contraindications, and failure modes. | Partial — Assistant refusal/safety codes and why-flagged → Learn linkage on ANCHOR's own surfaces. | Record provider answer; record missing/unclear; link to Learn/CPD; link to incident/near-miss. | ANCHOR records stated limitations; it does not guarantee they are complete. |
+| Automation bias controls | What does the tool do to reduce over-reliance on its outputs? | RCVS Theme 8 readiness: staff must identify biased/inaccurate/misleading outputs. | Provider description of automation-bias / over-reliance controls. | Partial — bias-detection Learn module; not-chat-history framing. | Record provider answer; link to Learn/CPD; record missing/unclear. | ANCHOR records the stated controls; it does not test for bias or guarantee detection. |
+| Support and escalation route | How is support provided, and how are problems escalated? | Determines whether issues can be resolved and recorded in time. | Provider support model, escalation route, and response expectations. | Partial — incident/near-miss workflow exists for ANCHOR-governed events (2A-5). | Record provider answer; record missing/unclear; link to incident/near-miss. | ANCHOR records the stated route; it does not guarantee provider support. |
+| Incident / near-miss reporting route | How can the practice report incidents or near-misses involving the tool? | Floor-level safety signals occur in practice, not only in dashboards. | Provider incident-reporting channel and handling process. | Yes — internal incident/near-miss logging (2A-5), as a governance record (not statutory reporting). | Record provider answer; link to incident/near-miss; set next review date. | ANCHOR's incident logging is a governance record, not statutory incident reporting. |
+| Data inputs | What data does the tool take in, including any client/patient data? | RCVS: confidentiality and Data Protection Act 2018 / UK GDPR must be maintained. | Provider data-input inventory, including any personal/special-category data. | Partial — metadata-only doctrine; ANCHOR does not store raw inputs. | Record provider answer; flag for legal/DPO review; record missing/unclear. | ANCHOR records the stated inputs; it does not determine data-protection lawfulness. |
+| Data storage / access / retention | Where is data stored, who can access it, and how long is it kept? | Storage, access, and retention drive confidentiality and breach exposure. | Provider storage location, access-control model, and retention policy. | Partial — ANCHOR metadata-only storage and retention discipline (R2; FORCE RLS). | Record provider answer; flag for legal/DPO review; record missing/unclear; set next review date. | ANCHOR records the stated posture; it does not certify the provider's data handling. |
+| Data ownership and secondary use | Who owns the data, and is it used for any secondary purpose (e.g. continued learning)? | RCVS practical question: whether live client data is used for continued learning. | Provider data-ownership terms and secondary-use / training-on-customer-data statement. | Partial — ANCHOR no-training-on-clinic-data posture documented for its own surfaces. | Record provider answer; flag for legal/DPO review; record missing/unclear. | ANCHOR records the stated terms; it does not determine ownership or lawful secondary use. |
+| Client communication support | Does the tool support clear communication to clients about AI use? | RCVS Theme 6 / EU AI Act Article 50 readiness: AI use should be explainable to clients. | Provider client-communication materials or guidance, if any. | Yes — client-facing transparency layer (2A-4). | Record provider answer; link to internal policy; record missing/unclear. | ANCHOR records the stated support; it does not assess adequacy of client communication. |
+| Client notice / consent / choice considerations | What notice, consent, or choice should clients have regarding this tool? | Confidentiality and data-protection rights may require notice or consent. | Provider's stated client-notice/consent assumptions; relevant data-flow detail. | Partial — client transparency disclosures exist; consent determinations are out of scope. | Record provider answer; **flag for legal/DPO review** (frame as a question for DPO/solicitor/provider); record missing/unclear. | Consent/notice prompts are **questions for your DPO/solicitor/provider**, not ANCHOR conclusions. |
+| Data protection / GDPR posture | What is the provider's data-protection posture, including roles and safeguards? | UK GDPR / Data Protection Act 2018 obligations apply to clinic data. | Provider data-protection documentation, processing roles, and safeguards. | Partial — ANCHOR documents its own metadata-only and tenant-isolation posture; clinic remains controller where applicable. | Record provider answer; **flag for legal/DPO review**; record missing/unclear; set next review date. | ANCHOR does **not** determine GDPR lawful basis, roles, or compliance — this is for the DPO/solicitor. |
+| Veterinary involvement / current responsibility | Who in the practice is responsible for the tool's use today? | RCVS: vets/VNs remain accountable for the decision to use AI and how outputs are used. | Internal — named responsible person/role in the practice. | Partial — governance owner / self-assessment captures responsibility metadata (2A-3). | Record provider answer (internal owner); link to internal policy; set next review date. | ANCHOR records the named owner; accountability remains with the named professional, not ANCHOR. |
+| Re-review trigger / next review date | When and on what trigger should this assessment be revisited? | Tools, versions, regulation, and evidence change; reviews go stale. | Internal — agreed review cadence and trigger events. | Partial — dated governance evidence and review cadence exist elsewhere in ANCHOR. | Set next review date; record missing/unclear; link to internal policy. | ANCHOR records the date/trigger; it does not enforce or guarantee the review happens. |
+
+---
+
+## Narrowing guidance for a future MVP
+
+When (and only if) the founder promotes this to build, narrow from the broad map above toward roughly 8–10 high-value categories — likely candidates: intended/excluded use; degree of autonomy; human oversight & qualified reviewer; validation & testing evidence; known limitations & failure modes; data storage/access/retention; data ownership & secondary use; client notice/consent considerations; data-protection posture; and re-review trigger. Final selection is a founder/design decision, not fixed here.
+
+*Question-set mapping draft — 18 June 2026 — product planning only. Not for public use. Not legal advice. Not implementation-ready. Not a risk-rating or compliance checklist. Not a substitute for solicitor/DPO/provider review. Documentation only; authorises no build, no paid pilot, no real clinic data.*
