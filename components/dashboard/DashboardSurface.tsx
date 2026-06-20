@@ -180,6 +180,12 @@ export function DashboardSurface() {
           >
             Open Workspace
           </Link>
+          <Link
+            href="/assistant"
+            className={[getButtonChromeClasses("secondary"), "rounded-md px-6 py-2.5"].join(" ")}
+          >
+            Open Assistant
+          </Link>
         </div>
       </section>
 
