@@ -8,13 +8,13 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 const postureItems = [
   {
     label: "Metadata-only governance",
-    value: "Established",
+    value: "In place",
     helper:
       "ANCHOR surfaces governance metadata for accountability and review without storing raw prompt or output content in the current product doctrine.",
   },
   {
     label: "Tenant isolation",
-    value: "Proven",
+    value: "In place",
     helper:
       "Clinic-scoped access and request context remain central to the platform’s operating model and commercial trust posture.",
   },
@@ -32,7 +32,7 @@ const postureItems = [
   },
 ];
 
-const guarantees = [
+const operationalPosture = [
   {
     title: "Privacy-aware oversight",
     body:
@@ -167,11 +167,11 @@ export default function PrivacyPolicyPage() {
         <div className="grid gap-4 xl:grid-cols-2">
           <Card variant="native">
             <SectionTitle
-              title="Operational guarantees"
-              description="The core promises this surface should reinforce for clinic users and leadership."
+              title="Operational posture"
+              description="The current operating posture this surface should reinforce for clinic users and leadership."
             />
             <div className="mt-4 space-y-4">
-              {guarantees.map((item) => (
+              {operationalPosture.map((item) => (
                 <div key={item.title} className="border-b border-slate-100 pb-4 last:border-b-0 last:pb-0">
                   <h3 className="text-sm font-semibold text-slate-900">{item.title}</h3>
                   <p className="mt-2 text-sm leading-6 text-slate-600">{item.body}</p>

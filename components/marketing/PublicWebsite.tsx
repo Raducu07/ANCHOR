@@ -21,7 +21,7 @@ export function PublicWebsite() {
               Governed AI workflows for veterinary clinics
             </h1>
             <p className="mx-auto max-w-3xl text-xl font-medium leading-relaxed text-slate-600 md:text-2xl">
-              Governance, trust, learning, and accountability for safe day-to-day AI use in veterinary clinics.
+              Governance, trust, learning, and accountability for responsible day-to-day AI use in veterinary clinics.
             </p>
 
             <div className="mt-10 flex flex-col justify-center gap-4 sm:flex-row">
@@ -59,7 +59,7 @@ export function PublicWebsite() {
               Why clinics need governed AI workflows
             </h2>
             <h3 className="text-4xl font-bold tracking-tight text-slate-950 md:text-5xl">
-              Operational governance for safe AI use in veterinary clinics
+              Operational governance for responsible AI use in veterinary clinics
             </h3>
             <p className="mx-auto mt-6 max-w-4xl text-lg leading-8 text-slate-600">
               AI can help veterinary teams move faster, but unmanaged use creates avoidable risk. Privacy-sensitive details,
@@ -117,7 +117,7 @@ export function PublicWebsite() {
         <div className="mx-auto max-w-7xl">
           <div className="mb-16 text-center">
             <h2 className="text-4xl font-bold tracking-tight text-slate-950 md:text-5xl">
-              A connected governance surface for safe AI use in veterinary clinics
+              A connected governance surface for responsible AI use in veterinary clinics
             </h2>
             <p className="mx-auto mt-4 max-w-3xl text-xl text-slate-600">
               ANCHOR combines governed workflows, receipt-backed review, practical learning, trust surfaces, and operational

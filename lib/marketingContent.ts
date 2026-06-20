@@ -1,7 +1,7 @@
 export const homepageWhyItems = [
   {
     title: "Privacy-sensitive details need careful handling",
-    text: "Ensure sensitive clinical and client data is detected and managed before reaching AI models.",
+    text: "Help teams identify privacy-sensitive material and manage AI-use boundaries before information is sent to external tools.",
   },
   {
     title: "Human review should stay visible before operational use",
@@ -9,7 +9,7 @@ export const homepageWhyItems = [
   },
   {
     title: "Leadership needs oversight without normalising raw-content storage",
-    text: "Rely on receipt-backed traceability to maintain a record of safe use without storing raw operational material.",
+    text: "Rely on receipt-backed traceability to maintain a record of governed use without storing raw operational material.",
   },
   {
     title: "Safe adoption depends on practical workflows, not vague policy",
