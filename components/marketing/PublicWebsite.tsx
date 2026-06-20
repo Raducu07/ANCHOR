@@ -41,6 +41,10 @@ export function PublicWebsite() {
                 Compare plans
               </Link>
             </div>
+
+            <p className="mx-auto mt-8 max-w-2xl text-sm leading-6 text-slate-500">
+              ANCHOR is not diagnostic, prescribing, treatment-planning, or autonomous clinical decision-making AI.
+            </p>
           </div>
 
           <BrowserFrame

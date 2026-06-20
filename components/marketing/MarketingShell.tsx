@@ -38,8 +38,8 @@ export function MarketingShell({
             <Link className="text-sm font-medium text-slate-600 transition-colors hover:text-slate-950" href="/#platform">
               Platform
             </Link>
-            <Link className="text-sm font-medium text-slate-600 transition-colors hover:text-slate-950" href="/#trust">
-              Trust
+            <Link className="text-sm font-medium text-slate-600 transition-colors hover:text-slate-950" href="/trust-center">
+              Trust Centre
             </Link>
             <Link className="text-sm font-medium text-slate-600 transition-colors hover:text-slate-950" href="/#boundaries">
               Boundaries

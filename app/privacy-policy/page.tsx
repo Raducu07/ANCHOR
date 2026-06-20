@@ -90,6 +90,13 @@ export default function PrivacyPolicyPage() {
             direction. This surface is designed to stay commercially credible and operationally clear without implying
             unsupported controls.
           </p>
+          <p className="mt-2 text-sm leading-6 text-slate-500">
+            Looking for the public Privacy Notice?{" "}
+            <Link href="/legal/privacy" className="font-medium text-slate-700 underline underline-offset-4 hover:text-slate-900">
+              View the public Privacy Notice
+            </Link>
+            .
+          </p>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
