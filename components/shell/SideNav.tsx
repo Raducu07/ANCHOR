@@ -5,14 +5,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const primaryItems = [
+  { href: "/dashboard", label: "Dashboard", icon: "dashboard" },
   { href: "/workspace", label: "Workspace", icon: "clinical_notes" },
   { href: "/assistant", label: "Assistant", icon: "smart_toy" },
-  { href: "/dashboard", label: "Dashboard", icon: "dashboard" },
   { href: "/receipts", label: "Receipts", icon: "receipt_long" },
-  { href: "/governance-events", label: "Governance Events", icon: "verified_user" },
-  { href: "/learn", label: "Learn", icon: "school" },
   { href: "/trust/profile", label: "Trust", icon: "shield_with_heart" },
+  { href: "/learn", label: "Learn", icon: "school" },
   { href: "/intelligence", label: "Intelligence", icon: "psychology" },
+  { href: "/governance-events", label: "Governance Events", icon: "verified_user" },
   { href: "/exports", label: "Exports", icon: "download" },
 ];
 
