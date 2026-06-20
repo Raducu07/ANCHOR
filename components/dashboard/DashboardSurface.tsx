@@ -1,9 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Button, getButtonChromeClasses } from "@/components/ui/Button";
 import { apiFetch, ApiError } from "@/lib/api";
+import {
+  SESSION_SERVER_SNAPSHOT,
+  getSessionUserSnapshot,
+  subscribeSessionStorage,
+} from "@/lib/auth";
 import type {
   DashboardResponse,
   IntelligenceRecommendation,
@@ -24,6 +29,11 @@ const principles = [
   { title: "Operational clarity", icon: "visibility" },
 ] as const;
 
+// Mirrors the admin set used by app/settings/page.tsx for Self-Assessment.
+// Frontend gate is discoverability hardening only; backend remains the real
+// authority on access.
+const POLICY_ADMIN_ROLES = new Set(["admin", "owner", "practice_manager"]);
+
 export function DashboardSurface() {
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [intelligence, setIntelligence] = useState<IntelligenceSummary | null>(null);
@@ -31,6 +41,26 @@ export function DashboardSurface() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Lightweight read of the existing session snapshot (same pattern as
+  // app/settings/page.tsx) so the readiness links can mirror Settings'
+  // role gating without new auth plumbing or backend changes.
+  const user = useSyncExternalStore(
+    subscribeSessionStorage,
+    getSessionUserSnapshot,
+    SESSION_SERVER_SNAPSHOT,
+  );
+  const isPolicyAdmin = Boolean(user && POLICY_ADMIN_ROLES.has(user.role));
+
+  // Trust posture and Incidents are surfaced to all clinic users (as on
+  // Settings); Self-Assessment stays admin-gated to match Settings.
+  const readinessLinks = [
+    { href: "/trust/posture", icon: "shield_with_heart", label: "Open Trust posture" },
+    ...(isPolicyAdmin
+      ? [{ href: "/settings/self-assessment", icon: "fact_check", label: "Open Self-Assessment" }]
+      : []),
+    { href: "/settings/incidents", icon: "report", label: "Open Incidents" },
+  ];
 
   async function load(showRefreshing = false) {
     try {
@@ -160,6 +190,30 @@ export function DashboardSurface() {
           surfaces to evidence governance activity. ANCHOR stores governance metadata by default,
           not raw clinical content.
         </p>
+      </NativeCard>
+
+      <NativeCard className="border-slate-200/80 bg-slate-50/60 p-6">
+        <SectionEyebrow>Governance &amp; readiness</SectionEyebrow>
+        <p className="mt-2 text-sm leading-6 text-slate-700">
+          Review trust posture, self-assessment, and incident evidence from one place.
+        </p>
+        <div className="mt-4 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+          {readinessLinks.map((link) => (
+            <Link
+              key={link.href}
+              href={link.href}
+              className="group flex items-center justify-between rounded-xl border border-slate-200/80 bg-slate-50 px-4 py-3 transition hover:border-slate-300 hover:bg-white"
+            >
+              <div className="flex items-center gap-3">
+                <span className="material-symbols-outlined text-[18px] text-slate-600">{link.icon}</span>
+                <span className="text-sm font-medium text-slate-900">{link.label}</span>
+              </div>
+              <span className="material-symbols-outlined text-[18px] text-slate-400 transition group-hover:translate-x-0.5">
+                chevron_right
+              </span>
+            </Link>
+          ))}
+        </div>
       </NativeCard>
 
       {error ? (
