@@ -1,5 +1,9 @@
 # ANCHOR Solicitor Pack Dispatch Checklist v1 — 2026-06-08
 
+> **2026-06-22 status update (founder-confirmed):** The legal/commercial pack has been **prepared and submitted to solicitor Piers for review; awaiting solicitor feedback. Not legally approved.** Paid pilots, real clinic data, customer onboarding, billing/Stripe, production live generation, and external customer use **remain blocked** until solicitor review and the wider gates are complete. This supersedes the "no solicitor engaged / no pack dispatched" wording recorded historically in §16 (as at 2026-06-08). No solicitor correspondence, legal advice, or privileged content is stored in this repo.
+>
+> **Changelog:** 2026-06-22 — Founder-confirmed solicitor submission status updated: pack submitted to solicitor Piers; awaiting review/feedback. No legal approval or external-use authorisation implied.
+
 ## 1. Purpose and status
 
 - This is a **practical internal founder / operator dispatch checklist** for preparing and sending the ANCHOR solicitor review pack.
@@ -330,8 +334,8 @@ Any unticked box is a hard stop.
 - ❌ No frontend change.
 - ❌ No secret access.
 - ❌ **No legal document finalised.**
-- ❌ **No solicitor engaged.**
-- ❌ **No pack dispatched.**
+- ~~❌ **No solicitor engaged.**~~ — *historical, as at 2026-06-08; **superseded 2026-06-22**: pack submitted to solicitor Piers, review pending (see status update at top).*
+- ~~❌ **No pack dispatched.**~~ — *historical, as at 2026-06-08; **superseded 2026-06-22**: pack submitted to solicitor Piers (see status update at top).*
 - ❌ **No founder approval granted.**
 - ❌ **No clinic access authorised.**
 - ❌ **No Pilot Agreement approved.**
