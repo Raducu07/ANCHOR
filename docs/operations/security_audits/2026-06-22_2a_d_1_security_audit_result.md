@@ -63,17 +63,23 @@ All paths are relative to the backend repo (`C:\Users\rggal\ANCHOR`). "Evidence 
 
 Cross-reference: `security_audits/2026-06-08_operational_resilience_checkpoint.md` consolidates the dependency/reproducibility/deploy chain; `security_audits/2026-06-21_control_to_evidence_matrix.md` indexes controls to evidence more broadly.
 
-## 5. Residual gaps / hard stops
+## 5. Status of follow-ups and residual hard stops
 
-These remain open and **must not** be treated as cleared:
+### Addressed since this note was created (2026-06-22)
 
-- **No consolidated secret-scan result found.** Strong secret-hygiene discipline is documented (`env.md` — never commit secrets; fail-closed on default literals), but no secret-scanning tool run / result artefact exists.
-- **Governance-metadata / CPD / incident retention and memory-consent runbook still missing.** Only public-intake retention is runbooked (`docs/operations/intake_retention.md`); the gap for clinic-governance metadata, CPD records, and incident logs is acknowledged in `docs/commercial/2026-06-08_personal_data_data_flow_inventory.md` §10.
-- ~~**`INVITE_TOKEN_SALT` fail-closed assertion remains a known follow-up**~~ — **CLOSED 2026-06-22 (pending commit).** Production now fails closed if `INVITE_TOKEN_SALT` is unset, blank, or still the default sentinel, via `app/auth_and_rls.py::assert_invite_salt_for_prod` wired into the `app/main.py` lifespan and covered by `tests/test_security_config_hardening.py`. Not a residual hard stop.
-- **Legal / commercial pack remains pre-solicitor-review** — all artefacts in `docs/commercial/` are outlines / preparation packs.
+These three items, originally listed here as gaps, have since been addressed. They are recorded as addressed **with their caveats** — none is upgraded to a claim of full closure.
+
+- **Secret scan — PARTIAL evidence added.** A bounded fallback tracked-file scan was run and recorded (`security_audits/2026-06-22_secret_scan_result.md`, commit `517d88c`): no likely committed secrets found in tracked files; no tracked `.env` / `*.pem` / `*.key` / `*.p12` / `*.pfx` files. **No dedicated scanner / git-history / entropy scan** was performed — stronger scanning remains optional future hygiene (see remaining list). Not a claim of full secret-scan closure.
+- **Governance-metadata / CPD / incident retention + memory-consent — internal operational note added.** `docs/operations/2026-06-22_r2_retention_memory_consent_note_v1.md` (commit `734e498`) documents the current retention and memory-consent posture for clinic-governance surfaces, complementing `intake_retention.md`. **Final contractual retention remains pending solicitor review**; no deletion automation is implemented.
+- **`INVITE_TOKEN_SALT` fail-closed — closed by code+tests patch** (commit `938c712`). Production now refuses to start if `INVITE_TOKEN_SALT` is unset, blank, or still the default sentinel, via `app/auth_and_rls.py::assert_invite_salt_for_prod` (wired into the `app/main.py` lifespan; covered by `tests/test_security_config_hardening.py`).
+
+### Remaining hard stops (must not be treated as cleared)
+
 - **Solicitor review not complete** (`security_audits/2026-06-21_final_internal_rc_signoff_note.md` §7).
+- **Legal / commercial pack not final** — all artefacts in `docs/commercial/` are outlines / preparation packs pending solicitor review.
 - **Live Workspace generation remains production-off** until the local/staging safety gate and the hard-refusal boundary (diagnosis/treatment/prescribing) are proven on the live path.
 - **Paid pilots and real clinic data remain blocked.**
+- **Stronger secret-scanning (dedicated scanner / git-history / entropy scan) remains optional future hygiene** — its absence is not a claim of full closure and is not, by itself, a release blocker.
 
 ## 6. Gate conclusion
 
@@ -95,9 +101,9 @@ This note is **not**:
 
 Narrow next actions only (each separately authorised; none performed here):
 
-1. **Run and document a secret scan** (e.g. a repo secret-scan result artefact under `security_audits/`).
-2. **Create a governance-metadata / CPD / incident retention and memory-consent runbook** (the clinic-governance counterpart to `intake_retention.md`).
-3. ~~**Assess whether `INVITE_TOKEN_SALT` needs a fail-closed code patch**~~ — **DONE 2026-06-22 (pending commit):** `assert_invite_salt_for_prod` added (mirroring the hash-salt / admin-pepper asserts), wired into the lifespan, with tests.
+1. ~~**Run and document a secret scan**~~ — **DONE 2026-06-22 (`517d88c`):** bounded fallback tracked-file scan recorded (PARTIAL; no likely committed secrets). A dedicated-scanner / git-history / entropy scan remains optional future hygiene.
+2. ~~**Create a governance-metadata / CPD / incident retention and memory-consent runbook**~~ — **DONE 2026-06-22 (`734e498`):** R2 in-repo operational note added; final contractual retention pending solicitor review.
+3. ~~**Assess whether `INVITE_TOKEN_SALT` needs a fail-closed code patch**~~ — **DONE 2026-06-22 (`938c712`):** `assert_invite_salt_for_prod` added (mirroring the hash-salt / admin-pepper asserts), wired into the lifespan, with tests.
 4. **Solicitor review of the DPA / Pilot Agreement / SaaS terms** (founder-owned legal track).
 5. **Keep live Workspace generation production-off** until the local/staging safety gate and hard-refusal proof are complete.
 
