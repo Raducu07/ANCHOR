@@ -6,7 +6,7 @@ This file is read automatically by Claude Code at session start. It is the proje
 
 ## What ANCHOR is
 
-ANCHOR is governance, trust, learning, intelligence, and sustainability infrastructure for safe AI use in veterinary clinics.
+ANCHOR is governance, trust, learning, intelligence, and readiness infrastructure for safe AI use in veterinary clinics.
 
 ANCHOR is **not** a clinical decision-making AI, diagnostic tool, ambient scribe, EHR, or replacement for veterinary judgement.
 
@@ -127,19 +127,21 @@ Authorised by `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3` (6 June 
 
 ## Canonical documents (cross-reference, do not duplicate doctrine here)
 
-Located in `/docs/canonical/` in this repo:
-
-**Operative canon (use these):**
+**Operative canon — currently present in `/docs/canonical/` in this repo (use these):**
 
 - `ANCHOR_Roadmap_v2_6_June_2026_CORRECTED.md` / `.docx` — **operative roadmap**; supersedes v2.5; §1 doctrine; §4 M6 Assistant track as-built; §6 sustainability design
 - `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1_1_COMPLETE.md` / `.docx` — **operative readiness artefact**; supersedes v1; §2 wording controls; §3 RCVS principles; §4 EU AI Act articles
-- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3` — **operative decision**; supersedes Memo v1.1 and Addendum v1.2 where they differ; authorises reconciliation (2A-D.0); records the conviction-based (no buyer-discovery) position
-- `Phase_2A_1_Engineering_Brief_v1_1.md` — Phase 2A-1 implementation contract (Phase 2A-1 is shipped; retained for reference)
+- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_Addendum_v1_3.md` / `.docx` — **operative decision**; supersedes Memo v1.1 and Addendum v1.2 where they differ; authorises reconciliation (2A-D.0); records the conviction-based (no buyer-discovery) position
 
-**Superseded / historical (do not use as current guidance — read only for lineage):**
+**Source-discipline document (recommended addition — currently absent):**
 
-- `ANCHOR_Roadmap_v2_5_May_2026.docx` — superseded by v2.6
-- `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1.docx` — superseded by v1.1
-- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1.docx` — superseded by Addendum v1.3 where they differ; the "buyer conversations parallel-not-blocking" framing is **withdrawn** — there is no buyer-discovery step
+- Official EU AI Act Source Note v1.1 (corrected) — source-discipline note for all EU AI Act references; EUR-Lex is the only acceptable primary source; cite Article 113 for applicability dates. **Not currently present in this repo's `docs/canonical/`** (it is maintained in the Claude Project knowledge pack). Recommend adding it as a separate docs-only patch rather than inventing a path here.
+
+**Historical / superseded (do not use as current guidance — read only for lineage; not part of the current `docs/canonical/` operative set):**
+
+- `Phase_2A_1_Engineering_Brief_v1_1.md` — historical / delivered implementation record only; not the current build target.
+- `ANCHOR_Roadmap_v2_5_May_2026` — superseded by v2.6.
+- `ANCHOR_RCVS_EU_AI_Act_Readiness_Map_v1` — superseded by v1.1.
+- `ANCHOR_Phase_2A_Build_Order_Decision_Memo_v1_1` — superseded by Addendum v1.3 where they differ; the "buyer conversations parallel-not-blocking" framing is **withdrawn** — there is no buyer-discovery step.
 
 For any wording that will appear in API responses, error messages, or anywhere clinic-facing: check Readiness Map v1.1 §2 first.
