@@ -8,7 +8,7 @@ This file is read automatically by Claude Code at session start. It is the proje
 
 ## What ANCHOR is
 
-ANCHOR is governance, trust, learning, intelligence, and sustainability infrastructure for safe AI use in veterinary clinics.
+ANCHOR is governance, trust, learning, intelligence, and readiness infrastructure for safe AI use in veterinary clinics.
 
 ANCHOR is **not** a clinical decision-making AI, diagnostic tool, ambient scribe, EHR, or replacement for veterinary judgement.
 
