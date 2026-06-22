@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.admin_auth import AdminContext, require_admin, write_admin_audit_event
+from app.auth_and_rls import DEFAULT_INVITE_TOKEN_SALT_LITERAL
 from app.db import clear_rls_context, db_session, set_rls_context
 from app.rate_limit import enforce_admin_token_group
 
@@ -43,7 +44,7 @@ def _slugify(s: str) -> str:
 
 def _hash_token(token_plain: str) -> str:
     # Store only hashes; never store plaintext invite tokens.
-    salt = (os.getenv("INVITE_TOKEN_SALT") or "anchor-invite-salt").encode("utf-8")
+    salt = (os.getenv("INVITE_TOKEN_SALT") or DEFAULT_INVITE_TOKEN_SALT_LITERAL).encode("utf-8")
     return hashlib.sha256(salt + token_plain.encode("utf-8")).hexdigest()
 
 

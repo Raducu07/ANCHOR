@@ -40,7 +40,7 @@ All paths are relative to the backend repo (`C:\Users\rggal\ANCHOR`). "Evidence 
 |---|---|---|
 | CORS / default-secret hardening | `docs/operations/env.md` §2–§4 | Startup fail-closed asserts refuse default literals for JWT secret, hash salt, admin pepper, and rate-limit secret when `APP_ENV=prod`; CORS wildcard combined with credentials raises `RuntimeError` at startup. Controls documented and code-enforced. |
 | Admin token / admin-mode lockdown | `docs/operations/env.md` §6; `docs/operations/incident_response.md` §8.5 | `ANCHOR_ADMIN_MODE=env` refused in prod (Patch 4B); DB-backed tokens are the prod default; bootstrap-token discipline documented; admin-token-exposure containment playbook in place. |
-| Auth / JWT / session / invite posture | `docs/operations/env.md` §3, §5 | JWT signing secret fail-closed in prod; strict per-request DB re-validation (`ANCHOR_AUTH_STRICT_DB_CHECK`); server-side role allow-list; invite-token hashing. (See §5 for the `INVITE_TOKEN_SALT` follow-up.) |
+| Auth / JWT / session / invite posture | `docs/operations/env.md` §3, §5; `app/auth_and_rls.py`; `tests/test_security_config_hardening.py` | JWT signing secret fail-closed in prod; strict per-request DB re-validation (`ANCHOR_AUTH_STRICT_DB_CHECK`); server-side role allow-list; invite-token hashing. `INVITE_TOKEN_SALT` is now **fail-closed in prod** via `assert_invite_salt_for_prod` (wired into the `app/main.py` lifespan; tested) — the prior follow-up is closed. |
 | RLS / FORCE RLS / tenant isolation | `.github/workflows/isolation-smoke.yml`; `scripts/anchor-smoke-isolation.ps1`, `scripts/anchor-verify-force-rls.ps1` (per `env.md` §13); `backup_restore.md` §11; `incident_response.md` §8.4 | Active tenant-isolation smoke runs on push/PR to `main`; read-only verification scripts; RLS/FORCE posture recorded in the restore drill; tenant-isolation containment playbook (SEV-0). |
 | Rate limits | `.github/workflows/anchor-rate-limit-ci.yml`; `docs/operations/env.md` §7 | Active CI runs `pytest tests/test_rate_limit.py` with the limiter enabled; per-group windows/limits documented; `RATE_LIMIT_SECRET` required (fail-closed) when limiting is on. |
 | Protected-route smoke checks | `security_audits/2026-06-08_render_deploy_smoke_cd9d966.md`; `…_version_metadata_deploy_smoke_7451357.md`; `…2026-06-16_rc_coherence_deploy_smoke_6074f1f.md` | `/v1/portal/dashboard` → 401 unauthenticated, `/health` → 200, `/v1/version` → 200; PASS across multiple deploys. |
@@ -69,7 +69,7 @@ These remain open and **must not** be treated as cleared:
 
 - **No consolidated secret-scan result found.** Strong secret-hygiene discipline is documented (`env.md` — never commit secrets; fail-closed on default literals), but no secret-scanning tool run / result artefact exists.
 - **Governance-metadata / CPD / incident retention and memory-consent runbook still missing.** Only public-intake retention is runbooked (`docs/operations/intake_retention.md`); the gap for clinic-governance metadata, CPD records, and incident logs is acknowledged in `docs/commercial/2026-06-08_personal_data_data_flow_inventory.md` §10.
-- **`INVITE_TOKEN_SALT` fail-closed assertion remains a known follow-up** (`docs/operations/env.md` §16) — it still has a default literal with no prod fail-closed assert; closing it is a separate code patch, not this note.
+- ~~**`INVITE_TOKEN_SALT` fail-closed assertion remains a known follow-up**~~ — **CLOSED 2026-06-22 (pending commit).** Production now fails closed if `INVITE_TOKEN_SALT` is unset, blank, or still the default sentinel, via `app/auth_and_rls.py::assert_invite_salt_for_prod` wired into the `app/main.py` lifespan and covered by `tests/test_security_config_hardening.py`. Not a residual hard stop.
 - **Legal / commercial pack remains pre-solicitor-review** — all artefacts in `docs/commercial/` are outlines / preparation packs.
 - **Solicitor review not complete** (`security_audits/2026-06-21_final_internal_rc_signoff_note.md` §7).
 - **Live Workspace generation remains production-off** until the local/staging safety gate and the hard-refusal boundary (diagnosis/treatment/prescribing) are proven on the live path.
@@ -97,7 +97,7 @@ Narrow next actions only (each separately authorised; none performed here):
 
 1. **Run and document a secret scan** (e.g. a repo secret-scan result artefact under `security_audits/`).
 2. **Create a governance-metadata / CPD / incident retention and memory-consent runbook** (the clinic-governance counterpart to `intake_retention.md`).
-3. **Assess whether `INVITE_TOKEN_SALT` needs a fail-closed code patch** (mirroring the Patch 1 asserts for hash salt / admin pepper).
+3. ~~**Assess whether `INVITE_TOKEN_SALT` needs a fail-closed code patch**~~ — **DONE 2026-06-22 (pending commit):** `assert_invite_salt_for_prod` added (mirroring the hash-salt / admin-pepper asserts), wired into the lifespan, with tests.
 4. **Solicitor review of the DPA / Pilot Agreement / SaaS terms** (founder-owned legal track).
 5. **Keep live Workspace generation production-off** until the local/staging safety gate and hard-refusal proof are complete.
 

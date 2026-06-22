@@ -69,7 +69,7 @@ These do not raise at startup, but their absence causes functional regressions o
 | `ANCHOR_JWT_MAX_TOKEN_LEN` | Defensive cap on bearer-token length before decode. | `8192` | Leave as default. |
 | `ANCHOR_AUTH_STRICT_DB_CHECK` | When `1`, every protected route re-validates the user against `clinic_users` (active_status, role) per request. | `1` (on) | **Keep on in prod.** Off would let an orphan token survive a clinic-user disable. |
 | `ANCHOR_ROLE_ALLOWLIST` | Comma-separated allow-list of accepted JWT `role` values. | `admin,staff,reader,readonly,owner,practice_manager` | Override only if narrowing. Validated server-side. |
-| `INVITE_TOKEN_SALT` | Salt mixed into the SHA-256 hash of invite tokens at storage. | **Has a default literal** (`anchor-invite-salt`). *Should be explicitly set in prod.* | This is the same shape risk Patch 1 addressed for `ANCHOR_HASH_SALT` and `ANCHOR_ADMIN_PEPPER`. There is no startup fail-closed assert today; set a non-default value via Render env. A follow-up patch may add a `assert_invite_salt_for_prod` mirror. |
+| `INVITE_TOKEN_SALT` | Salt mixed into the SHA-256 hash of invite tokens at storage. | non-empty random string, **must not equal** the default sentinel `anchor-invite-salt`. | **Fail-closed in prod.** `RuntimeError("INVITE_TOKEN_SALT must be set when APP_ENV=prod; …")` if unset/blank, and `RuntimeError("INVITE_TOKEN_SALT must not equal the default fallback literal when APP_ENV=prod.")` if still the sentinel — raised at lifespan startup. Enforced by `app/auth_and_rls.py::assert_invite_salt_for_prod`, wired into the `app/main.py` lifespan beside the hash-salt / admin-pepper checks. Non-prod continues to tolerate the sentinel for local/dev/test. |
 
 ## 6. Admin tokens and bootstrap mode
 
@@ -219,7 +219,7 @@ JWT tuning:
 
 Invite hygiene:
 
-- [ ] `INVITE_TOKEN_SALT` set explicitly (not the default literal `anchor-invite-salt`).
+- [ ] `INVITE_TOKEN_SALT` set explicitly (not the default literal `anchor-invite-salt`) — **now enforced: prod refuses to start otherwise**.
 
 Receipts / exports (optional):
 
@@ -289,6 +289,6 @@ This document does not duplicate doctrine. It documents env vars; doctrine lives
 These items are flagged here because they affect operator confidence today; none of them are addressed in Patch 7.
 
 - **CORS methods/headers/max-age are hardcoded in `app/main.py`**, not env-driven. The Patch 7 brief asked them to be documented as env vars; they are documented here as hardcoded values. If env-driven tuning is desired, that is a future code change.
-- **`INVITE_TOKEN_SALT` defaults to a known literal (`anchor-invite-salt`)** in `app/auth_and_rls.py`. Patch 1 closed the equivalent gap for `ANCHOR_HASH_SALT` and `ANCHOR_ADMIN_PEPPER`; the invite salt should follow with a `assert_invite_salt_for_prod` mirror in a follow-up patch.
+- **`INVITE_TOKEN_SALT` fail-closed — CLOSED.** It previously defaulted to a known literal (`anchor-invite-salt`) in `app/auth_and_rls.py` with no startup assert. It is now enforced in prod by `app/auth_and_rls.py::assert_invite_salt_for_prod` (mirroring `assert_hash_salt_for_prod` / `assert_admin_pepper_for_prod`), wired into the `app/main.py` lifespan, with the shared sentinel reused at both hash call sites (`auth_and_rls.py`, `portal_bootstrap.py`) and covered by tests in `tests/test_security_config_hardening.py`.
 - **Receipt signing env vars** (`ANCHOR_RECEIPT_SIGNING_SECRET`, `ANCHOR_RECEIPT_SIGNING_KID`) are present in `app/portal_read.py` but the live status of the signed-receipt feature has not been re-confirmed in 2A-D.2; treat as "set if in use, absent otherwise" until a follow-up audit.
 - **No `OPENAI_*` env vars are present in code** as of this writing. Vendor-neutral live generation is a future direction, not a present-tense capability. Do not document a vendor as supported until the code wires it.

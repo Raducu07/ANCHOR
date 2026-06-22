@@ -29,6 +29,10 @@ from app.anchor_logging import (
     DEFAULT_HASH_SALT_LITERAL,
     assert_hash_salt_for_prod,
 )
+from app.auth_and_rls import (
+    DEFAULT_INVITE_TOKEN_SALT_LITERAL,
+    assert_invite_salt_for_prod,
+)
 from app.main import _LOCALHOST_CORS_REGEX, _compute_cors_origin_regex
 
 
@@ -222,6 +226,51 @@ def test_admin_pepper_passes_on_real_value_in_prod(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("ANCHOR_ADMIN_PEPPER", "rotated-prod-admin-pepper-v1")
     assert_admin_pepper_for_prod()  # must not raise
+
+
+# ---------------------------------------------------------------------
+# INVITE_TOKEN_SALT fail-closed in prod (mirrors M-2 / M-3)
+# ---------------------------------------------------------------------
+
+
+def test_invite_salt_noop_outside_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-prod must keep working with the default / unset salt (local/dev/test
+    rely on this)."""
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.delenv("INVITE_TOKEN_SALT", raising=False)
+    assert_invite_salt_for_prod()  # must not raise
+    # Default sentinel must also be tolerated outside prod.
+    monkeypatch.setenv("INVITE_TOKEN_SALT", DEFAULT_INVITE_TOKEN_SALT_LITERAL)
+    assert_invite_salt_for_prod()  # must not raise
+
+
+def test_invite_salt_fail_closed_when_missing_in_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.delenv("INVITE_TOKEN_SALT", raising=False)
+    with pytest.raises(RuntimeError, match="INVITE_TOKEN_SALT"):
+        assert_invite_salt_for_prod()
+
+
+def test_invite_salt_fail_closed_when_blank_in_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("INVITE_TOKEN_SALT", "   ")
+    with pytest.raises(RuntimeError, match="INVITE_TOKEN_SALT"):
+        assert_invite_salt_for_prod()
+
+
+def test_invite_salt_fail_closed_on_default_literal_in_prod(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("INVITE_TOKEN_SALT", DEFAULT_INVITE_TOKEN_SALT_LITERAL)
+    with pytest.raises(RuntimeError, match="default fallback"):
+        assert_invite_salt_for_prod()
+
+
+def test_invite_salt_passes_on_real_value_in_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("INVITE_TOKEN_SALT", "rotated-prod-invite-salt-v1")
+    assert_invite_salt_for_prod()  # must not raise
 
 
 # ---------------------------------------------------------------------

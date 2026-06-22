@@ -47,10 +47,37 @@ ROLE_ALLOWLIST: Set[str] = (
     else DEFAULT_ROLE_ALLOWLIST
 )
 
+# Default invite-token-salt fallback literal. Acceptable for local/dev/test
+# runs; rejected at startup when APP_ENV=prod (see assert_invite_salt_for_prod).
+DEFAULT_INVITE_TOKEN_SALT_LITERAL = "anchor-invite-salt"
+
 INVITE_TOKEN_SALT = (
-    (os.getenv("INVITE_TOKEN_SALT", "anchor-invite-salt") or "anchor-invite-salt")
-    .encode("utf-8")
-)
+    os.getenv("INVITE_TOKEN_SALT", DEFAULT_INVITE_TOKEN_SALT_LITERAL)
+    or DEFAULT_INVITE_TOKEN_SALT_LITERAL
+).encode("utf-8")
+
+
+def assert_invite_salt_for_prod() -> None:
+    """Fail-closed in production if INVITE_TOKEN_SALT is missing, blank, or
+    still equal to the default fallback literal. No-op outside production.
+    Called from the FastAPI lifespan at startup so a misconfigured prod
+    deploy aborts before serving requests. Mirrors assert_hash_salt_for_prod
+    / assert_admin_pepper_for_prod."""
+    from app.anchor_logging import get_app_env
+
+    if get_app_env() != "prod":
+        return
+    raw = (os.getenv("INVITE_TOKEN_SALT") or "").strip()
+    if not raw:
+        raise RuntimeError(
+            "INVITE_TOKEN_SALT must be set when APP_ENV=prod; "
+            "default fallback is not permitted in production."
+        )
+    if raw == DEFAULT_INVITE_TOKEN_SALT_LITERAL:
+        raise RuntimeError(
+            "INVITE_TOKEN_SALT must not equal the default fallback literal "
+            "when APP_ENV=prod."
+        )
 
 
 # -----------------------------

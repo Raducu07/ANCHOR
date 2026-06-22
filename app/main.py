@@ -35,7 +35,7 @@ from app.db import db_ping, SessionLocal
 from app.migrate import run_migrations
 
 # Routers
-from app.auth_and_rls import router as clinic_auth_router
+from app.auth_and_rls import router as clinic_auth_router, assert_invite_salt_for_prod
 from app.ops_rls_test import router as ops_rls_router
 from app.portal_bootstrap import router as portal_bootstrap_router
 from app.portal_submit import router as portal_submit_router
@@ -169,6 +169,10 @@ async def lifespan(app: FastAPI):
         # discipline depends on a non-default salt.
         assert_hash_salt_for_prod()
         assert_admin_pepper_for_prod()
+        # Mirror the salt/pepper checks for the invite-token salt: refuse to
+        # start in prod if INVITE_TOKEN_SALT is unset, blank, or still the
+        # default sentinel. Invite-token hashes depend on a non-default salt.
+        assert_invite_salt_for_prod()
         # 2A-D.1 Patch 4B (F-2): refuse to start in prod when
         # ANCHOR_ADMIN_MODE=env, or for any unknown value. Unset/blank
         # resolves to "db" via _admin_mode() — no startup raise needed.
