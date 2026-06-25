@@ -290,6 +290,7 @@ Do not write final external wording here. The future Privacy Notice / DPA / clin
 - **Clear distinction** between governance metadata and clinical content.
 - **Clear human-review statement** — ANCHOR does not replace professional judgement.
 - **Clear support / incident route.**
+- **Clear data-protection complaints route (public-source watch item).** Public-source hygiene only, grounded in the Data (Use and Access) Act 2025 (DUAA 2025): controllers should provide a route for data-protection complaints, acknowledge a complaint within 30 days, and investigate without undue delay. Treat as a Privacy Notice / public-contact / controller-side process item for the public-intake and contact surfaces where ANCHOR may act as controller. Public intake stays separate from clinic-governance processing.
 - **Clear deletion / retention statement** — backed by the runbook, not by aspirational promises.
 - **Clear subprocessor statement** — matching §14 of this outline at time of publication.
 - **Solicitor review required** before any version goes to a clinic.
