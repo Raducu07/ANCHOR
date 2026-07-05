@@ -7,6 +7,7 @@ import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Button } from "@/components/ui/Button";
+import { ModuleSelfCheck } from "@/components/learn/ModuleSelfCheck";
 import { ApiError } from "@/lib/api";
 import { findLearningModuleBySlug, recordLearningCompletion } from "@/lib/learn";
 import type { LearningModule } from "@/lib/types";
@@ -177,6 +178,10 @@ export default function LearnModuleDetailPage() {
                 />
               ) : null}
             </Card>
+
+            {/* Internal-preview self-check reinforcement (renders null
+                unless NEXT_PUBLIC_ANCHOR_INTERNAL_PREVIEW is enabled). */}
+            <ModuleSelfCheck moduleId={module.module_id} />
 
             <Card variant="native">
               <h2 className="text-base font-semibold text-slate-900">Record completion</h2>
