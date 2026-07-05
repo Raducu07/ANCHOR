@@ -140,8 +140,10 @@ Exceeded budget → `HTTP 429` with `Retry-After` header and `detail: "rate_limi
 | `ANTHROPIC_API_KEY` | Provider credential. Read by `app/assistant_anthropic_client.py`. | unset → live path returns a safe `503` | **Presence does not imply enablement.** Live generation is gated by the flag above; the API key alone is not enough. Treat as a high-sensitivity secret. |
 | `ANCHOR_ASSISTANT_MODEL` | Provider model id used by the live path when enabled. | `claude-sonnet-4-20250514` | Change only via a deliberate version review. |
 | `ANCHOR_ASSISTANT_MAX_TOKENS` | Hard cap on tokens per live generation when enabled. | `1000` | Lower is safer; higher costs more. |
+| `ANCHOR_SAFETY_GATE_LIVE_ENABLED` | Opt-in for the 2A-C.5E live safety-gate harness (`scripts/run_live_safety_gate.py --live`). | unset / falsy → live probes skipped | **Local/staging only.** The harness refuses outright when `APP_ENV=prod` regardless of this flag. Enabling it does not enable product live generation — it only lets the operator run the hard-refusal probes. See `docs/operations/2026-07-05_2a_c_5e_safety_gate_harness.md`. |
+| `ANCHOR_GENERATION_PROVIDER` | Selects the generation provider adapter in `app/assistant_provider.py`. | unset → `anthropic` | **Prod permits `anthropic` only** — any other value is refused at resolution time and the Workspace orchestrator falls back deterministically. `openai` resolves to a deliberately unconfigured stub that always fails closed (no network I/O, no `OPENAI_*` env reads). This is interface scaffolding for the gated M6.12 future, not a second supported provider; do not document or claim provider choice as a capability. |
 
-No `OPENAI_*` env vars are present in the current code. No other provider client is wired. Vendor-neutrality is a future direction; ANCHOR is structurally compatible with future vendor-neutral generation, not vendor-neutral today.
+No `OPENAI_*` env vars are read anywhere in the current code (the `openai` value of `ANCHOR_GENERATION_PROVIDER` resolves to a fail-closed stub, not a client). Only the Anthropic adapter is wired. Vendor-neutrality is a future direction; ANCHOR is **architected for** vendor-neutrality, not vendor-neutral today, and no public copy may claim otherwise.
 
 ## 10. Public intake and notifications
 
@@ -150,8 +152,8 @@ Public intake (`/v1/public/demo-request`, `/v1/public/start-request`, `/v1/publi
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
 | `RL_PUBLIC_INTAKE_WINDOW_S` / `RL_PUBLIC_INTAKE_LIMIT` | Per-IP rate limit applied before honeypot and DB write on every public intake endpoint. | `60 s` / `5` | See §7. |
-| `ANCHOR_INTAKE_NOTIFICATION_WEBHOOK_URL` | Internal-notification webhook fired after a successful intake persist. | unset → notification stubbed (logged `intake.notification.stubbed`) | **Webhook payload includes raw record fields** (name, email, phone, message) by current design. Point this at a trusted internal queue only. |
-| `ANCHOR_INTAKE_ACK_WEBHOOK_URL` | Acknowledgement webhook for the visitor (carries `recipient_email`). | unset → ack stubbed | Same trust posture as the notification webhook. |
+| `ANCHOR_INTAKE_NOTIFICATION_WEBHOOK_URL` | Internal-notification webhook fired after a successful intake persist. | unset → notification stubbed (logged `intake.notification.stubbed`) | **Webhook payload includes raw record fields** (name, email, phone, message) by current design. Point this at a trusted internal queue only. **HTTPS-only enforced in code:** a non-`https://` target is refused before any byte is sent (logged `delivery_status=refused`, `reason=non_https_webhook_url`; the URL value is never logged). Intake persist still succeeds; the endpoint records `delivery_failed_after_persist`. |
+| `ANCHOR_INTAKE_ACK_WEBHOOK_URL` | Acknowledgement webhook for the visitor (carries `recipient_email`). | unset → ack stubbed | Same trust posture as the notification webhook, including the HTTPS-only refusal. |
 
 **Retention is operational.** `POST /v1/admin/intake/prune` is admin-token gated, dry-run by default, requires `"I-UNDERSTAND"` to delete, and caps destructive runs at 50 000 rows per call. There is **no scheduled prune today**; the operator runs it. Recommended operator-side defaults: 365 days for `demo`/`start`, 90 days for `chat`. These will be documented in `docs/operations/intake_retention.md`.
 
