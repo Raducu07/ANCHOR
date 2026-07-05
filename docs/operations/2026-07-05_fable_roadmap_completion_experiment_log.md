@@ -6,7 +6,7 @@
 |---|---|---|---|
 | 0 | Preserve reviewed backend experiment (safety-gate harness; provider skeleton; HTTPS webhook enforcement; pytest hygiene; docs) | **Committed** | Full suite 1,567 passed; app import OK (126 routes); runner smoke OK incl. prod refusal. Commits on branch. |
 | 1 | M6.12 connector layer completion (gated) | **Committed** | Gated OpenAI adapter (stdlib HTTPS, non-prod only, key-gated, fail-closed); provider_latency_ms metadata in generation sub-object; cross-provider output-safety test. Focused suites 48 passed. |
-| 2 | M5.7 assisted onboarding foundations (gated) | Pending | — |
+| 2 | M5.7 assisted onboarding foundations (gated) | **Committed** | Read-only tenant-scoped onboarding checklist (9 items, soft-failing) + admin-only invite lifecycle visibility (pending/used/expired, no token material). Invite expiry/used-at handling verified already present in accept flow. 9 endpoint tests passed. |
 | 3 | M4.6 Learn maturity (non-certifying) | Pending | — |
 | 4 | M5.8 billing foundations (sandbox-only) | Pending | — |
 | 5 | M6-S sustainability module (metadata-only) | Pending | — |

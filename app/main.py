@@ -50,6 +50,7 @@ from app.portal_error_budget import router as portal_error_budget_router
 from app.portal_ops_health import router as portal_ops_health_router
 from app.portal_dashboard import router as portal_dashboard_router
 from app.portal_me import router as portal_me_router
+from app.portal_onboarding import router as portal_onboarding_router
 from app.portal_assist import router as portal_assist_router
 from app.portal_assistant import router as portal_assistant_router
 from app.portal_intelligence import router as portal_intelligence_router
@@ -222,6 +223,7 @@ app.include_router(portal_error_budget_router)
 app.include_router(portal_ops_health_router)
 app.include_router(portal_dashboard_router)
 app.include_router(portal_me_router)
+app.include_router(portal_onboarding_router)
 app.include_router(portal_assist_router)
 app.include_router(portal_assistant_router)
 app.include_router(portal_intelligence_router)
