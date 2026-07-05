@@ -56,6 +56,7 @@ from app.portal_assistant import router as portal_assistant_router
 from app.portal_intelligence import router as portal_intelligence_router
 from app.assistant import router as assistant_router
 from app.learn_v1 import router as learn_v1_router
+from app.learn_maturity import router as learn_maturity_router
 from app.governance_policy import router as governance_policy_router
 from app.client_transparency import router as client_transparency_router
 from app.incident_near_miss import router as incident_near_miss_router
@@ -229,6 +230,7 @@ app.include_router(portal_assistant_router)
 app.include_router(portal_intelligence_router)
 app.include_router(assistant_router)
 app.include_router(learn_v1_router)
+app.include_router(learn_maturity_router)
 app.include_router(governance_policy_router)
 app.include_router(client_transparency_router)
 app.include_router(incident_near_miss_router)
