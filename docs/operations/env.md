@@ -159,7 +159,13 @@ Public intake (`/v1/public/demo-request`, `/v1/public/start-request`, `/v1/publi
 
 **Retention is operational.** `POST /v1/admin/intake/prune` is admin-token gated, dry-run by default, requires `"I-UNDERSTAND"` to delete, and caps destructive runs at 50 000 rows per call. There is **no scheduled prune today**; the operator runs it. Recommended operator-side defaults: 365 days for `demo`/`start`, 90 days for `chat`. These will be documented in `docs/operations/intake_retention.md`.
 
-## 10a. Billing foundations (sandbox-only)
+## 10a. Ambient governance shell (M6.13, disabled by default)
+
+| Variable | Purpose | Default | Notes |
+|---|---|---|---|
+| `ANCHOR_AMBIENT_GOVERNANCE_ENABLED` | Enables the metadata-only ambient governance shell (`/v1/portal/ambient/*`). | unset / falsy → every endpoint returns 503 | **Governance layer, not a scribe.** The schema has no column capable of holding transcript/note/audio content; the reference field only accepts a SHA-256 hex digest; labels are single-line. No vendor adapter exists — adding one requires a founder decision plus security/legal review. See `docs/product/2026-07-05_m6_13_clinical_content_boundary_spec_DRAFT.md`. |
+
+## 10b. Billing foundations (sandbox-only)
 
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|

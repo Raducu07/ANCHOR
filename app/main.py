@@ -66,6 +66,7 @@ from app.billing_foundations import (
     webhook_router as billing_webhook_router,
 )
 from app.sustainability import router as sustainability_router
+from app.ambient_governance import router as ambient_governance_router
 
 ensure_logging_configured()
 
@@ -243,6 +244,7 @@ app.include_router(self_assessment_router)
 app.include_router(billing_foundations_router)
 app.include_router(billing_webhook_router)
 app.include_router(sustainability_router)
+app.include_router(ambient_governance_router)
 app.include_router(public_intake_router)
 
 # Routers (platform admin)
