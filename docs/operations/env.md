@@ -159,6 +159,12 @@ Public intake (`/v1/public/demo-request`, `/v1/public/start-request`, `/v1/publi
 
 **Retention is operational.** `POST /v1/admin/intake/prune` is admin-token gated, dry-run by default, requires `"I-UNDERSTAND"` to delete, and caps destructive runs at 50 000 rows per call. There is **no scheduled prune today**; the operator runs it. Recommended operator-side defaults: 365 days for `demo`/`start`, 90 days for `chat`. These will be documented in `docs/operations/intake_retention.md`.
 
+## 10a. Billing foundations (sandbox-only)
+
+| Variable | Purpose | Default | Notes |
+|---|---|---|---|
+| `ANCHOR_BILLING_WEBHOOK_ENABLED` | Enables the structure-only sandbox Stripe webhook skeleton (`POST /v1/billing/webhook/stripe`). | unset / falsy → endpoint returns 503 | **Sandbox skeleton only.** The endpoint refuses outright when `APP_ENV=prod` regardless of this flag, verifies nothing, processes nothing, stores nothing, and logs only the event type string. There is no Stripe SDK, no webhook secret, and no charge capability anywhere in the codebase. The billing state API can only set `internal_demo` / `pilot_candidate`; `active_limited` / `active_verified` are refused pending the security + legal gates and a founder decision. |
+
 ## 11. Migration verification
 
 `ANCHOR_MIGRATION_VERIFY_CHECKSUMS` (Patch 6) controls the migration runner's checksum verification step.
