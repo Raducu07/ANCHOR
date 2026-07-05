@@ -550,6 +550,7 @@ def test_build_metadata_subobject_shape_for_live() -> None:
         "generation_source": "live",
         "fallback_reason": None,
         "live_attempted": True,
+        "provider_latency_ms": None,
         "model_provider": "anthropic",
         "model_name": "claude-test-model",
         "output_safety_profile": "standard",

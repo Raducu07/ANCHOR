@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
@@ -104,6 +105,10 @@ class WorkspaceGenerationResult:
     output_safety_profile: Optional[str] = None
     live_attempted: bool = False
     output_validator_allowed: Optional[bool] = None
+    # Wall-clock latency of the successful provider call, milliseconds.
+    # Metadata-only operational signal (M6.12); None when no live draft
+    # was obtained.
+    provider_latency_ms: Optional[int] = None
 
 
 # ---------------------------------------------------------------------
@@ -338,6 +343,7 @@ def generate_workspace_output(
     user_message = build_client_communication_user_message(adapted)
 
     # Live provider call.
+    _provider_t0 = time.monotonic()
     try:
         draft, provider, model_name = _call_provider(
             system_prompt, user_message
@@ -387,6 +393,8 @@ def generate_workspace_output(
             live_attempted=True,
         )
 
+    _provider_latency_ms = int((time.monotonic() - _provider_t0) * 1000)
+
     # Post-output safety validator.
     profile = policy.validation_profile or "standard"
     try:
@@ -405,6 +413,7 @@ def generate_workspace_output(
             model_name=model_name,
             output_safety_profile=profile,
             output_validator_allowed=False,
+            provider_latency_ms=_provider_latency_ms,
         )
 
     if not getattr(safety, "allowed", False):
@@ -417,6 +426,7 @@ def generate_workspace_output(
             model_name=model_name,
             output_safety_profile=profile,
             output_validator_allowed=False,
+            provider_latency_ms=_provider_latency_ms,
         )
 
     return WorkspaceGenerationResult(
@@ -428,6 +438,7 @@ def generate_workspace_output(
         model_name=model_name,
         output_safety_profile=profile,
         output_validator_allowed=True,
+        provider_latency_ms=_provider_latency_ms,
     )
 
 
@@ -445,4 +456,5 @@ def build_metadata_subobject(
         "model_name": result.model_name,
         "output_safety_profile": result.output_safety_profile,
         "output_validator_allowed": result.output_validator_allowed,
+        "provider_latency_ms": result.provider_latency_ms,
     }
