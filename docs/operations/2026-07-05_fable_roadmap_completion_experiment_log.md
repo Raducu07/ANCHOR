@@ -1,0 +1,20 @@
+# Fable Roadmap-Completion Experiment — Running Slice Log
+
+> Branch: `fable/roadmap-completion-experiment`. Authorised by `2026-07-05_founder_code_completion_experiment_decision.md`. All production/commercial/claims gates remain closed. This log is updated per slice and is the recovery point if a session is interrupted.
+
+| Slice | Scope | Status | Evidence |
+|---|---|---|---|
+| 0 | Preserve reviewed backend experiment (safety-gate harness; provider skeleton; HTTPS webhook enforcement; pytest hygiene; docs) | **Committed** | Full suite 1,567 passed; app import OK (126 routes); runner smoke OK incl. prod refusal. Commits on branch. |
+| 1 | M6.12 connector layer completion (gated) | Pending | — |
+| 2 | M5.7 assisted onboarding foundations (gated) | Pending | — |
+| 3 | M4.6 Learn maturity (non-certifying) | Pending | — |
+| 4 | M5.8 billing foundations (sandbox-only) | Pending | — |
+| 5 | M6-S sustainability module (metadata-only) | Pending | — |
+| 6 | M6.13 ambient governance shell (extreme caution) | Pending | — |
+| 7 | Frontend roadmap work | **Not executable in this workspace** — the portal frontend repo is not present; backend contracts to be documented for a later frontend session. | — |
+
+Standing deferrals recorded during the experiment (each with rationale, revisit under founder review):
+
+- M6.12 per-clinic provider configuration — needs an assistant-policy migration + admin UI; platform-level selection shipped instead.
+- M6.12 cross-provider fallback routing — deterministic fallback is the doctrine-preferred failure mode; provider-to-provider retry adds unreviewed complexity.
+- M6.12 token/cost metadata — provider client returns a text-only tuple; changing that contract ripples through the safety-gate harness and tests; latency metadata shipped instead.
