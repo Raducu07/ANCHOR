@@ -32,8 +32,8 @@ from typing import Any, Callable, Dict, Optional
 from app.assistant_anthropic_client import (
     AssistantModelCallError,
     AssistantModelConfigError,
-    generate_client_communication_draft,
 )
+from app.assistant_provider import resolve_provider
 from app.assistant_output_safety import validate_client_communication_output
 from app.assistant_policy import AssistantPolicy, get_effective_policy
 from app.assistant_prompts import (
@@ -123,9 +123,14 @@ def is_live_generation_enabled() -> bool:
 # touching the real Anthropic client, the DB, or the network.
 
 def _call_provider(system_prompt: str, user_message: str):
-    """Thin wrapper around the existing Anthropic client. The system
-    prompt and user message are transient and never logged here."""
-    return generate_client_communication_draft(
+    """Thin wrapper around the configured generation provider adapter
+    (app/assistant_provider.py). Defaults to the Anthropic adapter, so
+    behaviour is identical to the previous direct client call. The
+    system prompt and user message are transient and never logged here.
+    Provider resolution errors surface as AssistantModelConfigError,
+    which the orchestrator already treats as a deterministic fallback."""
+    provider = resolve_provider()
+    return provider.generate_client_communication(
         system_prompt=system_prompt,
         user_message=user_message,
     )
