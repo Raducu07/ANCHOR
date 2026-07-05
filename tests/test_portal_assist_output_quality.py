@@ -454,4 +454,8 @@ def test_app_route_count_unchanged_by_output_enrichment() -> None:
     from app.main import app
     # 2A-D.2 Patch 11D-b: bumped 125 → 126 for the FastAPI 0.125 → 0.133
     # framework upgrade (one additional framework-internal route).
-    assert len(app.routes) == 126
+    # 2026-07-05 code-completion experiment (founder decision record in
+    # docs/operations/): bumped 126 → 156 for the deliberately added
+    # M5.7/M4.6/M5.8/M6-S/M6.13 routers. Guard intent preserved: any
+    # unintended route change still fails this test.
+    assert len(app.routes) == 156

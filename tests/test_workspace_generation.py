@@ -512,10 +512,15 @@ def test_app_route_count_unchanged_after_orchestrator_wiring() -> None:
     # original intent of this guard — "2A-C.5C must not add or remove any
     # application route" — is preserved; the count is shifted by exactly
     # the number of framework-internal routes added by the upgrade.
-    assert len(app.routes) == 126, (
-        "2A-C.5C must not add or remove any application route "
-        "(count includes FastAPI framework-internal routes; "
-        "bumped to 126 by Patch 11D-b for the FastAPI 0.133.1 upgrade)"
+    # 2026-07-05 code-completion experiment (founder decision record in
+    # docs/operations/): bumped 126 → 156 for the deliberately added
+    # M5.7/M4.6/M5.8/M6-S/M6.13 routers. Guard intent preserved: any
+    # unintended route change still fails this test.
+    assert len(app.routes) == 156, (
+        "no slice may add or remove application routes without a "
+        "recorded decision (count includes FastAPI framework-internal "
+        "routes; bumped to 156 by the 2026-07-05 code-completion "
+        "experiment)"
     )
 
 

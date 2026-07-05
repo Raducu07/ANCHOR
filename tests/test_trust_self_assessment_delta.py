@@ -495,7 +495,10 @@ def test_route_count_unchanged_by_trust_delta() -> None:
     # count to unblock the dependency remediation. Doctrine intent
     # preserved: this guard catches any unintended route addition or
     # removal in the trust-delta slice.
-    assert len(app.routes) == 126
+    # 2026-07-05 code-completion experiment (founder decision record in
+    # docs/operations/): bumped 126 → 156 for the deliberately added
+    # M5.7/M4.6/M5.8/M6-S/M6.13 routers. Guard intent preserved.
+    assert len(app.routes) == 156
 
 
 # ---------------------------------------------------------------------
