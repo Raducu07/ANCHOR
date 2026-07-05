@@ -6,6 +6,7 @@ import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { listLearningModules } from "@/lib/learn";
+import { INTERNAL_PREVIEW_ENABLED } from "@/lib/internalPreview";
 import type { LearningModule } from "@/lib/types";
 
 const CATEGORY_FILTERS: { value: string; label: string }[] = [
@@ -112,6 +113,13 @@ export default function LearnHomePage() {
                 title="Why was this flagged?"
                 description="Plain-language explainers that turn governance friction into staff understanding."
               />
+              {INTERNAL_PREVIEW_ENABLED ? (
+                <QuickLink
+                  href="/learn/maturity"
+                  title="Learning paths & renewal (internal preview)"
+                  description="Role-based learning paths, renewal reminders, and leadership visibility. Learning reinforcement, not certification."
+                />
+              ) : null}
             </div>
           </Card>
         </div>

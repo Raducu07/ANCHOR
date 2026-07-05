@@ -5,11 +5,13 @@ import { useSyncExternalStore } from "react";
 import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { InternalPreviewBadge } from "@/components/experiment/InternalPreviewGate";
 import {
   SESSION_SERVER_SNAPSHOT,
   getSessionUserSnapshot,
   subscribeSessionStorage,
 } from "@/lib/auth";
+import { INTERNAL_PREVIEW_ENABLED } from "@/lib/internalPreview";
 
 // Phase 2A-2.10 - frontend-only navigation gate, mirrors the admin set
 // used by the policy admin pages. Backend remains the real authority.
@@ -197,6 +199,50 @@ export default function SettingsPage() {
             </div>
           </Card>
         </div>
+
+        {INTERNAL_PREVIEW_ENABLED ? (
+          <Card variant="native" className="border-amber-200/80">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <SectionTitle
+                title="Internal preview (experiment)"
+                description="Gated build-ahead surfaces from the roadmap-completion experiment. Internal visibility only — nothing here implies public readiness or activation."
+              />
+              <InternalPreviewBadge />
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <QuickLink
+                href="/settings/onboarding"
+                title="Assisted onboarding"
+                description="Metadata-only readiness checklist, invite lifecycle status, and first-run governance guidance."
+              />
+              <QuickLink
+                href="/learn/maturity"
+                title="Learning paths & renewal"
+                description="Role-based learning paths, renewal reminders, and the leadership learning overview."
+              />
+              <QuickLink
+                href="/settings/billing"
+                title="Billing foundations"
+                description="Sandbox-only plan catalogue and activation posture. No live billing."
+              />
+              <QuickLink
+                href="/settings/sustainability"
+                title="Sustainability governance"
+                description="Metadata-only energy, waste, and footprint evidence with hashed reports."
+              />
+              <QuickLink
+                href="/settings/ambient-governance"
+                title="Ambient governance shell"
+                description="Metadata-only review gate around external ambient workflows. Ingestion disabled by default."
+              />
+              <QuickLink
+                href="/settings/provider-posture"
+                title="Provider posture"
+                description="Live generation production-off; provider switching disabled; architected for vendor-neutrality."
+              />
+            </div>
+          </Card>
+        ) : null}
 
         <Card variant="native">
           <SectionTitle

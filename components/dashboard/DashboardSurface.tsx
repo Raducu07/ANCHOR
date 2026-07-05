@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Button, getButtonChromeClasses } from "@/components/ui/Button";
+import { InternalPreviewTiles } from "@/components/dashboard/InternalPreviewTiles";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
   SESSION_SERVER_SNAPSHOT,
@@ -506,6 +507,10 @@ export function DashboardSurface() {
           </div>
         </div>
       </div>
+
+      {/* Internal-preview experiment tiles (render null unless
+          NEXT_PUBLIC_ANCHOR_INTERNAL_PREVIEW is enabled). */}
+      <InternalPreviewTiles />
     </div>
   );
 }
