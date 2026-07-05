@@ -6,12 +6,24 @@ import os
 from typing import Any, Dict, List
 from urllib import request
 from urllib.error import URLError
+from urllib.parse import urlsplit
 
 from app.anchor_logging import log_event
 
 
 class NotificationDeliveryError(RuntimeError):
     pass
+
+
+def _is_https_url(url: str) -> bool:
+    """True only for https:// targets. Webhook payloads carry public
+    intake contact PII, so transport encryption is mandatory - any
+    other scheme (http, file, ftp, ...) is refused before a byte is
+    sent. The URL value itself is never logged."""
+    try:
+        return urlsplit(url).scheme.lower() == "https"
+    except ValueError:
+        return False
 
 
 def _post_json(url: str, payload: Dict[str, Any], *, timeout_s: int = 5) -> None:
@@ -45,6 +57,15 @@ def _deliver(
     url: str,
     payload: Dict[str, Any],
 ) -> Dict[str, str]:
+    if not _is_https_url(url):
+        log_event(
+            logging.ERROR,
+            event_name,
+            target=target_name,
+            delivery_status="refused",
+            reason="non_https_webhook_url",
+        )
+        raise NotificationDeliveryError(f"{target_name}:non_https_refused")
     try:
         _post_json(url, payload)
         log_event(
