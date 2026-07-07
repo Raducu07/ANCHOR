@@ -1,6 +1,8 @@
 # M6.13 Clinical-Content Boundary Specification — DRAFT
 
-> **Status: DRAFT for founder review. Not operative canon.** Produced as part of the 2026-07-05 code-completion experiment (see `docs/operations/2026-07-05_founder_code_completion_experiment_decision.md`). Roadmap v2.6 §9 lists a "clinical-content boundary specification" as an M6.13 precondition; this draft exists so that precondition has a concrete starting point. It binds nothing until the founder adopts it.
+> **SUPERSEDED (6 July 2026):** adopted with amendments as `2026-07-06_m6_13_clinical_content_boundary_spec_v1.md`, per the founder decision recorded in `docs/operations/2026-07-06_m6_13_boundary_adoption_decision.md`. This DRAFT is retained as the historical record only — do not use it as current guidance.
+>
+> **Original status: DRAFT for founder review. Not operative canon.** Produced as part of the 2026-07-05 code-completion experiment (see `docs/operations/2026-07-05_founder_code_completion_experiment_decision.md`). Roadmap v2.6 §9 lists a "clinical-content boundary specification" as an M6.13 precondition; this draft exists so that precondition has a concrete starting point. It binds nothing until the founder adopts it.
 >
 > ANCHOR is **aligned, not compliant**. ANCHOR is **not an ambient scribe** and this specification exists to keep it that way.
 
