@@ -20,6 +20,9 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import {
   InternalPreviewBadge,
   InternalPreviewGate,
+  PreviewBackendUnavailableCard,
+  isPreviewEndpointUnavailable,
+  previewAwareErrorMessage,
 } from "@/components/experiment/InternalPreviewGate";
 import {
   SESSION_SERVER_SNAPSHOT,
@@ -69,6 +72,7 @@ function BillingFoundationsContent() {
   const [state, setState] = useState<BillingStateResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [backendAbsent, setBackendAbsent] = useState(false);
 
   const [planInput, setPlanInput] = useState("");
   const [activationInput, setActivationInput] = useState("");
@@ -94,9 +98,15 @@ function BillingFoundationsContent() {
       } catch (err: unknown) {
         if (!active) return;
         setState(null);
-        setError(
-          err instanceof Error ? err.message : "Unable to load the sandbox billing state.",
-        );
+        // FIX 3: 404/503 = experiment endpoints absent/disabled on this
+        // backend; the expected posture, not an error.
+        if (isPreviewEndpointUnavailable(err)) {
+          setBackendAbsent(true);
+        } else {
+          setError(
+            err instanceof Error ? err.message : "Unable to load the sandbox billing state.",
+          );
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -125,12 +135,18 @@ function BillingFoundationsContent() {
     } catch (err: unknown) {
       setSaveFeedback({
         kind: "error",
-        message:
-          err instanceof Error ? err.message : "Unable to update the sandbox billing state.",
+        message: previewAwareErrorMessage(
+          err,
+          "Unable to update the sandbox billing state.",
+        ),
       });
     } finally {
       setSaving(false);
     }
+  }
+
+  if (backendAbsent) {
+    return <PreviewBackendUnavailableCard surface="Billing foundations" />;
   }
 
   return (

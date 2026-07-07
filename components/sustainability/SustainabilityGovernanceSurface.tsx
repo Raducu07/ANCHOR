@@ -20,6 +20,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import {
   InternalPreviewBadge,
   InternalPreviewGate,
+  previewAwareErrorMessage,
 } from "@/components/experiment/InternalPreviewGate";
 import {
   SESSION_SERVER_SNAPSHOT,
@@ -205,8 +206,10 @@ function ConfigSection({ isAdmin }: { isAdmin: boolean }) {
       } catch (err: unknown) {
         if (!active) return;
         setConfig(null);
+        // FIX 3: 404/503 = experiment endpoints absent/disabled on this
+        // backend; render the honest posture message, not a generic error.
         setError(
-          err instanceof Error ? err.message : "Unable to load the sustainability configuration.",
+          previewAwareErrorMessage(err, "Unable to load the sustainability configuration."),
         );
       } finally {
         if (active) setLoading(false);
@@ -236,8 +239,10 @@ function ConfigSection({ isAdmin }: { isAdmin: boolean }) {
     } catch (err: unknown) {
       setFeedback({
         kind: "error",
-        message:
-          err instanceof Error ? err.message : "Unable to save the sustainability configuration.",
+        message: previewAwareErrorMessage(
+          err,
+          "Unable to save the sustainability configuration.",
+        ),
       });
     } finally {
       setSaving(false);
@@ -370,7 +375,7 @@ function EnergySection({ isAdmin }: { isAdmin: boolean }) {
       setData(response);
     } catch (err: unknown) {
       setData(null);
-      setError(err instanceof Error ? err.message : "Unable to load energy readings.");
+      setError(previewAwareErrorMessage(err, "Unable to load energy readings."));
     } finally {
       setLoading(false);
     }
@@ -406,7 +411,7 @@ function EnergySection({ isAdmin }: { isAdmin: boolean }) {
     } catch (err: unknown) {
       setFeedback({
         kind: "error",
-        message: err instanceof Error ? err.message : "Unable to record the energy reading.",
+        message: previewAwareErrorMessage(err, "Unable to record the energy reading."),
       });
     } finally {
       setCreating(false);
@@ -527,7 +532,7 @@ function WasteSection({ isAdmin }: { isAdmin: boolean }) {
       setData(response);
     } catch (err: unknown) {
       setData(null);
-      setError(err instanceof Error ? err.message : "Unable to load waste events.");
+      setError(previewAwareErrorMessage(err, "Unable to load waste events."));
     } finally {
       setLoading(false);
     }
@@ -562,7 +567,7 @@ function WasteSection({ isAdmin }: { isAdmin: boolean }) {
     } catch (err: unknown) {
       setFeedback({
         kind: "error",
-        message: err instanceof Error ? err.message : "Unable to record the waste event.",
+        message: previewAwareErrorMessage(err, "Unable to record the waste event."),
       });
     } finally {
       setCreating(false);
@@ -683,7 +688,7 @@ function FootprintSection({ isAdmin }: { isAdmin: boolean }) {
       setData(response);
     } catch (err: unknown) {
       setData(null);
-      setError(err instanceof Error ? err.message : "Unable to load footprint estimates.");
+      setError(previewAwareErrorMessage(err, "Unable to load footprint estimates."));
     } finally {
       setLoading(false);
     }
@@ -719,8 +724,7 @@ function FootprintSection({ isAdmin }: { isAdmin: boolean }) {
     } catch (err: unknown) {
       setFeedback({
         kind: "error",
-        message:
-          err instanceof Error ? err.message : "Unable to record the footprint estimate.",
+        message: previewAwareErrorMessage(err, "Unable to record the footprint estimate."),
       });
     } finally {
       setCreating(false);
@@ -830,7 +834,7 @@ function RollingSection() {
         if (!active) return;
         setData(null);
         setError(
-          err instanceof Error ? err.message : "Unable to load the rolling 12-month view.",
+          previewAwareErrorMessage(err, "Unable to load the rolling 12-month view."),
         );
       } finally {
         if (active) setLoading(false);
@@ -907,7 +911,7 @@ function ReportsSection({ isAdmin }: { isAdmin: boolean }) {
       setData(response);
     } catch (err: unknown) {
       setData(null);
-      setError(err instanceof Error ? err.message : "Unable to load sustainability reports.");
+      setError(previewAwareErrorMessage(err, "Unable to load sustainability reports."));
     } finally {
       setLoading(false);
     }
@@ -930,7 +934,7 @@ function ReportsSection({ isAdmin }: { isAdmin: boolean }) {
     } catch (err: unknown) {
       setFeedback({
         kind: "error",
-        message: err instanceof Error ? err.message : "Unable to generate a report.",
+        message: previewAwareErrorMessage(err, "Unable to generate a report."),
       });
     } finally {
       setGenerating(false);
@@ -1037,7 +1041,7 @@ function EvidenceRow({
       setReason("");
       await onVoided();
     } catch (err: unknown) {
-      setVoidError(err instanceof Error ? err.message : "Unable to void this record.");
+      setVoidError(previewAwareErrorMessage(err, "Unable to void this record."));
     } finally {
       setWorking(false);
     }

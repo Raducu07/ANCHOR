@@ -21,6 +21,9 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import {
   InternalPreviewBadge,
   InternalPreviewGate,
+  PreviewBackendUnavailableCard,
+  isPreviewEndpointUnavailable,
+  previewAwareErrorMessage,
 } from "@/components/experiment/InternalPreviewGate";
 import { ApiError } from "@/lib/api";
 import {
@@ -99,6 +102,7 @@ function OnboardingReadinessContent() {
   const [checklist, setChecklist] = useState<OnboardingChecklistResponse | null>(null);
   const [checklistError, setChecklistError] = useState<string | null>(null);
   const [checklistLoading, setChecklistLoading] = useState(true);
+  const [backendAbsent, setBackendAbsent] = useState(false);
 
   const [invites, setInvites] = useState<OnboardingInviteListResponse | null>(null);
   const [invitesError, setInvitesError] = useState<string | null>(null);
@@ -117,9 +121,15 @@ function OnboardingReadinessContent() {
       } catch (err: unknown) {
         if (!active) return;
         setChecklist(null);
-        setChecklistError(
-          err instanceof Error ? err.message : "Unable to load the onboarding checklist.",
-        );
+        // FIX 3: against a backend without the experiment endpoints,
+        // 404/503 is the expected posture, not an error.
+        if (isPreviewEndpointUnavailable(err)) {
+          setBackendAbsent(true);
+        } else {
+          setChecklistError(
+            err instanceof Error ? err.message : "Unable to load the onboarding checklist.",
+          );
+        }
       } finally {
         if (active) setChecklistLoading(false);
       }
@@ -149,7 +159,7 @@ function OnboardingReadinessContent() {
           setInvitesError("Invite lifecycle visibility requires a clinic admin role.");
         } else {
           setInvitesError(
-            err instanceof Error ? err.message : "Unable to load invite lifecycle status.",
+            previewAwareErrorMessage(err, "Unable to load invite lifecycle status."),
           );
         }
       } finally {
@@ -162,6 +172,10 @@ function OnboardingReadinessContent() {
       active = false;
     };
   }, [isAdmin]);
+
+  if (backendAbsent) {
+    return <PreviewBackendUnavailableCard surface="Assisted onboarding" />;
+  }
 
   return (
     <div className="space-y-6">

@@ -19,6 +19,7 @@ import { Card } from "@/components/ui/Card";
 import {
   InternalPreviewBadge,
   InternalPreviewGate,
+  previewAwareErrorMessage,
 } from "@/components/experiment/InternalPreviewGate";
 import {
   SESSION_SERVER_SNAPSHOT,
@@ -136,7 +137,7 @@ function PathsSection() {
       } catch (err: unknown) {
         if (!active) return;
         setPaths(null);
-        setError(err instanceof Error ? err.message : "Unable to load learning paths.");
+        setError(previewAwareErrorMessage(err, "Unable to load learning paths."));
       } finally {
         if (active) setLoading(false);
       }
@@ -264,7 +265,7 @@ function MyRenewalsSection() {
       } catch (err: unknown) {
         if (!active) return;
         setRenewals(null);
-        setError(err instanceof Error ? err.message : "Unable to load renewal reminders.");
+        setError(previewAwareErrorMessage(err, "Unable to load renewal reminders."));
       } finally {
         if (active) setLoading(false);
       }
@@ -362,7 +363,7 @@ function LeadershipSection() {
         if (!active) return;
         setOverview(null);
         setError(
-          err instanceof Error ? err.message : "Unable to load the leadership overview.",
+          previewAwareErrorMessage(err, "Unable to load the leadership overview."),
         );
       } finally {
         if (active) setLoading(false);
@@ -397,8 +398,7 @@ function LeadershipSection() {
     } catch (err: unknown) {
       setSaveFeedback({
         kind: "error",
-        message:
-          err instanceof Error ? err.message : "Unable to update the renewal cadence.",
+        message: previewAwareErrorMessage(err, "Unable to update the renewal cadence."),
       });
     } finally {
       setSaving(false);
