@@ -265,7 +265,7 @@ function AmbientTile() {
           setState({
             kind: "ready",
             headline: "Ingestion disabled",
-            detail: "The default posture. Governance shell only — no transcripts, ever.",
+            detail: "The default posture. Governance shell only — the schema cannot store a transcript.",
           });
         } else {
           setState({ kind: "unavailable" });

@@ -60,7 +60,7 @@ const FIRST_RUN_GUIDANCE: { title: string; body: string; href: string }[] = [
   },
   {
     title: "Submit the governance self-assessment",
-    body: "The RCVS-aligned self-assessment snapshots where the clinic stands against governance readiness themes.",
+    body: "The governance self-assessment snapshots where the clinic stands against readiness themes, aligned with the direction of RCVS expectations.",
     href: "/settings/self-assessment",
   },
   {
