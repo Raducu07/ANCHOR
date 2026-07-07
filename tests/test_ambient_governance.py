@@ -426,6 +426,32 @@ def test_schema_has_no_content_capable_columns() -> None:
         assert forbidden not in ddl, f"content-capable marker: {forbidden}"
 
 
+_HARDENING_SQL = (
+    REPO_ROOT / "migrations" / "20260706_01_ambient_boundary_check_hardening.sql"
+).read_text(encoding="utf-8")
+
+
+def test_rule13_schema_hardening_constraints_present() -> None:
+    """M6.13 boundary adoption rule 13 (founder decision 2026-07-06):
+    the API-layer content guards are mirrored as schema-level CHECKs."""
+    assert "ADD CONSTRAINT ambient_source_label_single_line" in _HARDENING_SQL
+    assert "char_length(source_label) <= 200" in _HARDENING_SQL
+    assert r"source_label !~ '[\n\r]'" in _HARDENING_SQL
+    assert (
+        "ADD CONSTRAINT ambient_reference_hash_sha256_shape" in _HARDENING_SQL
+    )
+    assert "workflow_reference_hash IS NULL" in _HARDENING_SQL
+    assert "workflow_reference_hash ~ '^[a-f0-9]{64}$'" in _HARDENING_SQL
+
+
+def test_rule13_hardening_is_a_new_migration_not_an_edit() -> None:
+    """Doctrine: existing migrations are never retroactively edited. The
+    hardening constraints must NOT appear in the original 20260705_05
+    schema migration."""
+    assert "ambient_source_label_single_line" not in SCHEMA_SQL
+    assert "ambient_reference_hash_sha256_shape" not in SCHEMA_SQL
+
+
 def test_router_mounted_in_main_app() -> None:
     from app.main import app as main_app
 
