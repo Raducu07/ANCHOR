@@ -100,11 +100,15 @@ class BillingFakeDB:
             },
         ]
         self.upserts: List[Dict[str, Any]] = []
+        self.audit_inserts: List[Dict[str, Any]] = []
 
     def execute(self, clause: Any, params: Optional[Dict[str, Any]] = None):
         sql = str(getattr(clause, "text", clause))
         p = dict(params or {})
 
+        if "INSERT INTO admin_audit_events" in sql:
+            self.audit_inserts.append(p)
+            return _Result()
         if "FROM clinic_billing_state" in sql:
             return _Result(row=self.state_row)
         if "SELECT 1 AS one FROM billing_plans" in sql:
@@ -222,6 +226,40 @@ def test_put_pilot_candidate_upserts() -> None:
     assert fake.upserts[0]["clinic_id"] == CLINIC_A
     # stripe_mode is not part of the insert - it cannot be set via API.
     assert "stripe_mode" not in fake.upserts[0]
+
+
+def test_put_writes_metadata_only_audit_event() -> None:
+    """Pre-merge FIX 2 (5 July audit): billing-state updates write an
+    append-only admin_audit_events row, M6.10 precedent."""
+    import json as _json
+
+    app, fake = _build_app()
+    resp = TestClient(app).put(
+        "/v1/portal/billing/state",
+        json={"activation_status": "pilot_candidate", "plan_slug": "pilot"},
+    )
+    assert resp.status_code == 200
+    assert len(fake.audit_inserts) == 1
+    audit = fake.audit_inserts[0]
+    assert audit["clinic_id"] == CLINIC_A
+    assert audit["admin_user_id"] == ADMIN_USER
+    assert audit["action"] == "billing_state_updated"
+    meta = _json.loads(audit["meta"])
+    assert meta["activation_status"] == "pilot_candidate"
+    assert meta["previous_activation_status"] == "internal_demo"
+    # Metadata-only: no secret-shaped keys can exist in this module.
+    blob = _json.dumps(meta).lower()
+    for forbidden in ("card", "secret", "token", "iban", "stripe_key"):
+        assert forbidden not in blob
+
+
+def test_refused_put_writes_no_audit_event() -> None:
+    app, fake = _build_app()
+    resp = TestClient(app).put(
+        "/v1/portal/billing/state", json={"activation_status": "active_verified"}
+    )
+    assert resp.status_code == 403
+    assert fake.audit_inserts == []
 
 
 def test_put_unknown_plan_404() -> None:

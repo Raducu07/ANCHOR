@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime
@@ -79,12 +80,58 @@ def _ctx(request: Request) -> Dict[str, str]:
         "clinic_id": str(clinic_id),
         "clinic_user_id": str(clinic_user_id),
         "role": str(role),
+        "ip_hash": getattr(request.state, "ip_hash", None) or "",
     }
 
 
 def _require_admin(role: str) -> None:
     if role not in _BILLING_ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="forbidden_not_admin")
+
+
+def _insert_admin_audit_event(
+    db: Session,
+    *,
+    clinic_id: str,
+    admin_user_id: str,
+    action: str,
+    ip_hash: Optional[str],
+    meta: Dict[str, Any],
+) -> None:
+    """Append-only metadata-only audit row (governance_policy /
+    assistant_policy M6.10 precedent). NO ON CONFLICT against the
+    partial admin_audit_events_idem_uq index. meta carries sandbox
+    posture values only - no billing secrets, payment details, or card
+    data exist anywhere in this module to log."""
+    db.execute(
+        text(
+            """
+            INSERT INTO admin_audit_events (
+                clinic_id,
+                admin_user_id,
+                action,
+                target_id,
+                ip_hash,
+                meta
+            )
+            VALUES (
+                CAST(:clinic_id AS uuid),
+                CAST(:admin_user_id AS uuid),
+                :action,
+                NULL,
+                :ip_hash,
+                CAST(:meta AS jsonb)
+            )
+            """
+        ),
+        {
+            "clinic_id": clinic_id,
+            "admin_user_id": admin_user_id,
+            "action": action,
+            "ip_hash": ip_hash or None,
+            "meta": json.dumps(meta),
+        },
+    )
 
 
 def _webhook_enabled() -> bool:
@@ -267,6 +314,22 @@ def update_billing_state(
     ).mappings().first()
     if not row:
         raise HTTPException(status_code=500, detail="billing_state_failed")
+
+    _insert_admin_audit_event(
+        db,
+        clinic_id=ctx["clinic_id"],
+        admin_user_id=ctx["clinic_user_id"],
+        action="billing_state_updated",
+        ip_hash=ctx["ip_hash"],
+        meta={
+            "previous_plan_slug": str(current["plan_slug"]),
+            "previous_activation_status": str(current["activation_status"]),
+            "previous_billing_readiness": str(current["billing_readiness"]),
+            "plan_slug": plan_slug,
+            "activation_status": activation,
+            "billing_readiness": readiness,
+        },
+    )
 
     return BillingStateResponse(
         plan_slug=str(row["plan_slug"]),

@@ -85,11 +85,15 @@ class SustainabilityFakeDB:
         self.supersede_updates: List[Dict[str, Any]] = []
         self.next_version = 1
         self.counts: Dict[str, int] = {}
+        self.audit_inserts: List[Dict[str, Any]] = []
 
     def execute(self, clause: Any, params: Optional[Dict[str, Any]] = None):
         sql = str(getattr(clause, "text", clause))
         p = dict(params or {})
 
+        if "INSERT INTO admin_audit_events" in sql:
+            self.audit_inserts.append(p)
+            return _Result()
         if "INSERT INTO sustainability_config" in sql:
             self.config_upserts.append(p)
             return _Result(
@@ -257,6 +261,42 @@ def test_config_put_upserts() -> None:
     assert body["reporting_enabled"] is True
     assert body["baseline_year"] == 2025
     assert fake.config_upserts[0]["clinic_id"] == CLINIC_A
+
+
+def test_config_put_writes_audit_event_without_free_text() -> None:
+    """Pre-merge FIX 2 (5 July audit): config updates write an
+    append-only admin_audit_events row; the free-text
+    factor_source_text content never appears in the audit meta."""
+    import json as _json
+
+    app, fake = _build_app()
+    resp = TestClient(app).put(
+        "/v1/portal/sustainability/config",
+        json={
+            "reporting_enabled": True,
+            "baseline_year": 2025,
+            "electricity_factor_g_co2e_per_kwh": 207.0,
+            "factor_source_text": "DEFRA 2025 conversion factors",
+        },
+    )
+    assert resp.status_code == 200
+    assert len(fake.audit_inserts) == 1
+    audit = fake.audit_inserts[0]
+    assert audit["action"] == "sustainability_config_updated"
+    assert audit["clinic_id"] == CLINIC_A
+    meta = _json.loads(audit["meta"])
+    assert meta["reporting_enabled"] is True
+    assert meta["electricity_factor_set"] is True
+    assert meta["gas_factor_set"] is False
+    assert meta["factor_source_text_set"] is True
+    assert "DEFRA" not in audit["meta"]
+
+    # Refused (staff) updates write nothing.
+    app_staff, fake_staff = _build_app(role="staff")
+    TestClient(app_staff).put(
+        "/v1/portal/sustainability/config", json={"reporting_enabled": True}
+    )
+    assert fake_staff.audit_inserts == []
 
 
 # ---------------------------------------------------------------------

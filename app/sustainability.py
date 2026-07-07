@@ -65,12 +65,58 @@ def _ctx(request: Request) -> Dict[str, str]:
         "clinic_id": str(clinic_id),
         "clinic_user_id": str(clinic_user_id),
         "role": str(role),
+        "ip_hash": getattr(request.state, "ip_hash", None) or "",
     }
 
 
 def _require_admin(role: str) -> None:
     if role not in _SUSTAINABILITY_ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="forbidden_not_admin")
+
+
+def _insert_admin_audit_event(
+    db: Session,
+    *,
+    clinic_id: str,
+    admin_user_id: str,
+    action: str,
+    ip_hash: Optional[str],
+    meta: Dict[str, Any],
+) -> None:
+    """Append-only metadata-only audit row (governance_policy /
+    assistant_policy M6.10 precedent). NO ON CONFLICT against the
+    partial admin_audit_events_idem_uq index. meta records the config
+    posture and which factor fields are set - never the free-text
+    factor_source_text content."""
+    db.execute(
+        text(
+            """
+            INSERT INTO admin_audit_events (
+                clinic_id,
+                admin_user_id,
+                action,
+                target_id,
+                ip_hash,
+                meta
+            )
+            VALUES (
+                CAST(:clinic_id AS uuid),
+                CAST(:admin_user_id AS uuid),
+                :action,
+                NULL,
+                :ip_hash,
+                CAST(:meta AS jsonb)
+            )
+            """
+        ),
+        {
+            "clinic_id": clinic_id,
+            "admin_user_id": admin_user_id,
+            "action": action,
+            "ip_hash": ip_hash or None,
+            "meta": json.dumps(meta),
+        },
+    )
 
 
 def _as_uuid(value: Any, *, field: str) -> str:
@@ -269,6 +315,23 @@ def put_config(
     ).mappings().first()
     if not row:
         raise HTTPException(status_code=500, detail="config_upsert_failed")
+
+    _insert_admin_audit_event(
+        db,
+        clinic_id=ctx["clinic_id"],
+        admin_user_id=ctx["clinic_user_id"],
+        action="sustainability_config_updated",
+        ip_hash=ctx["ip_hash"],
+        meta={
+            "reporting_enabled": bool(payload.reporting_enabled),
+            "baseline_year": payload.baseline_year,
+            "electricity_factor_set": payload.electricity_factor_g_co2e_per_kwh is not None,
+            "gas_factor_set": payload.gas_factor_g_co2e_per_kwh is not None,
+            "waste_factor_set": payload.waste_factor_g_co2e_per_kg is not None,
+            "factor_source_text_set": bool(payload.factor_source_text),
+        },
+    )
+
     return _config_response(dict(row))
 
 

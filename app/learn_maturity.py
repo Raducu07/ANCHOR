@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import calendar
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -78,12 +79,58 @@ def _ctx(request: Request) -> Dict[str, str]:
         "clinic_id": str(clinic_id),
         "clinic_user_id": str(clinic_user_id),
         "role": str(role),
+        "ip_hash": getattr(request.state, "ip_hash", None) or "",
     }
 
 
 def _require_admin(role: str) -> None:
     if role not in _LEARN_MATURITY_ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="forbidden_not_admin")
+
+
+def _insert_admin_audit_event(
+    db: Session,
+    *,
+    clinic_id: str,
+    admin_user_id: str,
+    action: str,
+    ip_hash: Optional[str],
+    meta: Dict[str, Any],
+) -> None:
+    """Append-only metadata-only audit row (governance_policy /
+    assistant_policy M6.10 precedent). NO ON CONFLICT against the
+    partial admin_audit_events_idem_uq index. meta carries the renewal
+    cadence only - never learner answers, scores framed as competence,
+    or any learning content."""
+    db.execute(
+        text(
+            """
+            INSERT INTO admin_audit_events (
+                clinic_id,
+                admin_user_id,
+                action,
+                target_id,
+                ip_hash,
+                meta
+            )
+            VALUES (
+                CAST(:clinic_id AS uuid),
+                CAST(:admin_user_id AS uuid),
+                :action,
+                NULL,
+                :ip_hash,
+                CAST(:meta AS jsonb)
+            )
+            """
+        ),
+        {
+            "clinic_id": clinic_id,
+            "admin_user_id": admin_user_id,
+            "action": action,
+            "ip_hash": ip_hash or None,
+            "meta": json.dumps(meta),
+        },
+    )
 
 
 def _as_uuid(value: Any, *, field: str) -> str:
@@ -625,6 +672,15 @@ def set_renewal_policy(
     ).mappings().first()
     if not row:
         raise HTTPException(status_code=500, detail="renewal_policy_failed")
+
+    _insert_admin_audit_event(
+        db,
+        clinic_id=ctx["clinic_id"],
+        admin_user_id=ctx["clinic_user_id"],
+        action="learn_renewal_policy_updated",
+        ip_hash=ctx["ip_hash"],
+        meta={"renewal_months": int(payload.renewal_months)},
+    )
 
     return RenewalPolicyResponse(
         renewal_months=int(row["renewal_months"]),

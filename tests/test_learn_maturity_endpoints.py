@@ -113,11 +113,15 @@ class LearnMaturityFakeDB:
         self.overview_rows: List[Dict[str, Any]] = []
         self.attempt_inserts: List[Dict[str, Any]] = []
         self.policy_upserts: List[Dict[str, Any]] = []
+        self.audit_inserts: List[Dict[str, Any]] = []
 
     def execute(self, clause: Any, params: Optional[Dict[str, Any]] = None):
         sql = str(getattr(clause, "text", clause))
         p = dict(params or {})
 
+        if "INSERT INTO admin_audit_events" in sql:
+            self.audit_inserts.append(p)
+            return _Result()
         if "SELECT version, is_active FROM learning_modules" in sql:
             return _Result(row=self.module_row)
         if "correct_option_index, explanation" in sql:
@@ -458,6 +462,30 @@ def test_renewal_policy_put_admin_only_and_upserts() -> None:
         "/v1/learn/renewal-policy", json={"renewal_months": 0}
     )
     assert resp.status_code == 422
+
+
+def test_renewal_policy_put_writes_audit_event() -> None:
+    """Pre-merge FIX 2 (5 July audit): renewal-policy updates write an
+    append-only admin_audit_events row, M6.10 precedent."""
+    import json as _json
+
+    app, fake = _build_app(role="admin")
+    resp = TestClient(app).put(
+        "/v1/learn/renewal-policy", json={"renewal_months": 9}
+    )
+    assert resp.status_code == 200
+    assert len(fake.audit_inserts) == 1
+    audit = fake.audit_inserts[0]
+    assert audit["action"] == "learn_renewal_policy_updated"
+    assert audit["clinic_id"] == CLINIC_A
+    assert _json.loads(audit["meta"]) == {"renewal_months": 9}
+
+    # Refused (staff) updates write nothing.
+    app_staff, fake_staff = _build_app(role="staff")
+    TestClient(app_staff).put(
+        "/v1/learn/renewal-policy", json={"renewal_months": 9}
+    )
+    assert fake_staff.audit_inserts == []
 
 
 def test_requires_auth() -> None:

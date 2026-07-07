@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -95,6 +96,7 @@ def _ctx(request: Request) -> Dict[str, str]:
         "clinic_id": str(clinic_id),
         "clinic_user_id": str(clinic_user_id),
         "role": str(role),
+        "ip_hash": getattr(request.state, "ip_hash", None) or "",
     }
 
 
@@ -103,6 +105,54 @@ def _as_uuid(value: Any, *, field: str) -> str:
         return str(uuid.UUID(str(value)))
     except Exception:
         raise HTTPException(status_code=400, detail=f"invalid_{field}")
+
+
+def _insert_admin_audit_event(
+    db: Session,
+    *,
+    clinic_id: str,
+    admin_user_id: str,
+    action: str,
+    target_id: Optional[str],
+    ip_hash: Optional[str],
+    meta: Dict[str, Any],
+) -> None:
+    """Append-only metadata-only audit row (governance_policy /
+    assistant_policy M6.10 precedent). NO ON CONFLICT against the
+    partial admin_audit_events_idem_uq index. meta records the bounded
+    decision category and resulting status only - there is no
+    transcript, audio, or note content anywhere in this module to
+    log."""
+    db.execute(
+        text(
+            """
+            INSERT INTO admin_audit_events (
+                clinic_id,
+                admin_user_id,
+                action,
+                target_id,
+                ip_hash,
+                meta
+            )
+            VALUES (
+                CAST(:clinic_id AS uuid),
+                CAST(:admin_user_id AS uuid),
+                :action,
+                CAST(:target_id AS uuid),
+                :ip_hash,
+                CAST(:meta AS jsonb)
+            )
+            """
+        ),
+        {
+            "clinic_id": clinic_id,
+            "admin_user_id": admin_user_id,
+            "action": action,
+            "target_id": target_id,
+            "ip_hash": ip_hash or None,
+            "meta": json.dumps(meta),
+        },
+    )
 
 
 # ---------------------------------------------------------------------
@@ -360,6 +410,20 @@ def review_ambient_event(
         raise HTTPException(
             status_code=404, detail="event_not_found_or_already_reviewed"
         )
+
+    _insert_admin_audit_event(
+        db,
+        clinic_id=ctx["clinic_id"],
+        admin_user_id=ctx["clinic_user_id"],
+        action="ambient_event_reviewed",
+        target_id=eid,
+        ip_hash=ctx["ip_hash"],
+        meta={
+            "review_decision": str(payload.review_decision),
+            "new_status": new_status,
+        },
+    )
+
     return _event_from_row(dict(row))
 
 

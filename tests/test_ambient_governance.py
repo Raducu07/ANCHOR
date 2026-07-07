@@ -95,11 +95,15 @@ class AmbientFakeDB:
         self.review_found = True
         self.list_rows: List[Dict[str, Any]] = []
         self.summary_rows: List[Dict[str, Any]] = []
+        self.audit_inserts: List[Dict[str, Any]] = []
 
     def execute(self, clause: Any, params: Optional[Dict[str, Any]] = None):
         sql = str(getattr(clause, "text", clause))
         p = dict(params or {})
 
+        if "INSERT INTO admin_audit_events" in sql:
+            self.audit_inserts.append(p)
+            return _Result()
         if "INSERT INTO ambient_governance_events" in sql:
             self.inserts.append(p)
             return _Result(
@@ -301,6 +305,39 @@ def test_review_approved_maps_to_reviewed(enabled: None) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["review_status"] == "reviewed"
+
+
+def test_review_writes_metadata_only_audit_event(enabled: None) -> None:
+    """Pre-merge FIX 2 (5 July audit): review decisions write an
+    append-only admin_audit_events row targeting the event, carrying
+    only the bounded decision category and resulting status."""
+    import json as _json
+
+    app, fake = _build_app()
+    eid = str(_uuid.uuid4())
+    resp = TestClient(app).post(
+        f"/v1/portal/ambient/events/{eid}/review",
+        json={"review_decision": "amended_before_use"},
+    )
+    assert resp.status_code == 200
+    assert len(fake.audit_inserts) == 1
+    audit = fake.audit_inserts[0]
+    assert audit["action"] == "ambient_event_reviewed"
+    assert audit["target_id"] == eid
+    assert _json.loads(audit["meta"]) == {
+        "review_decision": "amended_before_use",
+        "new_status": "reviewed",
+    }
+
+    # A failed review (already reviewed) writes nothing.
+    fake.review_found = False
+    fake.audit_inserts.clear()
+    resp = TestClient(app).post(
+        f"/v1/portal/ambient/events/{eid}/review",
+        json={"review_decision": "rejected"},
+    )
+    assert resp.status_code == 404
+    assert fake.audit_inserts == []
 
 
 def test_review_only_once(enabled: None) -> None:
