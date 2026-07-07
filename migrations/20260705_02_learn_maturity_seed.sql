@@ -13,6 +13,9 @@
 -- Idempotent: ON CONFLICT (check_slug / path_slug) DO NOTHING.
 -- This file intentionally contains no dollar-quoted blocks so the
 -- migration runner splits it statement-by-statement on ';'.
+-- IMPORTANT (runner constraint): because of that splitting, no string
+-- literal in this file may contain a semicolon. Verified against a real
+-- Postgres 16 in the 2026-07-05 pre-merge validation.
 -- ============================================================
 
 BEGIN;
@@ -35,7 +38,7 @@ INSERT INTO public.learning_module_checks (
         'AI drafts never need review'
     ],
     1,
-    'Every AI-assisted output remains subject to professional review before operational use. ANCHOR records review evidence; it does not replace the review.',
+    'Every AI-assisted output remains subject to professional review before operational use. ANCHOR records review evidence - it does not replace the review.',
     1,
     true
 )
@@ -219,7 +222,7 @@ INSERT INTO public.learning_module_checks (
         'Avoid the question'
     ],
     1,
-    'A clear, honest, bounded explanation maintains trust: AI assists with drafting; professionals stay accountable for everything that is used.',
+    'A clear, honest, bounded explanation maintains trust - AI assists with drafting and professionals stay accountable for everything that is used.',
     1,
     true
 )

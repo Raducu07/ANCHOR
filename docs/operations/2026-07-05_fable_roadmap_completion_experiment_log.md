@@ -15,6 +15,8 @@
 
 **Final validation (5 July 2026):** full backend suite **1,653 passed, 0 failed** (one pre-existing dependency deprecation warning); app import OK at **156 routes**. The four route-count guard tests were bumped 126 → 156 with in-test rationale, following the Patch 11D-b precedent — guard intent (catch *unintended* route changes) preserved.
 
+**Pre-merge fixes (6 July 2026):** the three FIX items from the 5 July full-stack readiness audit are closed — real-Postgres migration validation on fresh + upgrade paths (one in-string-semicolon seed defect found and fixed in `20260705_02`), admin_audit_events on the four experiment write-paths (M6.10 precedent, metadata-only, test-covered), and frontend preview soft-fail unification (honest not-on-this-backend posture). Backend suite **1,658 passed**; frontend build clean; lint 0 errors / known AppShell warning only. See `2026-07-06_pre_merge_fix_validation_note.md`.
+
 Standing deferrals recorded during the experiment (each with rationale, revisit under founder review):
 
 - M6.12 per-clinic provider configuration — needs an assistant-policy migration + admin UI; platform-level selection shipped instead.
